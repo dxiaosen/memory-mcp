@@ -9,8 +9,16 @@ from pydantic import ValidationError
 
 from agent_lab.agents import AgentResponse
 from agent_lab.bootstrap import build_agent_service, build_knowledge_indexer
-from agent_lab.config import Settings, get_settings
+from agent_lab.config import (
+    AgentSettings,
+    KnowledgeSettings,
+    get_knowledge_settings,
+    get_settings,
+)
 from agent_lab.exceptions import AgentLabError
+from agent_lab.observability import configure_logging_from_settings, log_event
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -20,22 +28,56 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        settings = get_settings()
-        _configure_logging(settings)
         if args.command == "index":
-            _run_index_command(settings, args.paths, rebuild=args.rebuild)
+            settings = get_knowledge_settings()
+        else:
+            settings = get_settings()
+        configure_logging_from_settings(settings)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "cli.command.started",
+            command=args.command,
+        )
+        if args.command == "index":
+            _run_index_command(
+                get_knowledge_settings(),
+                args.paths,
+                rebuild=args.rebuild,
+            )
         elif args.command == "chat":
-            _run_chat_command(settings, args.prompt, thread_id=args.thread_id)
+            _run_chat_command(
+                get_settings(),
+                args.prompt,
+                thread_id=args.thread_id,
+            )
         else:
             parser.error(f"Unknown command: {args.command}")
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "cli.command.completed",
+            command=args.command,
+        )
     except ValidationError as exc:
         parser.error(_configuration_error_message(exc))
     except (AgentLabError, OSError, ValueError) as exc:
+        log_event(
+            _LOGGER,
+            logging.ERROR,
+            "cli.command.failed",
+            command=args.command,
+            error_type=type(exc).__name__,
+        )
         parser.exit(1, f"错误：{exc}\n")
     # 不同模型 SDK 的异常体系并不统一；CLI 作为最终进程边界，
     # 应记录完整日志，同时只向用户展示简洁错误信息。
     except Exception as exc:
-        logging.getLogger(__name__).exception("Unexpected application failure")
+        _LOGGER.exception(
+            'event="cli.command.unexpected_failure" command=%r error_type=%r',
+            args.command,
+            type(exc).__name__,
+        )
         parser.exit(1, f"执行失败：{exc}\n")
 
 
@@ -79,7 +121,7 @@ def _create_parser() -> argparse.ArgumentParser:
 
 
 def _run_index_command(
-    settings: Settings,
+    settings: KnowledgeSettings,
     paths: Sequence[str],
     *,
     rebuild: bool,
@@ -97,7 +139,7 @@ def _run_index_command(
 
 
 def _run_chat_command(
-    settings: Settings,
+    settings: AgentSettings,
     prompt: str | None,
     *,
     thread_id: str | None,
@@ -132,7 +174,10 @@ def _run_chat_command(
         try:
             response = service.run(user_input, thread_id=active_thread_id)
         except Exception as exc:
-            logging.getLogger(__name__).exception("Agent turn failed")
+            _LOGGER.exception(
+                'event="cli.agent_turn.failed" error_type=%r',
+                type(exc).__name__,
+            )
             print(f"Agent 执行失败：{exc}")
         else:
             _print_response(response, prefix="Agent> ")
@@ -152,15 +197,6 @@ def _print_response(response: AgentResponse, *, prefix: str = "") -> None:
             seen.add(key)
             page = f"，第 {citation.page} 页" if citation.page else ""
             print(f"- {citation.source}{page}")
-
-
-def _configure_logging(settings: Settings) -> None:
-    """根据应用配置初始化基础日志格式和级别。"""
-
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
 
 
 def _configuration_error_message(error: ValidationError) -> str:

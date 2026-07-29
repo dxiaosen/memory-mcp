@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.retrievers import BaseRetriever
 
-from agent_lab.config import Settings
+from agent_lab.config import KnowledgeSettings
 
 
 class ChromaKnowledgeStore:
@@ -52,7 +52,7 @@ class ChromaKnowledgeStore:
 
 
 def create_knowledge_store(
-    settings: Settings,
+    settings: KnowledgeSettings,
     embedding_model: Embeddings,
 ) -> ChromaKnowledgeStore:
     """创建配置指定的持久化 Chroma 知识库。"""

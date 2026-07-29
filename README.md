@@ -19,8 +19,37 @@
 - Chroma 持久化向量索引
 - 检索结果通过 `ToolMessage.artifact` 保留来源
 - 多轮会话、来源展示和 token 使用统计
+- 统一的安全执行日志、终端输出和本地滚动日志文件
 - Pydantic 配置与工具参数验证
 - 针对中文标点优化的文本切分
+
+## 通用记忆核心（阶段一）
+
+项目已增加一个尚未接入 Agent Runtime 的独立 Memory Core，当前支持：
+
+- 显式 `ScenarioPolicy` 注册和非法场景安全失败；
+- `MemoryItem`、不可变初始 revision 和来源 Evidence；
+- 可信 `PrincipalContext`；
+- 按 owner 限定的手动创建、当前/历史列表和详情读取；
+- 零额外服务的 SQLite 持久化、版本化迁移和完整性检查；
+- 仅用于离线测试与演示的内存 Repository。
+
+SQLite 默认保存在 `.agent-lab/memory.db`，使用 Python 标准库即可运行：
+
+```powershell
+uv run python -m agent_lab.memory.adapters.sqlite.runtime migrate
+uv run python -m agent_lab.memory.adapters.sqlite.runtime health
+uv run python examples/memory_phase_one.py
+uv run pytest tests/memory
+```
+
+可通过 `MEMORY_DATABASE_PATH` 修改数据库路径。虚拟用户仅用于验证逻辑隔离，
+不代表生产身份认证。
+
+阶段一的对象含义、代码调用链、SQLite 表结构和后续扩展边界见
+[Memory Core 阶段一详细设计与代码导读](docs/memory/phase-one-design.md)；
+验收命令和本机结果见
+[阶段一验收记录](docs/memory/phase-one-acceptance.md)。
 
 ## 项目结构
 
@@ -34,7 +63,7 @@ src/agent_lab/
 ├── cli/
 │   └── main.py             # index/chat 命令
 ├── config/
-│   └── settings.py         # 环境配置和交叉校验
+│   └── settings.py         # 按 Agent/Knowledge/Memory 入口拆分配置
 ├── integrations/
 │   ├── chat_models.py      # ChatDeepSeek / ChatOpenAI 工厂
 │   ├── embeddings.py       # Embedding 模型工厂
@@ -45,6 +74,14 @@ src/agent_lab/
 │   ├── ports.py            # KnowledgeStore 接口
 │   ├── retrieval.py        # Retriever Tool
 │   └── schemas.py          # 索引结果
+├── memory/
+│   ├── domain/             # 通用记忆实体和值对象
+│   ├── application/        # owner-scoped 应用服务
+│   ├── ports/              # Repository 和 ScenarioPolicy 契约
+│   ├── adapters/           # 内存测试适配器与 SQLite 实现
+│   └── composition.py      # 记忆服务组装
+├── observability/
+│   └── logging.py          # 统一日志、滚动文件和敏感字段保护
 ├── bootstrap.py            # 依赖装配
 └── exceptions.py           # 应用异常
 ```
@@ -52,14 +89,21 @@ src/agent_lab/
 依赖方向：
 
 ```text
-CLI → Bootstrap → Agents / Knowledge
-                    ↓          ↓
-                 LangChain   KnowledgeStore port
-                                 ↑
-                         Chroma integration
+index/chat CLI → Bootstrap → Agents / Knowledge → Integrations
+
+Memory composition → Application → Domain / Ports ← Adapters
+                               ↑
+                    ScenarioPolicy implementations
+
+各可执行入口 → Config
+Application / Adapters → Observability
 ```
 
-业务模块不直接创建 SDK Client，也不直接读取环境变量。模型、Embedding 和向量库的创建集中在 `integrations` 与 `bootstrap`。
+业务模块不直接创建 SDK Client，也不直接读取环境变量。模型、Embedding 和
+向量库的创建集中在 `integrations` 与 `bootstrap`；配置由每个可执行入口按需
+加载，因此建立索引不要求聊天模型配置，记忆迁移也不要求任何模型凭据。
+顶层 `agent_lab` 包不主动导入功能模块，独立使用 Memory Core 时不会连带加载
+LangChain。
 
 ## 快速开始
 
@@ -70,7 +114,8 @@ Copy-Item .env.example .env
 uv sync
 ```
 
-编辑 `.env`，至少配置聊天模型和 Embedding 模型：
+编辑 `.env`。运行 `chat` 需要聊天模型和 Embedding 模型；只运行 `index`
+仅需 Embedding 配置；SQLite 记忆迁移与演示不需要模型凭据：
 
 ```dotenv
 CHAT_MODEL_PROVIDER=deepseek
@@ -154,7 +199,26 @@ DeepSeek 使用官方 `ChatDeepSeek` 集成，OpenAI 使用 `ChatOpenAI`。不�
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `AGENT_RECURSION_LIMIT` | `12` | 单轮图执行最大递归步数 |
+
+### Memory
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MEMORY_DATABASE_PATH` | `.agent-lab/memory.db` | SQLite 记忆数据库路径 |
+
+### Logging
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
 | `LOG_LEVEL` | `INFO` | 应用日志级别 |
+| `LOG_FILE` | `.agent-lab/logs/agent-lab.log` | 本地滚动日志文件 |
+| `LOG_MAX_BYTES` | `10485760` | 单个日志文件最大字节数 |
+| `LOG_BACKUP_COUNT` | `5` | 保留的历史日志文件数 |
+
+日志默认同时输出到终端和 `.agent-lab/logs/agent-lab.log`。设置
+`LOG_LEVEL=DEBUG` 可以查看装配、索引、Agent 和 Memory Core 的详细执行事件。
+日志不记录问题正文、回答正文、记忆内容、来源原文或 API Key。详细说明见
+[项目执行日志设计与使用说明](docs/logging.md)。
 
 ## 增加业务逻辑
 

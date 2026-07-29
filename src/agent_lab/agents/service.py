@@ -1,6 +1,8 @@
 """封装 Agent 调用、会话状态和响应解析。"""
 
+import logging
 from collections.abc import Sequence
+from time import perf_counter
 from typing import Any
 
 from langchain_core.documents import Document
@@ -10,8 +12,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from agent_lab.exceptions import AgentExecutionError
+from agent_lab.observability import log_event, stable_reference
 
 from .schemas import AgentResponse, SourceCitation, TokenUsage
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -36,6 +41,16 @@ class AgentService:
         if not thread_id.strip():
             raise ValueError("thread_id must not be empty")
 
+        started_at = perf_counter()
+        thread_reference = stable_reference(thread_id)
+        log_event(
+            _LOGGER,
+            logging.DEBUG,
+            "agent.run.started",
+            query_length=len(query),
+            recursion_limit=self._recursion_limit,
+            thread_ref=thread_reference,
+        )
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": self._recursion_limit,
@@ -60,16 +75,34 @@ class AgentService:
         if final_message is None:
             raise AgentExecutionError("Agent returned no final answer.")
 
-        return AgentResponse(
+        response = AgentResponse(
             answer=final_message.text,
             sources=_extract_sources(current_turn),
             token_usage=_aggregate_token_usage(current_turn),
         )
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "agent.run.completed",
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+            input_tokens=response.token_usage.input_tokens,
+            output_tokens=response.token_usage.output_tokens,
+            source_count=len(response.sources),
+            thread_ref=thread_reference,
+            total_tokens=response.token_usage.total_tokens,
+        )
+        return response
 
     def clear_thread(self, thread_id: str) -> None:
         """删除指定线程在当前进程中的会话状态。"""
 
         self._checkpointer.delete_thread(thread_id)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "agent.thread.cleared",
+            thread_ref=stable_reference(thread_id),
+        )
 
 
 def _current_turn_messages(messages: Sequence[Any]) -> list[BaseMessage]:

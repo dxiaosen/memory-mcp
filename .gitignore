@@ -9,7 +9,10 @@ wheels/
 # Virtual environments
 .venv
 .pytest_cache/
+pytest-cache-files-*/
+.pytest-tmp-*/
 .ruff_cache/
+.uv-cache/
 
 # Local secrets
 .env
@@ -17,5 +20,6 @@ wheels/
 # Local knowledge indexes
 .agent-lab/
 
-knowledge/
-docs/
+# Agent
+.codex
+.claude

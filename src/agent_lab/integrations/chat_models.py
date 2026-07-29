@@ -4,11 +4,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 
-from agent_lab.config import Settings
+from agent_lab.config import AgentSettings
 from agent_lab.exceptions import ConfigurationError
 
 
-def create_chat_model(settings: Settings) -> BaseChatModel:
+def create_chat_model(settings: AgentSettings) -> BaseChatModel:
     """创建配置指定的 LangChain 聊天模型。"""
 
     common_options = {

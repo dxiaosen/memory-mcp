@@ -1,15 +1,7 @@
-"""Agent Lab 对外公开接口。"""
+"""Agent Lab package.
 
-from .agents import AgentResponse, AgentService, SourceCitation, TokenUsage
-from .config import Settings
-from .knowledge import IndexingReport, KnowledgeIndexer
+功能模块通过各自的子包公开接口。根包保持轻量，避免导入独立模块时
+连带加载 LangChain、模型 SDK 或其他可选基础设施。
+"""
 
-__all__ = [
-    "AgentResponse",
-    "AgentService",
-    "IndexingReport",
-    "KnowledgeIndexer",
-    "Settings",
-    "SourceCitation",
-    "TokenUsage",
-]
+__all__: list[str] = []

@@ -1,13 +1,16 @@
 """将本地知识文档切分并写入向量存储。"""
 
 import hashlib
+import logging
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from agent_lab.exceptions import KnowledgeBaseError
+from agent_lab.observability import log_event
 
 from .loaders import KnowledgeDocumentLoader
 from .ports import KnowledgeStore
@@ -29,6 +32,7 @@ _CJK_SEPARATORS = [
     " ",
     "",
 ]
+_LOGGER = logging.getLogger(__name__)
 
 
 class KnowledgeIndexer:
@@ -59,6 +63,14 @@ class KnowledgeIndexer:
     ) -> IndexingReport:
         """索引指定文件或目录，并返回本次索引报告。"""
 
+        started_at = perf_counter()
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "knowledge.index.started",
+            path_count=len(paths),
+            rebuild=rebuild,
+        )
         source_documents = self._loader.load(paths)
         chunks = [
             chunk
@@ -81,13 +93,25 @@ class KnowledgeIndexer:
         source_files = {
             str(document.metadata["source_path"]) for document in source_documents
         }
-        return IndexingReport(
+        report = IndexingReport(
             source_file_count=len(source_files),
             source_document_count=len(source_documents),
             chunk_count=len(indexed_chunks),
             stored_chunk_count=self._store.count(),
             rebuilt=rebuild,
         )
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "knowledge.index.completed",
+            chunk_count=report.chunk_count,
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+            rebuilt=report.rebuilt,
+            source_document_count=report.source_document_count,
+            source_file_count=report.source_file_count,
+            stored_chunk_count=report.stored_chunk_count,
+        )
+        return report
 
     def _prepare_chunks(
         self,

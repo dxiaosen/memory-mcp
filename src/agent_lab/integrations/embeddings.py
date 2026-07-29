@@ -3,11 +3,11 @@
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
-from agent_lab.config import Settings
+from agent_lab.config import KnowledgeSettings
 from agent_lab.exceptions import ConfigurationError
 
 
-def create_embedding_model(settings: Settings) -> Embeddings:
+def create_embedding_model(settings: KnowledgeSettings) -> Embeddings:
     """创建配置指定的 LangChain Embedding 模型。"""
 
     if settings.embedding_model_provider == "openai":
