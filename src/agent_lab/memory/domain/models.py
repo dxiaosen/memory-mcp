@@ -86,6 +86,8 @@ class MemoryRevision:
     observed_at: datetime
     created_at: datetime
     is_current: bool = True
+    original_time_expression: str | None = None
+    normalized_time: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))
@@ -109,6 +111,17 @@ class MemoryRevision:
         )
         _require_aware_datetime(self.observed_at, "observed_at")
         _require_aware_datetime(self.created_at, "created_at")
+        if self.original_time_expression is not None:
+            object.__setattr__(
+                self,
+                "original_time_expression",
+                _require_text(
+                    self.original_time_expression,
+                    "original_time_expression",
+                ),
+            )
+        if self.normalized_time is not None:
+            _require_aware_datetime(self.normalized_time, "normalized_time")
 
 
 @dataclass(frozen=True, slots=True)

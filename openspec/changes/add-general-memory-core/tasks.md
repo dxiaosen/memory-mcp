@@ -1,68 +1,74 @@
-## 1. 阶段一——通用契约、可信记忆卡片和用户隔离
+## 1. 阶段一——通用契约、可信记忆卡片和用户隔离（D1～D4，已完成）
 
-- [x] 1.1 固化通用 Core 与场景插件的职责边界、依赖方向和阶段一验收清单
-- [x] 1.2 建立绿地 Memory Core 的模块边界，并定义最小 `ScenarioPolicy`、场景注册表和安全失败行为
+- [x] 1.1 固化通用 Core 与场景策略的职责边界、依赖方向和阶段一验收清单
+- [x] 1.2 建立 Memory Core 模块边界，并定义最小 `ScenarioPolicy`、场景注册表和安全失败行为
 - [x] 1.3 建立无需外部服务的 SQLite 开发环境、`PRAGMA quick_check` 健康检查和版本化初始迁移
 - [x] 1.4 实现 `MemoryItem`、初始 `MemoryRevision`、`Evidence`、assertion kind 和通用有效状态
 - [x] 1.5 定义可信 `PrincipalContext`，并实现所有公开操作都按 owner 限定的手动创建、列表和详情查询
 - [x] 1.6 增加 owner、来源、合法状态、已注册场景和单一当前 revision 的数据库约束
-- [x] 1.7 实现仅供测试使用的 `TestScenarioPolicy` 和“项目协作记忆”中性夹具
+- [x] 1.7 实现测试场景和中性项目协作记忆夹具
 - [x] 1.8 增加非法记录、非法场景、非法类型、identifier 猜测和跨用户读写的离线测试
 - [x] 1.9 增加 Core 不导入正式场景的依赖守卫，演示手动创建与隔离并记录阶段一验收结果
 
-> 阶段一验收后的结构加固已完成：顶层包保持轻量，配置按运行入口拆分；
-> 场景策略先完成持久化再写入进程注册表，SQLite 场景类型目录保持同步。
-> 该维护记录不代表阶段二任务已经开始。
+## 2. 阶段二——通用捕获、准入和待确认流程（D5～D8，已完成）
 
-## 2. 阶段二——通用捕获、准入和待确认流程
+- [x] 2.1 定义 `TurnEnvelope`、结构化 `Candidate`、`AdmissionDecision`、`ReviewItem` 和 `CaptureResult`
+- [x] 2.2 让捕获流程从当前 `ScenarioPolicy` 获取合法类型和抽取提示，并定义原子候选结构
+- [x] 2.3 实现模型调用和持久化前的禁止内容检测、脱敏及禁止正文不落库边界
+- [x] 2.4 实现结构化模型适配器，并记录 prompt、schema、model 和 policy 版本
+- [x] 2.5 校验模型输出，并使用可信值覆盖模型提供的 owner、source id 和观察时间
+- [x] 2.6 实现自动保存、待确认、丢弃和敏感拦截四种互斥准入规则及同步持久化
+- [x] 2.7 实现 source turn 幂等，重试不得重复生成候选、待确认项、Evidence 或活动记忆
+- [x] 2.8 实现 pending 内容的 owner 范围查看、确认和拒绝，并保证确认前不可召回
+- [x] 2.9 完成多候选、临时指令、弱推断、相对时间、用户观点、敏感文本、重试和多策略测试
 
-- [ ] 2.1 定义 `TurnEnvelope`、结构化 `Candidate`、`AdmissionDecision`、`ReviewItem` 和 `CaptureResult`
-- [ ] 2.2 让捕获流程从当前 `ScenarioPolicy` 获取合法类型和抽取提示，并定义完整的原子候选结构
-- [ ] 2.3 实现模型调用和持久化前的禁止内容检测、脱敏及禁止正文不落库边界
-- [ ] 2.4 实现结构化模型适配器，并记录 prompt、schema、model 和 policy 版本
-- [ ] 2.5 校验模型输出，并使用可信值覆盖模型提供的 owner、source id 和观察时间
-- [ ] 2.6 实现自动保存、待确认、丢弃和敏感拦截四种互斥准入规则及同步持久化
-- [ ] 2.7 实现 source turn 幂等，重试不得重复生成候选、待确认项、Evidence 或活动记忆
-- [ ] 2.8 实现 pending 内容的 owner 范围查看、确认和拒绝，并保证确认前不可召回
-- [ ] 2.9 完成多候选、临时指令、弱推断、相对时间、用户观点、敏感文本和重试测试，并用两个测试策略演示 Core 无修改即可处理不同类型
+## 3. 阶段三——远程 MCP 服务与可信身份边界（D9～D12）
 
-## 3. 阶段三——通用生命周期、主动召回和用户治理
+- [x] 3.1 锁定官方 MCP Python SDK，建立 `MemoryServerSettings`、`memory_mcp` 包、Streamable HTTP `/mcp` 入口和健康检查
+- [x] 3.2 定义 `RequestPrincipal`，实现演示 token 到 owner/client/scopes 的可信映射与 read/write/review 权限检查
+- [x] 3.3 定义版本化 `CompletedTurnEventV1`、角色消息块、payload fingerprint、结构化结果 DTO 和稳定错误码
+- [x] 3.4 实现 `capture_completed_turn` 及 list/get/pending/confirm/reject MCP 工具，将可信 principal 映射到现有应用服务
+- [x] 3.5 实现 request id、无正文操作日志、同 event replay 和不同 payload conflict
+- [x] 3.6 完成 owner 字段拒绝、无认证、缺少 scope、跨用户 identifier、敏感响应、幂等和 SQLite 重开的 transport 测试
+- [x] 3.7 使用真实 MCP Client 和 MCP Inspector 远程重放阶段二案例，记录 MCP 阶段验收结果
+- [x] 3.8 在 MCP 入口和最小演示客户端可替代旧入口后，提取仍需复用的结构化模型 adapter，删除 `agents`、`knowledge`、旧 `cli/bootstrap`、Embedding/Chroma 集成、RAG 依赖和对应测试；全量 Memory/MCP 测试继续通过
 
-- [ ] 3.1 完善不可变 revision、通用 typed relation、业务进展、Usage、AuditEvent 和 SuppressionMarker 数据结构
-- [ ] 3.2 实现同 owner、同场景、同对象、兼容类型、规范化内容和指纹的 SQLite 结构化匹配，以及限定 owner 候选后的 Python 精确向量检索
-- [ ] 3.3 实现 duplicate、supplement、correction、replacement 和 ambiguous conflict 的结构化关系分类
-- [ ] 3.4 实现通用关系动作矩阵、场景规则校验、重复强化、补充、修正、替代和历史 successor link
-- [ ] 3.5 实现明确期限的过期处理，并将不确定事件时间保留为待确认信息
-- [ ] 3.6 实现 owner 优先的 `query_memory`，包含有效性过滤、相关性阈值、最大条数、token 预算和显式历史模式
-- [ ] 3.7 实现带 revision、内容性质、来源摘要、时间、有效性和业务进展的 `MemoryContext`
-- [ ] 3.8 通过框架无关 Agent Runtime 适配器集成回答前查询、回答后捕获和使用报告
-- [ ] 3.9 实现当前列表、待确认、详情、来源、历史、使用记录以及确认、拒绝、修正、撤销和删除
-- [ ] 3.10 实现内容清除、最小审计和抑制标记，保证旧来源 turn 不会自动重建已删除记忆
-- [ ] 3.11 为所有 Repository SQL 强制 owner 条件和用户数据复合约束，并完成读写、关联、召回、历史、管理和错误信息的跨用户测试
-- [ ] 3.12 完成重复、补充、明确替代、模糊冲突、过期、空召回、历史排除和当前指令优先测试
-- [ ] 3.13 运行只依赖 `TestScenarioPolicy` 的中性三会话端到端示例，并记录“通用功能完成”验收结果
+## 4. 阶段四——最小生命周期与主动召回（D13～D14）
 
-## 4. 阶段四——投资假设场景插件
+- [ ] 4.1 实现并注册正式 `GeneralWorkPolicy`，包含 preference、stable_context、ongoing_item 和 decision
+- [ ] 4.2 增加 duplicate Evidence、replacement、superseded history 和单一 current 所需的迁移、Repository port 与事务
+- [ ] 4.3 实现同 scope 规范化重复、用户明确 replacement、其余冲突 pending 的最小分类和一致性动作
+- [ ] 4.4 实现 owner-first 结构化 recall，按 active、scenario、subject、task intent、阈值、数量和 token budget 过滤
+- [ ] 4.5 实现 `recall_memory` MCP 工具，返回结构化 revision/source 和安全 `rendered_context`
+- [ ] 4.6 完成 duplicate、replacement、pending/history 排除、空召回、当前指令优先、跨用户召回测试和三轮远程示例
 
-- [ ] 4.1 建立并注册 `InvestmentHypothesisPolicy`，声明 hypothesis、validation condition、risk、catalyst 和 time horizon
-- [ ] 4.2 定义投资业务进展、允许关系，并校验业务进展不能替代 Core 有效状态
-- [ ] 4.3 定义投资表达的捕获提示、明确替代、弱推断待确认和召回优先级
-- [ ] 4.4 运行星海医疗会话一，验证原子假设、验证条件、风险和期限的形成
-- [ ] 4.5 运行星海医疗会话二，验证旧假设被替代、新假设生效且原风险保留
-- [ ] 4.6 运行星海医疗会话三，验证只召回耗材复购假设、30% 条件和当前风险
-- [ ] 4.7 完成研究员 A/B 同公司不同观点隔离测试及 Core 不反向依赖投资模块的守卫
-- [ ] 4.8 记录投资插件实施期间的 Core 修改分类，完成场景演示并记录阶段四验收结果
+## 5. 阶段五——Hook SDK 与跨 Agent 接入（D15～D16）
 
-## 5. 阶段五——调研问题场景、扩展性验证和交付评测
+- [ ] 5.1 建立 `memory_hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
+- [ ] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
+- [ ] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
+- [ ] 5.4 接入当前 LangChain Agent 和 Codex/第二个独立客户端，并为无原生 Hook 的 Host 提供 Runner 兜底
+- [ ] 5.5 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的端到端验收
 
-- [ ] 5.1 建立并注册 `ResearchQuestionPolicy`，定义 open question、follow-up、finding、unresolved 和 resolved
-- [ ] 5.2 定义问题形成、后续补充、明确解决和调研准备召回优先级
-- [ ] 5.3 运行远峰材料库存周期示例，并验证第二场景没有修改 Core 状态、版本、所有权、删除、审计和通用关系动作
-- [ ] 5.4 创建相互分离的开发集和最终合成测试集，标注候选、决策、类型、关系、当前 revision 和期望召回
-- [ ] 5.5 实现写入 Precision、保存 Recall、类型 Macro-F1、来源完整度和敏感拦截指标
-- [ ] 5.6 实现关系准确率、Recall@5、无关注入、失效记忆误用、历史误用和跨用户泄漏指标
-- [ ] 5.7 使用同一最终任务集实现无记忆和朴素摘要基线
-- [ ] 5.8 人工复核至少 20 个任务并记录分歧、失败分类和修正后的 gold label
-- [ ] 5.9 测量捕获与召回成本，并根据证据记录异步、全文/向量融合、HNSW 和更强 usage citation 的取舍
-- [ ] 5.10 增加发布门槛，并文档化安装、核心契约、场景扩展、敏感边界、删除边界和已知失败
-- [ ] 5.11 完成演示和录屏兜底，运行格式化、静态检查、集成测试、端到端测试、评测及严格 OpenSpec 校验
+## 6. 阶段六——真实抽取、演示与交付（D17～D20）
+
+- [ ] 6.1 接入一个真实结构化模型 backend，同时保留固定离线 backend、确定性夹具和数据库重置入口
+- [ ] 6.2 构造 10～15 个跨 Agent 脚本，覆盖四类准入、duplicate、replacement 和 empty recall
+- [ ] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界和失败恢复测试
+- [ ] 6.4 同步 README、需求、架构、配置和启动文档；把阶段一/二重复设计与验收文档合并为一份实现基线，删除与 MCP-first 方向冲突或已被 OpenSpec 取代的旧表述
+- [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、模型切换和离线兜底
+- [ ] 6.6 运行格式、静态检查、全量测试、MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
+
+## 明确延期，不进入本期任务
+
+- 向量检索、Embedding、HNSW 和混合检索调优；
+- supplement/correction/conflict 的完整关系矩阵和复杂关系图；
+- 自动过期调度、完整删除抑制、合规级审计和 usage 全链路；
+- 投资假设与调研问题双正式场景；
+- 大规模无记忆/朴素摘要/主动记忆对比实验；
+- Web 管理后台、MCP Apps、消息队列和异步任务；
+- PostgreSQL、多 worker、生产 OAuth 授权服务器和组织级多租户。
+
+延期表示“本期不激活”，不表示删除已经存在且有明确演进用途的数据语义：
+完整生命周期状态、原始/规范化时间、业务进度、策略版本、召回优先级和可选关系
+策略继续保留；只有旧 RAG 产品线、重复入口和重复文档属于明确清理对象。

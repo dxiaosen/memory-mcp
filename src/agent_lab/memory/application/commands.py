@@ -29,6 +29,8 @@ class CreateMemoryCommand:
     save_rationale: str
     observed_at: datetime
     business_progress: str | None = None
+    original_time_expression: str | None = None
+    normalized_time: datetime | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -58,3 +60,18 @@ class CreateMemoryCommand:
                 "business_progress",
                 _require_text(self.business_progress, "business_progress"),
             )
+        if self.original_time_expression is not None:
+            object.__setattr__(
+                self,
+                "original_time_expression",
+                _require_text(
+                    self.original_time_expression,
+                    "original_time_expression",
+                ),
+            )
+        if self.normalized_time is not None:
+            if (
+                self.normalized_time.tzinfo is None
+                or self.normalized_time.utcoffset() is None
+            ):
+                raise ValueError("normalized_time must be timezone-aware")

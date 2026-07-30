@@ -21,5 +21,10 @@ SQLite 可执行入口通过 `MemorySettings` 读取 `.env`，应用层和适配
 共享的结构化日志接口。顶层 `agent_lab` 包保持轻量，因此导入本模块不会加载
 其他功能模块。
 
-阶段一只提供手动创建、列表和详情读取，不包含模型抽取、关系演进、
-语义召回或 Agent 集成。
+阶段二已提供结构化候选抽取端口、敏感预检、四类准入、source turn 幂等和
+pending 确认/拒绝。当前仍不包含关系演进、语义召回或 Agent 集成。
+
+详细说明：
+
+- `docs/memory/phase-one-design.md`
+- `docs/memory/phase-two-design.md`

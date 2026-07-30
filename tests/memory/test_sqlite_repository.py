@@ -29,7 +29,11 @@ def database_path() -> Iterator[Path]:
     test_directory.mkdir(parents=True, exist_ok=True)
     path = test_directory / f"{uuid4().hex}.db"
     try:
-        assert apply_migrations(path) == ("0001_memory_core.sql",)
+        assert apply_migrations(path) == (
+            "0001_memory_core.sql",
+            "0002_memory_capture.sql",
+            "0003_mcp_events.sql",
+        )
         assert apply_migrations(path) == ()
         check_health(path)
         yield path

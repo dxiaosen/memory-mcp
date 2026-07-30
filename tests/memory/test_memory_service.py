@@ -14,8 +14,12 @@ from agent_lab.memory import (
     PrincipalContext,
     ScenarioNotRegisteredError,
     ScenarioRegistry,
+    SensitiveContentBlockedError,
 )
-from agent_lab.memory.adapters import InMemoryMemoryRepository
+from agent_lab.memory.adapters import (
+    InMemoryMemoryRepository,
+    RegexSensitiveContentGuard,
+)
 from agent_lab.memory.composition import create_memory_service
 from memory.fakes import TestScenarioPolicy, project_preference_command
 
@@ -135,6 +139,18 @@ def test_invalid_business_progress_is_rejected_by_scenario() -> None:
         )
 
 
+def test_manual_create_cannot_bypass_sensitive_persistence_guard() -> None:
+    service = _service()
+    principal = PrincipalContext("analyst-a")
+    command = project_preference_command()
+    object.__setattr__(command, "content", "密码是 manual-secret-789")
+
+    with pytest.raises(SensitiveContentBlockedError, match="prohibited"):
+        service.create_memory(principal, command)
+
+    assert service.list_memories(principal) == ()
+
+
 def test_malformed_scenario_policy_is_rejected_before_use() -> None:
     service = create_memory_service(InMemoryMemoryRepository(), [])
 
@@ -148,7 +164,11 @@ def test_repository_registration_failure_does_not_mutate_registry() -> None:
             raise RuntimeError("database unavailable")
 
     registry = ScenarioRegistry()
-    service = MemoryService(FailingScenarioRepository(), registry)
+    service = MemoryService(
+        FailingScenarioRepository(),
+        registry,
+        sensitive_guard=RegexSensitiveContentGuard(),
+    )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         service.register_scenario(TestScenarioPolicy())
@@ -195,6 +215,7 @@ def test_created_timestamps_are_timezone_aware() -> None:
     service = MemoryService(
         repository,
         ScenarioRegistry(),
+        sensitive_guard=RegexSensitiveContentGuard(),
         clock=lambda: fixed_now,
     )
     service.register_scenario(TestScenarioPolicy())

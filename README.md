@@ -1,264 +1,116 @@
-# Agent Lab
+# Agent Lab Memory MCP
 
-一个面向知识库问答场景的工程化 Agent 基础项目，适合在明确业务需求前快速验证模型、工具和 RAG 流程。
+一个面向不同 Agent 的独立长期记忆服务。Agent 通过标准 MCP
+Streamable HTTP 接入，身份、用户隔离、记忆准入和持久化都由服务端统一负责，
+而不是绑定到某个 Agent 框架。
 
-项目基于：
+当前已完成阶段一至阶段三：
 
-- LangChain v1：Agent、工具、消息和 Retriever 抽象
-- LangGraph：Agent 运行时与会话状态
-- Chroma：本地持久化向量库
-- LangChain DeepSeek/OpenAI integrations：供应商专用模型适配
-- LangChain Text Splitters：适合中英文的递归文本切分
+- owner-scoped Memory Core、版本化 SQLite 迁移和完整性检查；
+- 结构化候选、自动保存/待确认/丢弃/敏感拦截四类准入；
+- pending 确认与拒绝、失败重处理和 event 级幂等；
+- 带 Bearer Token 鉴权的远程 MCP 服务；
+- 六个 MCP 工具、稳定错误码、严格输入 DTO 和无正文审计日志；
+- 真实 MCP Client、MCP Inspector 和跨用户隔离验收。
 
-## 核心能力
+阶段四将增加生命周期合并和 `recall_memory`，阶段五增加跨 Agent Hook
+SDK，阶段六接入真实结构化模型并固化现场演示。
 
-- DeepSeek 和 OpenAI 模型供应商切换
-- LangChain `create_agent` 工具调用循环
-- `.txt`、`.md`、`.markdown`、`.pdf` 文档加载
-- 独立的离线索引与在线问答流程
-- Chroma 持久化向量索引
-- 检索结果通过 `ToolMessage.artifact` 保留来源
-- 多轮会话、来源展示和 token 使用统计
-- 统一的安全执行日志、终端输出和本地滚动日志文件
-- Pydantic 配置与工具参数验证
-- 针对中文标点优化的文本切分
-
-## 通用记忆核心（阶段一）
-
-项目已增加一个尚未接入 Agent Runtime 的独立 Memory Core，当前支持：
-
-- 显式 `ScenarioPolicy` 注册和非法场景安全失败；
-- `MemoryItem`、不可变初始 revision 和来源 Evidence；
-- 可信 `PrincipalContext`；
-- 按 owner 限定的手动创建、当前/历史列表和详情读取；
-- 零额外服务的 SQLite 持久化、版本化迁移和完整性检查；
-- 仅用于离线测试与演示的内存 Repository。
-
-SQLite 默认保存在 `.agent-lab/memory.db`，使用 Python 标准库即可运行：
-
-```powershell
-uv run python -m agent_lab.memory.adapters.sqlite.runtime migrate
-uv run python -m agent_lab.memory.adapters.sqlite.runtime health
-uv run python examples/memory_phase_one.py
-uv run pytest tests/memory
-```
-
-可通过 `MEMORY_DATABASE_PATH` 修改数据库路径。虚拟用户仅用于验证逻辑隔离，
-不代表生产身份认证。
-
-阶段一的对象含义、代码调用链、SQLite 表结构和后续扩展边界见
-[Memory Core 阶段一详细设计与代码导读](docs/memory/phase-one-design.md)；
-验收命令和本机结果见
-[阶段一验收记录](docs/memory/phase-one-acceptance.md)。
-
-## 项目结构
+## 架构
 
 ```text
-src/agent_lab/
-├── agents/
-│   ├── factory.py          # LangChain Agent 装配
-│   ├── prompts.py          # Agent 系统指令
-│   ├── schemas.py          # AgentResponse、来源、token 统计
-│   └── service.py          # 会话级应用服务
-├── cli/
-│   └── main.py             # index/chat 命令
-├── config/
-│   └── settings.py         # 按 Agent/Knowledge/Memory 入口拆分配置
-├── integrations/
-│   ├── chat_models.py      # ChatDeepSeek / ChatOpenAI 工厂
-│   ├── embeddings.py       # Embedding 模型工厂
-│   └── vector_store.py     # Chroma 持久化适配
-├── knowledge/
-│   ├── indexer.py          # 文档切分和幂等索引
-│   ├── loaders.py          # 文本、Markdown、PDF 加载
-│   ├── ports.py            # KnowledgeStore 接口
-│   ├── retrieval.py        # Retriever Tool
-│   └── schemas.py          # 索引结果
-├── memory/
-│   ├── domain/             # 通用记忆实体和值对象
-│   ├── application/        # owner-scoped 应用服务
-│   ├── ports/              # Repository 和 ScenarioPolicy 契约
-│   ├── adapters/           # 内存测试适配器与 SQLite 实现
-│   └── composition.py      # 记忆服务组装
-├── observability/
-│   └── logging.py          # 统一日志、滚动文件和敏感字段保护
-├── bootstrap.py            # 依赖装配
-└── exceptions.py           # 应用异常
+Codex / other Agent / demo client
+              │  MCP Streamable HTTP + Bearer Token
+              ▼
+       memory_mcp（身份与工具边界）
+              │  trusted PrincipalContext
+              ▼
+       Memory Application Service
+              │
+      Domain / Ports / Policy
+              │
+              ▼
+       SQLite Repository
 ```
 
-依赖方向：
+调用方不能提交 `owner_id`。服务端只根据 token 映射生成
+`owner_key + tenant_id + subject_id + client_id + scopes`，因此同一用户的不同
+Agent 可以共享记忆，不同用户即使猜中 memory/review identifier 也无法读取。
 
-```text
-index/chat CLI → Bootstrap → Agents / Knowledge → Integrations
+## 当前 MCP 工具
 
-Memory composition → Application → Domain / Ports ← Adapters
-                               ↑
-                    ScenarioPolicy implementations
+| 工具 | Scope | 作用 |
+| --- | --- | --- |
+| `capture_completed_turn` | `memory:write` | 提交一个成功完成的对话轮次 |
+| `list_memories` | `memory:read` | 列出当前用户的活动记忆 |
+| `get_memory` | `memory:read` | 读取一条当前用户记忆 |
+| `list_pending_reviews` | `memory:review` | 查看需要用户确认的候选 |
+| `confirm_pending_memory` | `memory:review` | 确认并保存 pending 候选 |
+| `reject_pending_memory` | `memory:review` | 拒绝 pending 候选 |
 
-各可执行入口 → Config
-Application / Adapters → Observability
-```
+`capture_completed_turn` 使用 `contract_version=1` 和稳定 `event_id`。相同
+event 与相同 payload 重试会返回 replay；相同 event 携带不同 payload 会返回
+`idempotency_conflict`。
 
-业务模块不直接创建 SDK Client，也不直接读取环境变量。模型、Embedding 和
-向量库的创建集中在 `integrations` 与 `bootstrap`；配置由每个可执行入口按需
-加载，因此建立索引不要求聊天模型配置，记忆迁移也不要求任何模型凭据。
-顶层 `agent_lab` 包不主动导入功能模块，独立使用 Memory Core 时不会连带加载
-LangChain。
+## 快速启动
 
-## 快速开始
-
-项目当前使用 Python 3.14 和 [uv](https://docs.astral.sh/uv/)。
+项目要求 Python 3.14，使用 [uv](https://docs.astral.sh/uv/) 管理环境。
 
 ```powershell
 Copy-Item .env.example .env
 uv sync
+uv run memory-mcp
 ```
 
-编辑 `.env`。运行 `chat` 需要聊天模型和 Embedding 模型；只运行 `index`
-仅需 Embedding 配置；SQLite 记忆迁移与演示不需要模型凭据：
+把 `.env` 中的演示 token 替换为本地随机值后，服务默认提供：
 
-```dotenv
-CHAT_MODEL_PROVIDER=deepseek
-CHAT_MODEL_NAME=deepseek-v4-flash
-CHAT_MODEL_API_KEY=sk-xxxxxxxx
-CHAT_MODEL_BASE_URL=https://api.deepseek.com
+- MCP：`http://127.0.0.1:8765/mcp`
+- 健康检查：`http://127.0.0.1:8765/health`
 
-EMBEDDING_MODEL_PROVIDER=openai
-EMBEDDING_MODEL_NAME=your-embedding-model
-EMBEDDING_MODEL_API_KEY=sk-xxxxxxxx
-EMBEDDING_MODEL_BASE_URL=https://your-approved-embedding-endpoint/v1
-```
-
-DeepSeek 当前不提供通用 Embeddings 接口，因此聊天模型和 Embedding 服务需要分别配置。
-
-### 1. 建立知识索引
+另一个终端可使用最小真实客户端验证：
 
 ```powershell
-uv run agent-lab index ./knowledge --rebuild
+uv run python examples/memory_mcp_client.py `
+  --token replace-with-a-long-random-token tools
+
+uv run python examples/memory_mcp_client.py `
+  --token replace-with-a-long-random-token memories
 ```
 
-支持一次传入多个文件或目录：
-
-```powershell
-uv run agent-lab index ./knowledge/policy.pdf ./knowledge/product.md
-```
-
-不指定 `--rebuild` 时，同一来源文档的旧文本块会被替换，不会重复累积。
-
-### 2. 交互问答
-
-```powershell
-uv run agent-lab chat
-```
-
-单次问答：
-
-```powershell
-uv run agent-lab chat "这份制度对审批时限有什么要求？"
-```
-
-交互模式支持：
-
-- `/reset`：清空当前进程中的对话状态
-- `/exit`：退出
-
-Chroma 索引默认保存在 `.agent-lab/chroma`，不会提交到 Git。
+阶段三的默认命令行组合根暂不绑定某一家模型，因此服务可以启动、鉴权并使用
+管理工具；捕获工具在未注入 `CandidateExtractor` 时会明确返回
+`capture_not_configured`。阶段三的端到端测试通过固定离线 extractor 重放所有
+准入分支，阶段六再把真实模型 backend 接到默认启动入口。
 
 ## 配置
 
-### Chat model
+所有服务配置使用 `MEMORY_MCP_` 前缀。关键字段：
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CHAT_MODEL_PROVIDER` | `deepseek` | `deepseek` 或 `openai` |
-| `CHAT_MODEL_NAME` | 必填 | 模型名称 |
-| `CHAT_MODEL_API_KEY` | 必填 | 模型 API Key |
-| `CHAT_MODEL_BASE_URL` | 供应商默认值 | 自定义 API 地址 |
-| `CHAT_MODEL_TEMPERATURE` | `0` | 生成温度 |
-| `CHAT_MODEL_TIMEOUT_SECONDS` | `60` | 请求超时 |
-| `CHAT_MODEL_MAX_RETRIES` | `2` | 最大重试次数 |
+| `MEMORY_MCP_DATABASE_PATH` | `.agent-lab/memory.db` | SQLite 文件 |
+| `MEMORY_MCP_HOST` | `127.0.0.1` | 监听地址 |
+| `MEMORY_MCP_PORT` | `8765` | 监听端口 |
+| `MEMORY_MCP_MCP_PATH` | `/mcp` | Streamable HTTP 路径 |
+| `MEMORY_MCP_DEMO_TOKENS_JSON` | `{}` | token 到可信 principal 的映射；为空时拒绝启动 |
+| `MEMORY_MCP_SCENARIO_ID` | `project-work` | 当前注册场景 |
+| `MEMORY_MCP_MAX_CAPTURE_CHARACTERS` | `100000` | 单轮最大字符数 |
 
-DeepSeek 使用官方 `ChatDeepSeek` 集成，OpenAI 使用 `ChatOpenAI`。不要用 `ChatOpenAI(base_url=DeepSeek)` 替代 `ChatDeepSeek`，否则 DeepSeek 的非标准推理字段可能丢失。
+演示 token 映射仅用于原型。对公网部署前必须替换为标准授权服务器和正式
+TokenVerifier；本期明确不把演示 token 方案描述为生产鉴权。
 
-### Embeddings and retrieval
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `EMBEDDING_MODEL_PROVIDER` | `openai` | 当前支持 OpenAI-compatible Embeddings |
-| `EMBEDDING_MODEL_NAME` | 必填 | Embedding 模型名称 |
-| `EMBEDDING_MODEL_API_KEY` | 必填 | Embedding API Key |
-| `EMBEDDING_MODEL_BASE_URL` | 供应商默认值 | Embeddings API 地址 |
-| `VECTOR_STORE_PERSIST_DIRECTORY` | `.agent-lab/chroma` | Chroma 数据目录 |
-| `VECTOR_STORE_COLLECTION_NAME` | `agent-lab-knowledge` | Collection 名称 |
-| `DOCUMENT_CHUNK_SIZE` | `800` | 文本块字符数 |
-| `DOCUMENT_CHUNK_OVERLAP` | `120` | 文本块重叠字符数 |
-| `RETRIEVAL_TOP_K` | `4` | 单次召回数量 |
-
-### Agent runtime
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `AGENT_RECURSION_LIMIT` | `12` | 单轮图执行最大递归步数 |
-
-### Memory
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `MEMORY_DATABASE_PATH` | `.agent-lab/memory.db` | SQLite 记忆数据库路径 |
-
-### Logging
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `LOG_LEVEL` | `INFO` | 应用日志级别 |
-| `LOG_FILE` | `.agent-lab/logs/agent-lab.log` | 本地滚动日志文件 |
-| `LOG_MAX_BYTES` | `10485760` | 单个日志文件最大字节数 |
-| `LOG_BACKUP_COUNT` | `5` | 保留的历史日志文件数 |
-
-日志默认同时输出到终端和 `.agent-lab/logs/agent-lab.log`。设置
-`LOG_LEVEL=DEBUG` 可以查看装配、索引、Agent 和 Memory Core 的详细执行事件。
-日志不记录问题正文、回答正文、记忆内容、来源原文或 API Key。详细说明见
-[项目执行日志设计与使用说明](docs/logging.md)。
-
-## 增加业务逻辑
-
-普通业务能力应实现为带类型提示和 docstring 的 LangChain Tool：
-
-```python
-from langchain_core.tools import tool
-from pydantic import BaseModel, Field
-
-
-class FundLookupInput(BaseModel):
-    fund_code: str = Field(pattern=r"^\d{6}$")
-
-
-@tool(args_schema=FundLookupInput)
-def lookup_fund(fund_code: str) -> dict[str, str]:
-    """根据基金代码查询已经授权访问的基金基础信息。"""
-
-    return {"fund_code": fund_code, "name": "示例基金"}
-```
-
-然后在 `create_agent_service(..., additional_tools=[lookup_fund])` 中注入。业务 Tool 内必须完成权限、参数和数据范围校验，不能依赖模型自行保证安全。
-
-新增模型供应商时，在 `integrations/chat_models.py` 增加一个明确的 provider 分支，并安装该供应商的 LangChain 官方 integration；不要在业务代码中判断供应商。
-
-## 测试
+## 开发与验收
 
 ```powershell
+uv run pytest
 uv run ruff format --check .
 uv run ruff check .
-uv run pytest
+openspec-cn validate add-general-memory-core --strict
 ```
 
-测试不调用外部模型或 Embedding API。Chroma 使用 LangChain 的 deterministic fake embeddings 完成离线契约测试。
+阶段三设计和实测结果见
+[阶段三验收记录](docs/memory/phase-three-acceptance.md)。完整实施顺序以
+[OpenSpec tasks](openspec/changes/add-general-memory-core/tasks.md) 为准。
 
-## 数据安全
-
-- 未经明确授权，不要把内部报告、客户信息或非公开数据发送到外部模型服务。
-- 前期使用公开或模拟文档验证流程。
-- 检索到的文档内容是不可信输入；系统提示已要求模型不得执行文档中的指令。
-- 涉及写操作、对外发送、交易或投资决策的工具，应增加人工审批。
-
-更多设计取舍见 [docs/architecture.md](docs/architecture.md)。
+日志不会记录对话正文、候选正文、记忆正文、Bearer Token 或 API Key，只记录
+request id、工具名、耗时、结果数量和不可逆稳定引用。

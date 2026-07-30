@@ -1,25 +1,19 @@
-"""按运行入口拆分的应用配置公开接口。"""
+"""Memory Core 与可选模型适配器的配置公开接口。"""
 
 from .settings import (
-    AgentSettings,
-    KnowledgeSettings,
+    ChatModelSettings,
     LoggingSettings,
     MemorySettings,
-    Settings,
-    get_knowledge_settings,
+    get_chat_model_settings,
     get_logging_settings,
     get_memory_settings,
-    get_settings,
 )
 
 __all__ = [
-    "AgentSettings",
-    "KnowledgeSettings",
+    "ChatModelSettings",
     "LoggingSettings",
     "MemorySettings",
-    "Settings",
-    "get_knowledge_settings",
+    "get_chat_model_settings",
     "get_logging_settings",
     "get_memory_settings",
-    "get_settings",
 ]

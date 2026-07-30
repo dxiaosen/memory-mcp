@@ -41,7 +41,13 @@ class ScenarioPolicy(Protocol):
 
     @property
     def capture_guidance(self) -> str:
-        """返回后续捕获阶段使用的场景说明。"""
+        """返回捕获阶段使用的场景说明。"""
+
+        ...
+
+    @property
+    def policy_version(self) -> str:
+        """返回场景捕获规则的稳定版本。"""
 
         ...
 
@@ -86,6 +92,18 @@ class ScenarioRegistry:
             raise InvalidScenarioPolicyError(
                 "allowed_relations must contain non-empty values"
             )
+        if (
+            not isinstance(policy.capture_guidance, str)
+            or not policy.capture_guidance
+            or policy.capture_guidance != policy.capture_guidance.strip()
+        ):
+            raise InvalidScenarioPolicyError("capture_guidance must not be empty")
+        if (
+            not isinstance(policy.policy_version, str)
+            or not policy.policy_version
+            or policy.policy_version != policy.policy_version.strip()
+        ):
+            raise InvalidScenarioPolicyError("policy_version must not be empty")
         if scenario_id in self._policies:
             raise ScenarioAlreadyRegisteredError(
                 f"scenario already registered: {scenario_id}"

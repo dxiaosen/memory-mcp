@@ -191,15 +191,23 @@ agent.thread.cleared
 memory.scenario.registered
 memory.create.started
 memory.create.completed
+memory.create.blocked
 memory.get.completed
 memory.get.unavailable
 memory.list.completed
 memory.sqlite.scenario_registered
 memory.sqlite.record_committed
+memory.capture.started
+memory.capture.completed
+memory.capture.incomplete
+memory.capture.processing_failed
+memory.review.confirmed
+memory.review.rejected
+memory.sqlite.capture_committed
 ```
 
-记录场景、类型、技术 ID、owner 哈希、状态、来源数量和结果数量，不记录记忆内容
-与来源表达。
+记录场景、类型、技术 ID、owner 哈希、状态、来源数量、四类准入数量和结果数量，
+不记录 turn、候选、记忆内容与来源表达。敏感拦截只记录不含正文的类别原因码。
 
 ### 7.6 SQLite 运维
 
@@ -213,11 +221,12 @@ memory.sqlite.health_check.completed
 
 ## 8. 如何查看详细日志
 
-运行阶段一演示：
+运行阶段一或阶段二演示：
 
 ```powershell
 $env:LOG_LEVEL = "DEBUG"
 uv run python examples/memory_phase_one.py
+uv run python examples/memory_phase_two.py
 ```
 
 查看最近 50 行：

@@ -1,67 +1,129 @@
 ## ADDED Requirements
 
-### Requirement: Discover candidates after completed work
-The system SHALL inspect each completed conversation turn or explicitly completed stage for information with plausible value beyond the current task. Candidate discovery MUST cover durable preferences, stable user context, and ongoing matters defined by the active scenario, without requiring the user to say “remember this”.
+### Requirement: Accept completed turns through MCP
+The system SHALL expose a versioned `capture_completed_turn` MCP tool for Agent
+AfterRun Hooks. The tool MUST accept an explicit contract version, stable event
+identifier, scenario, conversation, turn, observation time, and role-labeled message
+blocks. The tool MUST NOT accept a memory owner identifier.
+
+#### Scenario: Agent Hook submits a successful turn
+- **WHEN** an Agent produces a final result and its AfterRun Hook submits the completed turn
+- **THEN** the MCP Server processes that turn under the authenticated current-user scope
+- **AND** it returns a structured capture receipt
+
+#### Scenario: An incomplete run is not captured
+- **WHEN** an Agent run is cancelled or fails before producing a final result
+- **THEN** the default Hook does not submit the turn for automatic long-term capture
+
+#### Scenario: Hook uses an unsupported event version
+- **WHEN** a Hook submits a completed-turn contract major version the server does not support
+- **THEN** the server returns `unsupported_contract_version`
+- **AND** it does not guess field meaning or create capture state
+
+### Requirement: Preserve role and source attribution
+The system MUST distinguish user, assistant, and tool message blocks. A user message MAY
+provide evidence for an automatically saved user view, preference, context, or ongoing
+matter. Assistant or tool content MUST NOT be automatically represented as an explicit
+user view.
+
+#### Scenario: User and assistant statements differ
+- **WHEN** a user states a preference and the assistant proposes a different preference
+- **THEN** only the user statement can be automatically attributed to the user
+- **AND** the assistant proposal is discarded or remains pending
+
+#### Scenario: Tool output suggests a new fact
+- **WHEN** a tool result contains information not explicitly adopted by the user
+- **THEN** the system labels it as external context or system inference
+- **AND** it does not automatically replace the user’s current memory
+
+### Requirement: Discover atomic durable candidates
+The system SHALL inspect each submitted completed turn for atomic information with
+plausible value beyond the current task. Candidate discovery MUST use the active
+ScenarioPolicy and MUST NOT require the user to say “remember this”.
 
 #### Scenario: One turn contains multiple durable items
-- **WHEN** a user clearly states a durable preference, an ongoing judgment, and a future validation condition in one completed turn
-- **THEN** the system produces separate atomic candidates for each item
-- **AND** every candidate refers to the source turn
+- **WHEN** a user clearly states a stable project convention, a durable preference, and an ongoing item in one turn
+- **THEN** the system produces a separate atomic candidate for each item
+- **AND** every candidate refers to the submitted event and source message
 
 #### Scenario: A turn contains no durable information
-- **WHEN** a completed turn contains only casual conversation or a one-time formatting instruction
-- **THEN** the system does not create an active long-term memory from that content
+- **WHEN** a submitted turn contains only casual conversation or a one-time formatting instruction
+- **THEN** the system does not create active long-term memory from that content
 
-### Requirement: Preserve attribution and meaning
-Every candidate MUST identify its owning user, source conversation, source expression, scenario, subject, memory type, content nature, observation time, save rationale, and extraction confidence when those values are available. The system MUST distinguish user views, user-provided facts, externally sourced facts, and system inferences.
-
-#### Scenario: User expresses an investment view
-- **WHEN** a user states a personal investment hypothesis about a company
-- **THEN** the candidate is attributed to that user as a view
-- **AND** it is not represented as an independently verified company fact
-
-#### Scenario: Relative time is used
-- **WHEN** a candidate contains an expression such as “next quarter” or “the third-quarter report”
-- **THEN** the system preserves the original time expression and its source-time context
-- **AND** any normalized interpretation remains distinguishable from the original wording
-
-### Requirement: Decide admission conservatively
-The system SHALL assign every candidate exactly one admission decision: automatic save, pending confirmation, discard, or sensitive block. Clear user statements with durable value MAY be automatically saved; ambiguous statements, weak inferences, and unclear conflicts MUST remain pending and MUST NOT be used as current memory before confirmation.
+### Requirement: Give every candidate exactly one admission result
+The system SHALL assign every candidate exactly one of `auto_save`, `pending`, `discard`,
+or `blocked`. Ambiguous statements, system inferences, unclear conflicts, and uncertain
+replacement MUST remain pending and MUST NOT be recalled before confirmation.
 
 #### Scenario: Clear durable user statement
-- **WHEN** a user clearly states an ongoing preference or matter with future use
-- **THEN** the system may save it as an active memory
-- **AND** the save decision and rationale are available for review
+- **WHEN** a user clearly states a durable preference or ongoing matter allowed by the active scenario
+- **THEN** the system may save it as active memory
+- **AND** the capture receipt reports an auto-save outcome
 
 #### Scenario: Ambiguous inferred preference
-- **WHEN** the system can only weakly infer a durable preference from the user’s behavior
-- **THEN** it marks the candidate as pending confirmation
-- **AND** subsequent answers do not use the candidate as current memory
+- **WHEN** a preference can only be weakly inferred from assistant or tool context
+- **THEN** the system creates a pending review item
+- **AND** subsequent recall does not use it
 
 #### Scenario: Temporary instruction
-- **WHEN** the user says that only the current answer should be shorter
-- **THEN** the system discards that candidate as temporary
+- **WHEN** the user requests a format change only for the current answer
+- **THEN** the system reports a discard outcome
+- **AND** it does not persist the temporary instruction as active memory
 
-### Requirement: Give explicit user statements priority
-The system MUST treat explicit user statements and manual corrections as stronger evidence of user intent than system inference. A system inference MUST NOT independently create or replace a formal user judgment.
+### Requirement: Derive trusted identity and source values server-side
+The MCP Server MUST construct owner scope and client identity from authenticated
+request context. It MUST derive conversation, source turn, and observation time from
+the validated completed-turn event. Model output MUST NOT override either identity or
+event provenance, and the capture payload MUST NOT contain an owner selector.
 
-#### Scenario: Model infers a changed judgment from new data
-- **WHEN** new data appears inconsistent with an active user judgment but the user does not explicitly revise that judgment
-- **THEN** the system may propose a pending update
-- **AND** it keeps the user’s current judgment unchanged until confirmation
+#### Scenario: Payload attempts to specify another owner
+- **WHEN** a client includes an owner-like field in a capture request
+- **THEN** schema validation rejects the request
+- **AND** no capture state is written
 
-### Requirement: Block prohibited memory persistence
-The system MUST prevent configured prohibited content, including credentials, account secrets, real holdings, and transaction instructions, from becoming long-term memory. A blocked candidate MUST NOT retain the prohibited raw content in the long-term memory store or semantic index.
+#### Scenario: Model emits a different owner or source
+- **WHEN** structured extraction output contains identity or source values different from the trusted request
+- **THEN** the system ignores the model-provided values
+- **AND** uses authenticated identity and validated submitted-event metadata
 
-#### Scenario: User includes an account password
-- **WHEN** a completed turn contains a password together with otherwise memorable context
-- **THEN** the password is not persisted as candidate content, memory content, evidence text, or an embedding
-- **AND** the system may retain a non-content audit outcome that a sensitive block occurred
+### Requirement: Block prohibited content before persistence
+The system MUST redact configured prohibited content before candidate extraction and
+MUST inspect candidate content again before persistence. Blocked raw content MUST NOT
+be stored in memory content, evidence, review items, semantic representations, tool
+results, or logs.
 
-### Requirement: Process source turns idempotently
-Reprocessing the same source turn with the same capture policy MUST NOT create duplicate active memories or duplicate pending-review items. The system SHALL expose whether capture completed, failed, or requires reprocessing.
+#### Scenario: Completed turn includes a fictional credential
+- **WHEN** a submitted turn contains a credential together with otherwise durable context
+- **THEN** the credential is redacted before model processing
+- **AND** the capture receipt contains only a non-content blocked category
 
-#### Scenario: Capture is retried after an interruption
-- **WHEN** the same source turn is processed again after an uncertain failure
-- **THEN** the resulting active and pending memories are equivalent to one successful processing attempt
-- **AND** source evidence is not duplicated
+#### Scenario: Extractor returns prohibited content
+- **WHEN** structured model output contains prohibited content
+- **THEN** the candidate is blocked before persistence
+- **AND** no prohibited raw text appears in the MCP response
+
+### Requirement: Process completed-turn events idempotently
+Reprocessing the same owner, scenario, event identifier, and policy version with the
+same payload MUST return the original logical result without creating duplicate
+memories, evidence, or pending items. Reusing the event identifier with a different
+payload MUST fail with `idempotency_conflict`.
+
+#### Scenario: Hook retries after a timeout
+- **WHEN** an AfterRun Hook retries the same completed event after an uncertain response
+- **THEN** the system returns an equivalent capture receipt marked as replayed
+- **AND** no duplicate state is created
+
+#### Scenario: Event identifier is reused for different content
+- **WHEN** a client submits different message content under an already completed event identifier
+- **THEN** the system rejects the request with `idempotency_conflict`
+- **AND** preserves the original completed result
+
+### Requirement: Return a structured capture receipt
+The capture tool SHALL return capture status, replay state, policy version, decision
+counts, created memory identifiers, pending review identifiers, and a stable failure
+code when applicable. Discarded and blocked outcomes MUST NOT expose candidate content.
+
+#### Scenario: Mixed capture result
+- **WHEN** one turn produces auto-saved, pending, discarded, and blocked outcomes
+- **THEN** the response exposes the four counts and permitted opaque identifiers
+- **AND** it does not expose discarded or blocked raw text

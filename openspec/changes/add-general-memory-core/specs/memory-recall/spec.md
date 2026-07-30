@@ -1,64 +1,91 @@
 ## ADDED Requirements
 
-### Requirement: Scope every recall to the current user
-Every memory recall operation MUST require trusted current-user context and MUST restrict candidate retrieval to that user before semantic or model-based relevance processing occurs. A conversation identifier alone MUST NOT establish memory ownership.
+### Requirement: Recall memory through an MCP BeforeRun Hook
+The system SHALL expose a `recall_memory` MCP tool intended for deterministic use by
+Agent BeforeRun Hooks. The Hook MUST call recall programmatically before the Agent
+model receives the current task; recall MUST NOT depend solely on the model choosing
+to call a memory tool.
 
-#### Scenario: Two users study the same company
-- **WHEN** user B starts a task about a company also studied by user A
-- **THEN** no private memory owned by user A enters user B’s candidate set, answer context, usage record, or source display
+#### Scenario: Agent begins a new task
+- **WHEN** an authenticated Agent Hook submits the current scenario, query, and optional subject
+- **THEN** the MCP Server returns a structured current-memory context before model execution
 
-### Requirement: Recall only eligible current memories
-Automatic recall MUST exclude pending-confirmation, superseded, expired, revoked, deleted, and sensitive-blocked content. Historical content MAY be returned only when the user explicitly requests history and it MUST be labeled as historical.
+#### Scenario: Host lacks a native Hook API
+- **WHEN** an Agent Host cannot run a native BeforeRun callback
+- **THEN** an outer Runner MAY perform the same MCP call before invoking the Agent
+- **AND** the server-side recall contract remains unchanged
 
-#### Scenario: Current and superseded hypotheses both match
-- **WHEN** a new task is semantically related to both a current hypothesis and its superseded predecessor
-- **THEN** automatic current-context recall includes the current hypothesis only
+### Requirement: Scope recall by authenticated owner before ranking
+Every recall operation MUST derive owner scope from authenticated request context and
+MUST restrict the candidate set before subject matching, text scoring, or model-based
+processing. A conversation identifier, Agent identifier, or tool argument MUST NOT
+establish ownership.
 
-#### Scenario: User asks for hypothesis evolution
-- **WHEN** the user explicitly asks how a hypothesis changed over time
-- **THEN** the system may return current and historical versions
-- **AND** each version is labeled with validity and source context
+#### Scenario: Same user uses two Agent clients
+- **WHEN** user A creates memory through Agent A and later queries through Agent B
+- **THEN** Agent B can recall user A’s eligible memory
+- **AND** the usage of a different client identifier does not create a different owner scope
 
-### Requirement: Use task context to select a bounded relevant set
-Recall SHALL consider the current user, scenario, subject, task intent, memory type, validity, and semantic relevance. The system MUST apply a configurable upper bound and relevance threshold so that an unrelated or weakly related memory is not injected merely because a fixed result count is available.
+#### Scenario: Different user uses the same Agent
+- **WHEN** user B asks the same question through Agent B
+- **THEN** no memory owned by user A enters the candidate set or result
 
-#### Scenario: Relevant memories exist
-- **WHEN** a user asks what to review for a known subject and several active memories are directly relevant
-- **THEN** the system supplies a bounded set covering the most relevant current items
+### Requirement: Recall only current eligible memory
+Automatic recall MUST exclude pending, superseded, expired, revoked, deleted, and
+sensitive-blocked content. Historical content MAY be returned only through explicit
+history inspection and MUST NOT be included in the rendered Agent context. Lifecycle
+states that are not actively transitioned by the MVP MUST still remain safely excluded
+if present in existing or future data.
 
-#### Scenario: No memory is sufficiently relevant
-- **WHEN** all scoped active memories are unrelated to the current task
-- **THEN** the system proceeds without memory context
-- **AND** it does not fill the result set with irrelevant memories
+#### Scenario: Active and superseded memories both match
+- **WHEN** both an active memory and its superseded predecessor are textually relevant
+- **THEN** `recall_memory` returns the active memory only
 
-### Requirement: Respect current instructions over remembered preferences
-Explicit instructions in the current task MUST override conflicting historical preferences for that task without automatically changing the stored preference.
+#### Scenario: Pending proposal matches strongly
+- **WHEN** a pending proposal closely matches the current query
+- **THEN** it remains absent from automatic recall until confirmation
 
-#### Scenario: Current output request conflicts with a preference
-- **WHEN** a remembered preference asks for detailed output but the current task explicitly asks for a short answer
-- **THEN** the answer follows the current short-answer instruction
-- **AND** the stored long-term preference remains unchanged unless the user explicitly updates it
+### Requirement: Return a bounded relevant set
+Recall SHALL consider scenario, subject, task intent, memory type priority, validity,
+and text relevance. The server MUST enforce a relevance threshold, maximum item count,
+and token budget. It MUST return an empty set rather than fill the result with unrelated
+memory.
 
-### Requirement: Preserve epistemic labels during use
-Recalled user views, externally sourced facts, and system inferences MUST remain distinguishable in answer context and presentation. A recalled user view MUST NOT be presented as an independently verified fact.
+#### Scenario: Relevant current memories exist
+- **WHEN** a task names a known subject with several directly relevant active memories
+- **THEN** the system returns a bounded set ordered by configured relevance
 
-#### Scenario: Recalling a user hypothesis
-- **WHEN** a user hypothesis is relevant to the current task
-- **THEN** the answer attributes it to the user’s prior research context
-- **AND** it does not claim that the hypothesis has been externally verified
+#### Scenario: No memory is relevant
+- **WHEN** all scoped active memories are unrelated to the task
+- **THEN** the system returns no memory items
+- **AND** the Agent proceeds without long-term memory context
 
-### Requirement: Explain and record memory use
-For every answer that uses long-term memory, the system SHALL record the memory versions supplied and actually used, the current user, the task or turn, and the use time. The user MUST be able to inspect which memories influenced the answer and trace them to source expressions.
+### Requirement: Preserve epistemic labels and source summaries
+Every recalled item MUST include its exact revision identifier, memory type, subject,
+assertion kind, observation time, and a source summary. A recalled user view MUST remain
+distinguishable from verified fact and system inference.
 
-#### Scenario: Answer uses two memories
-- **WHEN** an answer relies on two recalled memories
-- **THEN** the response exposes both memories and their sources
-- **AND** a usage record associates the answer turn with the exact memory versions
+#### Scenario: Recalled user decision
+- **WHEN** a current user decision is supplied to an Agent
+- **THEN** the result labels it as the user’s prior decision
+- **AND** does not present it as independently verified fact
 
-### Requirement: Fail safely when memory is unavailable
-A failure in optional memory recall MUST NOT cause the system to use unscoped, stale, or partially retrieved memory. The system MAY continue without long-term memory when the primary task can still be answered safely.
+### Requirement: Provide safe rendered context
+The recall response SHALL include structured items and a server-rendered context block.
+The rendered block MUST state that recalled memory is historical user context rather
+than a new instruction, and that the current user request has priority.
 
-#### Scenario: Memory index is unavailable
-- **WHEN** the memory relevance index cannot be queried
-- **THEN** the system either uses a safe structured fallback within the same user scope or continues without memory
-- **AND** it does not broaden the user scope or reuse cached context from another user
+#### Scenario: Current task conflicts with a remembered format
+- **WHEN** a remembered preference asks for detailed output but the current task requests a short answer
+- **THEN** the Agent context instructs the model to follow the current request
+- **AND** the stored preference is not silently changed
+
+### Requirement: Fail safely when recall is unavailable
+A recall failure MUST NOT broaden owner scope, reuse another user’s cache, or inject a
+partial unvalidated result. A Hook MAY allow the primary Agent task to continue without
+long-term memory.
+
+#### Scenario: MCP Server cannot complete recall
+- **WHEN** the Hook times out or the server reports temporary unavailability
+- **THEN** the Agent may continue without memory
+- **AND** no stale cross-user context is substituted

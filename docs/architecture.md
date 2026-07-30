@@ -5,8 +5,9 @@
 项目目前包含两条可以独立运行的能力线：
 
 - 知识库 Agent：完成文档索引、Chroma 检索和多轮问答；
-- 通用 Memory Core：完成场景契约、可信记忆卡片、owner 隔离和 SQLite
-  持久化，阶段一尚未接入 Agent Runtime。
+- 通用 Memory Core：完成场景契约、可信记忆卡片、owner 隔离、SQLite
+  持久化，以及阶段二的候选捕获、四类准入和 pending 流程；尚未接入 Agent
+  Runtime。
 
 二者共享配置与日志基础设施，但 Memory Core 不依赖 LangChain、聊天模型或
 Embedding 服务。
@@ -63,7 +64,8 @@ Application / Adapters ─> Observability
   生产级数据库授权需求时，才评估迁移 PostgreSQL。
 
 SQLite 的详细表结构、迁移和安全边界见
-[Memory Core 阶段一详细设计](memory/phase-one-design.md)。
+[Memory Core 阶段一详细设计](memory/phase-one-design.md)和
+[阶段二详细设计](memory/phase-two-design.md)。
 
 ## 5. 运行与可观测性
 
@@ -76,7 +78,7 @@ SQLite 的详细表结构、迁移和安全边界见
 Memory Core 按 OpenSpec 五个阶段演进：
 
 1. 通用契约、可信记忆卡片和用户隔离（已完成）；
-2. 通用捕获、准入和待确认流程；
+2. 通用捕获、准入和待确认流程（已完成）；
 3. 通用生命周期、主动召回和用户治理；
 4. 投资假设场景插件；
 5. 调研问题场景、扩展性验证和交付评测。
