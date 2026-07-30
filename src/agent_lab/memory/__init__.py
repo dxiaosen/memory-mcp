@@ -22,10 +22,12 @@ from agent_lab.memory.domain import (
     MemoryItem,
     MemoryRecord,
     MemoryRevision,
+    MessageRole,
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
     TurnEnvelope,
+    TurnMessage,
 )
 from agent_lab.memory.exceptions import (
     CaptureNotConfiguredError,
@@ -84,6 +86,7 @@ __all__ = [
     "MemoryRepository",
     "MemoryRevision",
     "MemoryService",
+    "MessageRole",
     "PrincipalContext",
     "ReviewItem",
     "ReviewNotFoundError",
@@ -96,4 +99,5 @@ __all__ = [
     "SensitiveContentGuard",
     "SensitiveInspection",
     "TurnEnvelope",
+    "TurnMessage",
 ]

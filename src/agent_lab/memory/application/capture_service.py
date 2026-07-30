@@ -7,7 +7,10 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from agent_lab.memory.application.admission import ConservativeAdmissionPolicy
+from agent_lab.memory.application.admission import (
+    AdmissionOutcome,
+    ConservativeAdmissionPolicy,
+)
 from agent_lab.memory.domain import (
     AdmissionDecision,
     Candidate,
@@ -20,10 +23,12 @@ from agent_lab.memory.domain import (
     MemoryItem,
     MemoryRecord,
     MemoryRevision,
+    MessageRole,
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
     TurnEnvelope,
+    TurnMessage,
 )
 from agent_lab.memory.exceptions import (
     CaptureNotConfiguredError,
@@ -177,6 +182,15 @@ class CaptureService:
                     turn.scenario,
                     proposal.business_progress,
                 )
+                source_metadata = _source_metadata(
+                    turn,
+                    proposal.source_expression,
+                    guard,
+                )
+                if turn.messages and source_metadata["source_role"] is None:
+                    raise InvalidModelOutputError(
+                        "source_expression must occur in one submitted message"
+                    )
                 candidate = Candidate(
                     candidate_id=candidate_id,
                     owner_id=principal.owner_id,
@@ -197,8 +211,18 @@ class CaptureService:
                     business_progress=proposal.business_progress,
                     original_time_expression=proposal.original_time_expression,
                     normalized_time=proposal.normalized_time,
+                    **source_metadata,
                 )
                 admission = self._admission_policy.decide(candidate)
+                if (
+                    admission.decision is AdmissionDecision.AUTO_SAVE
+                    and turn.messages
+                    and candidate.source_role is not MessageRole.USER
+                ):
+                    admission = AdmissionOutcome(
+                        AdmissionDecision.PENDING,
+                        "non_user_source",
+                    )
                 if admission.decision is AdmissionDecision.AUTO_SAVE:
                     memory = self._record_from_candidate(candidate)
                     memories.append(memory)
@@ -452,6 +476,9 @@ class CaptureService:
                     source_expression=candidate.source_expression,
                     observed_at=candidate.observed_at,
                     created_at=created_at,
+                    source_role=candidate.source_role,
+                    source_message_id=candidate.source_message_id,
+                    source_tool_name=candidate.source_tool_name,
                 ),
             ),
         )
@@ -504,3 +531,32 @@ class CaptureService:
 def _has_processable_content(value: str) -> bool:
     without_markers = _REDACTION_MARKER.sub("", value)
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
+
+
+def _source_metadata(
+    turn: TurnEnvelope,
+    source_expression: str,
+    guard: SensitiveContentGuard,
+) -> dict[str, MessageRole | str | None]:
+    """Derive source identity from trusted message blocks, never model fields."""
+
+    matching: list[TurnMessage] = []
+    for message in turn.messages:
+        redacted = guard.inspect(message.content).redacted_text
+        if source_expression in redacted:
+            matching.append(message)
+    if not matching:
+        return {
+            "source_role": None,
+            "source_message_id": None,
+            "source_tool_name": None,
+        }
+    selected = next(
+        (message for message in matching if message.role is MessageRole.USER),
+        matching[0],
+    )
+    return {
+        "source_role": selected.role,
+        "source_message_id": selected.message_id,
+        "source_tool_name": selected.tool_name,
+    }

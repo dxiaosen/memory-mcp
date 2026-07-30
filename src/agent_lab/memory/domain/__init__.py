@@ -13,6 +13,7 @@ from agent_lab.memory.domain.capture import (
     ReviewItem,
     ReviewStatus,
     TurnEnvelope,
+    TurnMessage,
 )
 from agent_lab.memory.domain.models import (
     AssertionKind,
@@ -21,6 +22,7 @@ from agent_lab.memory.domain.models import (
     MemoryItem,
     MemoryRecord,
     MemoryRevision,
+    MessageRole,
     PrincipalContext,
 )
 
@@ -40,8 +42,10 @@ __all__ = [
     "MemoryItem",
     "MemoryRecord",
     "MemoryRevision",
+    "MessageRole",
     "PrincipalContext",
     "ReviewItem",
     "ReviewStatus",
     "TurnEnvelope",
+    "TurnMessage",
 ]

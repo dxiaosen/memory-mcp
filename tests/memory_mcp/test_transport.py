@@ -121,6 +121,10 @@ def _extractor() -> FakeCandidateExtractor:
                 assertion_kind=AssertionKind.SYSTEM_INFERENCE,
                 expression_basis=ExpressionBasis.INFERRED,
             ),
+            candidate_proposal(
+                "好的",
+                content="助手建议继续使用表格",
+            ),
         )
     )
 
@@ -257,7 +261,7 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                 assert first_payload["replayed"] is False
                 assert first_payload["summary"] == {
                     "auto_saved_count": 1,
-                    "pending_count": 1,
+                    "pending_count": 2,
                     "discarded_count": 0,
                     "blocked_count": 1,
                 }
@@ -291,14 +295,26 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                 memories = await session.call_tool("list_memories", arguments={})
                 memory_payload = _payload(memories)
                 assert len(memory_payload["items"]) == 1
+                assert "evidence" not in memory_payload["items"][0]
                 memory_id = memory_payload["items"][0]["memory_id"]
+                detail = _payload(
+                    await session.call_tool(
+                        "get_memory",
+                        arguments={"memory_id": memory_id},
+                    )
+                )
+                assert detail["item"]["evidence"][0]["source_role"] == "user"
 
                 pending = await session.call_tool(
                     "list_pending_reviews",
                     arguments={},
                 )
                 pending_payload = _payload(pending)
-                assert len(pending_payload["items"]) == 1
+                assert len(pending_payload["items"]) == 2
+                assert {item["source_role"] for item in pending_payload["items"]} == {
+                    "user",
+                    "assistant",
+                }
                 review_id = pending_payload["items"][0]["review_id"]
                 return memory_id, review_id
 
@@ -397,6 +413,14 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                     await session.call_tool("list_memories", arguments={})
                 )
                 assert len(memories["items"]) == 2
+                pending = _payload(
+                    await session.call_tool(
+                        "list_pending_reviews",
+                        arguments={},
+                    )
+                )
+                assert len(pending["items"]) == 1
+                assert pending["items"][0]["source_role"] == "assistant"
 
             anyio.run(
                 _with_session,

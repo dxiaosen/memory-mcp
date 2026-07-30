@@ -318,5 +318,8 @@ class InMemoryMemoryRepository:
             or source.conversation_id != candidate.conversation_id
             or source.source_turn_id != candidate.source_turn_id
             or source.source_expression != candidate.source_expression
+            or source.source_role is not candidate.source_role
+            or source.source_message_id != candidate.source_message_id
+            or source.source_tool_name != candidate.source_tool_name
         ):
             raise ValueError("confirmed memory must match pending candidate")

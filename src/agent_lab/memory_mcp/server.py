@@ -1,15 +1,25 @@
 """Memory MCP composition root and Streamable HTTP entry point."""
 
 import logging
+import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from psycopg import Error as PostgreSQLError
+from psycopg_pool import PoolTimeout
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from agent_lab.memory import CandidateExtractor, MemoryService, ScenarioPolicy
+from agent_lab.memory.adapters.postgresql import (
+    PostgreSQLMemoryRepository,
+    create_pool,
+)
+from agent_lab.memory.adapters.postgresql.runtime import (
+    apply_migrations as apply_postgresql_migrations,
+)
 from agent_lab.memory.adapters.sqlite import (
     SQLiteMemoryRepository,
     connection_factory,
@@ -39,8 +49,28 @@ def create_memory_mcp_server(
 
     principals = settings.require_demo_principals()
     if memory_service is None:
-        apply_migrations(settings.database_path)
-        repository = SQLiteMemoryRepository(connection_factory(settings.database_path))
+        if settings.storage_backend == "postgresql":
+            database_url = settings.require_postgresql_url()
+            if settings.database_migrate_on_startup:
+                apply_postgresql_migrations(database_url)
+            repository = PostgreSQLMemoryRepository(
+                create_pool(
+                    database_url,
+                    min_size=settings.database_pool_min_size,
+                    max_size=settings.database_pool_max_size,
+                    timeout=settings.database_connect_timeout_seconds,
+                )
+            )
+            health_check = repository.check_health
+        else:
+            apply_migrations(settings.database_path)
+            repository = SQLiteMemoryRepository(
+                connection_factory(settings.database_path)
+            )
+
+            def health_check() -> None:
+                check_health(settings.database_path)
+
         configured_policies = tuple(
             policies or (ConfiguredScenarioPolicy.from_settings(settings),)
         )
@@ -49,6 +79,10 @@ def create_memory_mcp_server(
             configured_policies,
             candidate_extractor=candidate_extractor,
         )
+    else:
+
+        def health_check() -> None:
+            return None
 
     server: FastMCP[Any] = FastMCP(
         name="Agent Lab Memory",
@@ -73,8 +107,14 @@ def create_memory_mcp_server(
     @server.custom_route(settings.health_path, methods=["GET"])
     async def health(_: Request) -> JSONResponse:
         try:
-            check_health(settings.database_path)
-        except RuntimeError:
+            health_check()
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.Error,
+            PostgreSQLError,
+            PoolTimeout,
+        ):
             return JSONResponse(
                 {"status": "unhealthy"},
                 status_code=503,
@@ -85,6 +125,7 @@ def create_memory_mcp_server(
                 "service": "agent-lab-memory",
                 "transport": "streamable-http",
                 "mcp_path": settings.mcp_path,
+                "storage": settings.storage_backend,
             }
         )
 
@@ -111,6 +152,7 @@ def main() -> None:
         host=settings.host,
         mcp_path=settings.mcp_path,
         port=settings.port,
+        storage=settings.storage_backend,
     )
     server.run(transport="streamable-http")
 

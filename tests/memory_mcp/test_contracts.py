@@ -110,6 +110,65 @@ def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:
     assert "token-a" not in repr(settings)
     assert settings.require_demo_principals()["token-a"].owner_key == "analyst-a"
 
-    empty = MemoryServerSettings()
+    empty = MemoryServerSettings(
+        demo_tokens_json=SecretStr("{}"),
+        _env_file=None,
+    )
     with pytest.raises(ValueError, match="At least one"):
         empty.require_demo_principals()
+
+
+def test_demo_principal_mapping_rejects_owner_aliases() -> None:
+    settings = MemoryServerSettings(
+        demo_tokens_json=SecretStr(
+            json.dumps(
+                {
+                    "token-a": {
+                        "owner_key": "shared-owner",
+                        "tenant_id": "demo",
+                        "subject_id": "user-a",
+                        "client_id": "agent",
+                    },
+                    "token-b": {
+                        "owner_key": "shared-owner",
+                        "tenant_id": "demo",
+                        "subject_id": "user-b",
+                        "client_id": "agent",
+                    },
+                }
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match="must not alias"):
+        settings.require_demo_principals()
+
+
+def test_postgresql_settings_require_and_hide_database_url() -> None:
+    settings = MemoryServerSettings(
+        storage_backend="postgresql",
+        database_url=SecretStr(
+            "postgresql://memory_app:secret-password@db.internal/agent_lab"
+        ),
+        _env_file=None,
+    )
+
+    assert settings.storage_backend == "postgresql"
+    assert "secret-password" not in repr(settings)
+    assert settings.require_postgresql_url().startswith("postgresql://")
+
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        MemoryServerSettings(
+            storage_backend="postgresql",
+            database_url=None,
+            _env_file=None,
+        )
+
+
+def test_database_pool_bounds_are_consistent() -> None:
+    with pytest.raises(ValidationError, match="pool_max_size"):
+        MemoryServerSettings(
+            database_pool_min_size=5,
+            database_pool_max_size=4,
+            _env_file=None,
+        )

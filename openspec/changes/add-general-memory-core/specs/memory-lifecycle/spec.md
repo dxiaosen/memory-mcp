@@ -71,3 +71,14 @@ MUST be able to declare empty values without removing those extension points.
 - **WHEN** the service registers preference, stable-context, ongoing-item, and decision types
 - **THEN** the common capture and recall flow accepts those types
 - **AND** the Memory Core does not hard-code Agent-specific behavior
+
+### Requirement: Preserve lifecycle invariants in PostgreSQL
+The PostgreSQL repository MUST enforce registered scenario types, owner-consistent
+references, one current revision per memory, and atomic review resolution independently
+of application checks. Repository behavior MUST conform to the same domain contract
+used by the completed in-memory and SQLite prototype tests.
+
+#### Scenario: Concurrent operations attempt two current revisions
+- **WHEN** two transactions attempt to make different revisions current for the same memory
+- **THEN** PostgreSQL commits at most one valid current state
+- **AND** the other operation fails without exposing a split lifecycle

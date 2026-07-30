@@ -127,3 +127,19 @@ code when applicable. Discarded and blocked outcomes MUST NOT expose candidate c
 - **WHEN** one turn produces auto-saved, pending, discarded, and blocked outcomes
 - **THEN** the response exposes the four counts and permitted opaque identifiers
 - **AND** it does not expose discarded or blocked raw text
+
+### Requirement: Commit capture in the authoritative database
+The deployed service MUST commit the capture run, decision outcomes, active memories,
+evidence, and pending items in one PostgreSQL transaction. A process restart or network
+retry MUST NOT weaken event idempotency. SQLite MAY remain only as historical prototype
+evidence while PostgreSQL is the deployed authority.
+
+#### Scenario: Server restarts after a completed capture
+- **WHEN** the MCP process restarts after PostgreSQL committed a completed event
+- **THEN** a replay returns the original logical receipt
+- **AND** the extractor is not invoked to create duplicate state
+
+#### Scenario: Capture transaction fails before commit
+- **WHEN** persistence fails while any part of a capture transaction is being written
+- **THEN** PostgreSQL exposes none of that transaction's partial memories or review items
+- **AND** a later retry can safely process the same event identifier

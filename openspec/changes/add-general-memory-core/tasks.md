@@ -33,31 +33,36 @@
 - [x] 3.7 使用真实 MCP Client 和 MCP Inspector 远程重放阶段二案例，记录 MCP 阶段验收结果
 - [x] 3.8 在 MCP 入口和最小演示客户端可替代旧入口后，提取仍需复用的结构化模型 adapter，删除 `agents`、`knowledge`、旧 `cli/bootstrap`、Embedding/Chroma 集成、RAG 依赖和对应测试；全量 Memory/MCP 测试继续通过
 
-## 4. 阶段四——最小生命周期与主动召回（D13～D14）
+## 4. 阶段四——PostgreSQL、最小生命周期与主动召回（D13～D15）
 
-- [ ] 4.1 实现并注册正式 `GeneralWorkPolicy`，包含 preference、stable_context、ongoing_item 和 decision
-- [ ] 4.2 增加 duplicate Evidence、replacement、superseded history 和单一 current 所需的迁移、Repository port 与事务
-- [ ] 4.3 实现同 scope 规范化重复、用户明确 replacement、其余冲突 pending 的最小分类和一致性动作
-- [ ] 4.4 实现 owner-first 结构化 recall，按 active、scenario、subject、task intent、阈值、数量和 token budget 过滤
-- [ ] 4.5 实现 `recall_memory` MCP 工具，返回结构化 revision/source 和安全 `rendered_context`
-- [ ] 4.6 完成 duplicate、replacement、pending/history 排除、空召回、当前指令优先、跨用户召回测试和三轮远程示例
+- [x] 4.1 建立 PostgreSQL 版本化 schema、显式 migration、连接池、健康检查和 secret-backed `database_url`
+- [x] 4.2 实现 PostgreSQL `MemoryRepository`，保持 owner、捕获幂等、pending resolution 和单一 current 的事务约束
+- [ ] 4.3 复用 Repository contract cases 验证 SQLite/PostgreSQL 行为等价；MCP 重启测试通过后删除 SQLite 正式运行路径、adapter、migration 和专项测试
+- [ ] 4.4 实现并注册正式 `GeneralWorkPolicy`，包含 preference、stable_context、ongoing_item 和 decision
+- [ ] 4.5 增加 duplicate Evidence、replacement、superseded history 和单一 current 所需的 migration、Repository port 与事务
+- [ ] 4.6 实现同 scope 规范化重复、用户明确 replacement、其余冲突 pending 的最小分类和一致性动作
+- [ ] 4.7 实现 owner-first 结构化 recall，按 active、scenario、subject、task intent、阈值、数量和 token budget 过滤
+- [ ] 4.8 实现 `recall_memory` MCP 工具，返回结构化 revision/source 和安全 `rendered_context`
+- [ ] 4.9 完成 duplicate、replacement、pending/history 排除、空召回、当前指令优先、跨用户召回测试和三轮远程示例
 
-## 5. 阶段五——Hook SDK 与跨 Agent 接入（D15～D16）
+## 5. 阶段五——Hook SDK、Linux 部署与跨 Agent 接入（D16～D17）
 
 - [ ] 5.1 建立 `memory_hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
 - [ ] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
 - [ ] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
-- [ ] 5.4 接入当前 LangChain Agent 和 Codex/第二个独立客户端，并为无原生 Hook 的 Host 提供 Runner 兜底
-- [ ] 5.5 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的端到端验收
+- [ ] 5.4 接入两个平台无关的独立客户端；真实 Agent Host 可作为兼容性展示，无原生 Hook 的 Host 使用 Runner 兜底
+- [x] 5.5 增加 `uv + systemd` Linux 部署单元、独立 migration 命令、可选 Nginx HTTPS 样例和 ECS 发布/回滚说明，不引入 Docker
+- [ ] 5.6 验证公网 HTTPS MCP、私网 PostgreSQL、应用端口不公开、secret 不落日志和进程参数
+- [ ] 5.7 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的端到端验收
 
-## 6. 阶段六——真实抽取、演示与交付（D17～D20）
+## 6. 阶段六——真实抽取、演示与交付（D18～D20）
 
-- [ ] 6.1 接入一个真实结构化模型 backend，同时保留固定离线 backend、确定性夹具和数据库重置入口
+- [ ] 6.1 接入一个真实结构化模型 backend，同时保留固定离线 backend、确定性夹具和 PostgreSQL 重置入口
 - [ ] 6.2 构造 10～15 个跨 Agent 脚本，覆盖四类准入、duplicate、replacement 和 empty recall
-- [ ] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界和失败恢复测试
-- [ ] 6.4 同步 README、需求、架构、配置和启动文档；把阶段一/二重复设计与验收文档合并为一份实现基线，删除与 MCP-first 方向冲突或已被 OpenSpec 取代的旧表述
-- [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、模型切换和离线兜底
-- [ ] 6.6 运行格式、静态检查、全量测试、MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
+- [ ] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界、数据库重启和失败恢复测试
+- [ ] 6.4 同步 README、需求、架构、配置和启动文档；把阶段一/二重复设计与验收文档合并为一份实现基线，删除与平台无关 MCP 方向冲突或已被 OpenSpec 取代的旧表述
+- [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、模型切换、云服务检查和离线 extractor 兜底
+- [ ] 6.6 运行格式、静态检查、全量测试、PostgreSQL/MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
 
 ## 明确延期，不进入本期任务
 
@@ -67,7 +72,9 @@
 - 投资假设与调研问题双正式场景；
 - 大规模无记忆/朴素摘要/主动记忆对比实验；
 - Web 管理后台、MCP Apps、消息队列和异步任务；
-- PostgreSQL、多 worker、生产 OAuth 授权服务器和组织级多租户。
+- 多 worker 自动伸缩、数据库级 RLS、生产 OAuth 授权服务器和组织级多租户；
+- Docker、ACK/Kubernetes 和特定 Agent 平台专用适配；
+- SQLite 到 PostgreSQL 的通用存量数据迁移产品。
 
 延期表示“本期不激活”，不表示删除已经存在且有明确演进用途的数据语义：
 完整生命周期状态、原始/规范化时间、业务进度、策略版本、召回优先级和可选关系

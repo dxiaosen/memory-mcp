@@ -19,8 +19,10 @@ from agent_lab.memory import (
     AdmissionDecision,
     CaptureResult,
     MemoryRecord,
+    MessageRole,
     ReviewItem,
     TurnEnvelope,
+    TurnMessage,
 )
 from agent_lab.memory_mcp.errors import ErrorCode
 
@@ -86,6 +88,15 @@ class CompletedTurnEventV1(StrictDto):
             event_id=self.event_id,
             contract_version=self.contract_version,
             payload_fingerprint=self.payload_fingerprint(),
+            messages=tuple(
+                TurnMessage(
+                    role=MessageRole(message.role),
+                    content=message.content,
+                    message_id=message.message_id,
+                    tool_name=message.tool_name,
+                )
+                for message in self.messages
+            ),
         )
 
 
@@ -150,9 +161,12 @@ class EvidenceView(StrictDto):
     source_turn_id: str
     source_expression: str
     observed_at: datetime
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
 
 
-class MemoryView(StrictDto):
+class MemorySummaryView(StrictDto):
     memory_id: UUID
     revision_id: UUID
     scenario: str
@@ -162,8 +176,15 @@ class MemoryView(StrictDto):
     assertion_kind: str
     lifecycle_status: str
     business_progress: str | None
-    save_rationale: str
     observed_at: datetime
+
+    @classmethod
+    def from_record(cls, record: MemoryRecord) -> Self:
+        return cls(**_memory_summary_values(record))
+
+
+class MemoryView(MemorySummaryView):
+    save_rationale: str
     original_time_expression: str | None
     normalized_time: datetime | None
     evidence: tuple[EvidenceView, ...]
@@ -172,17 +193,8 @@ class MemoryView(StrictDto):
     def from_record(cls, record: MemoryRecord) -> Self:
         revision = record.current_revision
         return cls(
-            memory_id=record.item.memory_id,
-            revision_id=revision.revision_id,
-            scenario=record.item.scenario,
-            subject=record.item.subject,
-            memory_type=record.item.memory_type,
-            content=revision.content,
-            assertion_kind=revision.assertion_kind.value,
-            lifecycle_status=revision.lifecycle_status.value,
-            business_progress=revision.business_progress,
+            **_memory_summary_values(record),
             save_rationale=revision.save_rationale,
-            observed_at=revision.observed_at,
             original_time_expression=revision.original_time_expression,
             normalized_time=revision.normalized_time,
             evidence=tuple(
@@ -191,16 +203,35 @@ class MemoryView(StrictDto):
                     source_turn_id=evidence.source_turn_id,
                     source_expression=evidence.source_expression,
                     observed_at=evidence.observed_at,
+                    source_role=evidence.source_role,
+                    source_message_id=evidence.source_message_id,
+                    source_tool_name=evidence.source_tool_name,
                 )
                 for evidence in record.evidence
             ),
         )
 
 
+def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
+    revision = record.current_revision
+    return {
+        "memory_id": record.item.memory_id,
+        "revision_id": revision.revision_id,
+        "scenario": record.item.scenario,
+        "subject": record.item.subject,
+        "memory_type": record.item.memory_type,
+        "content": revision.content,
+        "assertion_kind": revision.assertion_kind.value,
+        "lifecycle_status": revision.lifecycle_status.value,
+        "business_progress": revision.business_progress,
+        "observed_at": revision.observed_at,
+    }
+
+
 class MemoryListReceipt(StrictDto):
     ok: Literal[True] = True
     request_id: str
-    items: tuple[MemoryView, ...]
+    items: tuple[MemorySummaryView, ...]
     next_cursor: str | None = None
 
 
@@ -223,6 +254,9 @@ class PendingReviewView(StrictDto):
     source_expression: str
     observed_at: datetime
     created_at: datetime
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
 
     @classmethod
     def from_review(cls, review: ReviewItem) -> Self:
@@ -238,6 +272,9 @@ class PendingReviewView(StrictDto):
             source_expression=candidate.source_expression,
             observed_at=candidate.observed_at,
             created_at=review.created_at,
+            source_role=candidate.source_role,
+            source_message_id=candidate.source_message_id,
+            source_tool_name=candidate.source_tool_name,
         )
 
 

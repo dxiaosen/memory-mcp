@@ -33,6 +33,7 @@ def database_path() -> Iterator[Path]:
             "0001_memory_core.sql",
             "0002_memory_capture.sql",
             "0003_mcp_events.sql",
+            "0004_message_provenance.sql",
         )
         assert apply_migrations(path) == ()
         check_health(path)

@@ -1,13 +1,17 @@
-"""Owner-scoped Memory Repository implemented with standard-library SQLite."""
+"""Owner-scoped Memory Repository implemented with PostgreSQL."""
+
+from __future__ import annotations
 
 import logging
-import sqlite3
-from collections.abc import Callable, Sequence
-from contextlib import closing
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
-from os import PathLike
+from math import ceil
+from typing import Any
 from uuid import UUID
+
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from agent_lab.memory.domain import (
     AdmissionDecision,
@@ -32,38 +36,66 @@ from agent_lab.memory.domain import (
 from agent_lab.memory.ports import CaptureWrite, ScenarioPolicy
 from agent_lab.observability import log_event, stable_reference
 
-ConnectionFactory = Callable[[], sqlite3.Connection]
-DatabasePath = str | PathLike[str]
+PostgreSQLPool = ConnectionPool[Mapping[str, Any]]
 _LOGGER = logging.getLogger(__name__)
 
 
-def connection_factory(database_path: DatabasePath) -> ConnectionFactory:
-    """Create SQLite connections with the constraints required by Memory Core."""
+def create_pool(
+    database_url: str,
+    *,
+    min_size: int = 1,
+    max_size: int = 5,
+    timeout: float = 10.0,
+) -> PostgreSQLPool:
+    """Open a bounded synchronous pool for the MCP service."""
 
-    normalized_path = str(database_path)
+    pool: PostgreSQLPool = ConnectionPool(
+        conninfo=database_url,
+        min_size=min_size,
+        max_size=max_size,
+        timeout=timeout,
+        kwargs={
+            "connect_timeout": max(1, ceil(timeout)),
+            "row_factory": dict_row,
+        },
+        name="agent-lab-memory",
+        open=False,
+    )
+    pool.open(wait=True, timeout=timeout)
+    return pool
 
-    def connect() -> sqlite3.Connection:
-        connection = sqlite3.connect(normalized_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
 
-    return connect
+class PostgreSQLMemoryRepository:
+    """Use PostgreSQL transactions and constraints as persistence boundary."""
 
+    def __init__(self, pool: PostgreSQLPool) -> None:
+        self._pool = pool
 
-class SQLiteMemoryRepository:
-    """Use SQLite transactions and constraints as the persistence boundary."""
+    def close(self) -> None:
+        """Close all pooled connections."""
 
-    def __init__(self, connect: ConnectionFactory) -> None:
-        self._connect = connect
+        self._pool.close()
+
+    def check_health(self) -> None:
+        """Verify that the pool can reach the migrated schema."""
+
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT to_regclass('public.memory_items') IS NOT NULL AS schema_ready
+                """
+            ).fetchone()
+            if row is None or not row["schema_ready"]:
+                raise RuntimeError(
+                    "PostgreSQL is reachable but memory schema is missing"
+                )
 
     def register_scenario(self, policy: ScenarioPolicy) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._pool.connection() as connection:
             connection.execute(
                 """
                 INSERT INTO memory_scenarios (scenario_id)
-                VALUES (?)
+                VALUES (%s)
                 ON CONFLICT (scenario_id) DO NOTHING
                 """,
                 (policy.scenario_id,),
@@ -71,7 +103,7 @@ class SQLiteMemoryRepository:
             connection.executemany(
                 """
                 INSERT INTO memory_scenario_types (scenario_id, memory_type)
-                VALUES (?, ?)
+                VALUES (%s, %s)
                 ON CONFLICT (scenario_id, memory_type) DO NOTHING
                 """,
                 [
@@ -80,12 +112,12 @@ class SQLiteMemoryRepository:
                 ],
             )
             registered_types = {
-                row[0]
+                row["memory_type"]
                 for row in connection.execute(
                     """
                     SELECT memory_type
                     FROM memory_scenario_types
-                    WHERE scenario_id = ?
+                    WHERE scenario_id = %s
                     """,
                     (policy.scenario_id,),
                 ).fetchall()
@@ -94,7 +126,7 @@ class SQLiteMemoryRepository:
             connection.executemany(
                 """
                 DELETE FROM memory_scenario_types
-                WHERE scenario_id = ? AND memory_type = ?
+                WHERE scenario_id = %s AND memory_type = %s
                 """,
                 [
                     (policy.scenario_id, memory_type)
@@ -104,7 +136,7 @@ class SQLiteMemoryRepository:
         log_event(
             _LOGGER,
             logging.DEBUG,
-            "memory.sqlite.scenario_registered",
+            "memory.postgresql.scenario_registered",
             memory_type_count=len(policy.memory_types),
             scenario_id=policy.scenario_id,
         )
@@ -116,19 +148,16 @@ class SQLiteMemoryRepository:
     ) -> None:
         if record.item.owner_id != principal.owner_id:
             raise ValueError("record owner must match trusted principal")
-
-        with closing(self._connect()) as connection, connection:
+        with self._pool.connection() as connection:
             self._insert_record(connection, record)
-        item = record.item
-        revision = record.current_revision
         log_event(
             _LOGGER,
             logging.DEBUG,
-            "memory.sqlite.record_committed",
+            "memory.postgresql.record_committed",
             evidence_count=len(record.evidence),
-            memory_id=item.memory_id,
+            memory_id=record.item.memory_id,
             owner_ref=stable_reference(principal.owner_id),
-            revision_id=revision.revision_id,
+            revision_id=record.current_revision.revision_id,
         )
 
     def get(
@@ -136,10 +165,10 @@ class SQLiteMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
-        with closing(self._connect()) as connection:
+        with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_CURRENT_RECORD} WHERE i.owner_id = ? AND i.memory_id = ?",
-                (principal.owner_id, str(memory_id)),
+                f"{_SELECT_CURRENT_RECORD} WHERE i.owner_id = %s AND i.memory_id = %s",
+                (principal.owner_id, memory_id),
             ).fetchone()
             if row is None:
                 return None
@@ -151,7 +180,7 @@ class SQLiteMemoryRepository:
         *,
         active_only: bool,
     ) -> Sequence[MemoryRecord]:
-        conditions = ["i.owner_id = ?"]
+        conditions = ["i.owner_id = %s"]
         parameters: list[object] = [principal.owner_id]
         if active_only:
             conditions.append("r.lifecycle_status = 'active'")
@@ -159,7 +188,7 @@ class SQLiteMemoryRepository:
             f"{_SELECT_CURRENT_RECORD} WHERE {' AND '.join(conditions)} "
             "ORDER BY i.created_at, i.memory_id"
         )
-        with closing(self._connect()) as connection:
+        with self._pool.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
             return tuple(
                 self._to_record(connection, row, principal.owner_id) for row in rows
@@ -177,10 +206,10 @@ class SQLiteMemoryRepository:
     ) -> CaptureResult | None:
         if event_id is not None:
             where_clause = """
-                owner_id = ?
-                AND scenario = ?
-                AND event_id = ?
-                AND policy_version = ?
+                owner_id = %s
+                AND scenario = %s
+                AND event_id = %s
+                AND policy_version = %s
             """
             parameters: tuple[object, ...] = (
                 principal.owner_id,
@@ -190,11 +219,11 @@ class SQLiteMemoryRepository:
             )
         else:
             where_clause = """
-                owner_id = ?
-                AND scenario = ?
-                AND conversation_id = ?
-                AND source_turn_id = ?
-                AND policy_version = ?
+                owner_id = %s
+                AND scenario = %s
+                AND conversation_id = %s
+                AND source_turn_id = %s
+                AND policy_version = %s
             """
             parameters = (
                 principal.owner_id,
@@ -203,7 +232,7 @@ class SQLiteMemoryRepository:
                 source_turn_id,
                 policy_version,
             )
-        with closing(self._connect()) as connection:
+        with self._pool.connection() as connection:
             row = connection.execute(
                 f"""
                 SELECT capture_id, owner_id, scenario, conversation_id,
@@ -227,13 +256,25 @@ class SQLiteMemoryRepository:
     ) -> None:
         self._validate_capture_write(principal, write)
         result = write.result
-        with closing(self._connect()) as connection, connection:
+        with self._pool.connection() as connection:
+            event_or_turn = result.event_id or (
+                f"{result.conversation_id}\x1f{result.source_turn_id}"
+            )
+            idempotency_key = (
+                f"{result.owner_id}\x1f{result.scenario}\x1f"
+                f"{event_or_turn}\x1f"
+                f"{result.metadata.policy_version}"
+            )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (idempotency_key,),
+            )
             if result.event_id is not None:
                 where_clause = """
-                    owner_id = ?
-                    AND scenario = ?
-                    AND event_id = ?
-                    AND policy_version = ?
+                    owner_id = %s
+                    AND scenario = %s
+                    AND event_id = %s
+                    AND policy_version = %s
                 """
                 parameters: tuple[object, ...] = (
                     result.owner_id,
@@ -243,11 +284,11 @@ class SQLiteMemoryRepository:
                 )
             else:
                 where_clause = """
-                    owner_id = ?
-                    AND scenario = ?
-                    AND conversation_id = ?
-                    AND source_turn_id = ?
-                    AND policy_version = ?
+                    owner_id = %s
+                    AND scenario = %s
+                    AND conversation_id = %s
+                    AND source_turn_id = %s
+                    AND policy_version = %s
                 """
                 parameters = (
                     result.owner_id,
@@ -261,6 +302,7 @@ class SQLiteMemoryRepository:
                 SELECT capture_id, status
                 FROM memory_capture_runs
                 WHERE {where_clause}
+                FOR UPDATE
                 """,
                 parameters,
             ).fetchone()
@@ -269,25 +311,25 @@ class SQLiteMemoryRepository:
             else:
                 if existing["status"] != CaptureStatus.REPROCESS_REQUIRED.value:
                     raise ValueError("completed capture cannot be replaced")
-                if existing["capture_id"] != str(result.capture_id):
+                if _as_uuid(existing["capture_id"]) != result.capture_id:
                     raise ValueError("reprocessed capture must preserve capture_id")
                 connection.execute(
                     """
                     DELETE FROM memory_capture_outcomes
-                    WHERE capture_id = ? AND owner_id = ?
+                    WHERE capture_id = %s AND owner_id = %s
                     """,
-                    (str(result.capture_id), result.owner_id),
+                    (result.capture_id, result.owner_id),
                 )
                 connection.execute(
                     """
                     UPDATE memory_capture_runs
-                    SET prompt_version = ?,
-                        schema_version = ?,
-                        model_id = ?,
-                        status = ?,
-                        failure_code = ?,
-                        completed_at = ?
-                    WHERE capture_id = ? AND owner_id = ?
+                    SET prompt_version = %s,
+                        schema_version = %s,
+                        model_id = %s,
+                        status = %s,
+                        failure_code = %s,
+                        completed_at = %s
+                    WHERE capture_id = %s AND owner_id = %s
                     """,
                     (
                         result.metadata.prompt_version,
@@ -295,53 +337,41 @@ class SQLiteMemoryRepository:
                         result.metadata.model_id,
                         result.status.value,
                         result.failure_code,
-                        result.completed_at.isoformat(),
-                        str(result.capture_id),
+                        result.completed_at,
+                        result.capture_id,
                         result.owner_id,
                     ),
                 )
-
             for record in write.memories:
                 self._insert_record(connection, record)
             for review in write.reviews:
-                self._insert_review(
-                    connection,
-                    result.capture_id,
-                    review,
-                )
+                self._insert_review(connection, result.capture_id, review)
             connection.executemany(
                 """
                 INSERT INTO memory_capture_outcomes (
-                    capture_id, candidate_id, owner_id, decision,
-                    reason_code, memory_id, review_id
+                    capture_id, candidate_id, owner_id, outcome_order,
+                    decision, reason_code, memory_id, review_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
-                        str(result.capture_id),
-                        str(outcome.candidate_id),
+                        result.capture_id,
+                        outcome.candidate_id,
                         result.owner_id,
+                        outcome_order,
                         outcome.decision.value,
                         outcome.reason_code,
-                        (
-                            str(outcome.memory_id)
-                            if outcome.memory_id is not None
-                            else None
-                        ),
-                        (
-                            str(outcome.review_id)
-                            if outcome.review_id is not None
-                            else None
-                        ),
+                        outcome.memory_id,
+                        outcome.review_id,
                     )
-                    for outcome in result.outcomes
+                    for outcome_order, outcome in enumerate(result.outcomes)
                 ],
             )
         log_event(
             _LOGGER,
             logging.DEBUG,
-            "memory.sqlite.capture_committed",
+            "memory.postgresql.capture_committed",
             capture_id=result.capture_id,
             outcome_count=len(result.outcomes),
             owner_ref=stable_reference(principal.owner_id),
@@ -354,10 +384,10 @@ class SQLiteMemoryRepository:
         *,
         status: ReviewStatus,
     ) -> Sequence[ReviewItem]:
-        with closing(self._connect()) as connection:
+        with self._pool.connection() as connection:
             rows = connection.execute(
                 f"{_SELECT_REVIEW} "
-                "WHERE owner_id = ? AND status = ? "
+                "WHERE owner_id = %s AND status = %s "
                 "ORDER BY created_at, review_id",
                 (principal.owner_id, status.value),
             ).fetchall()
@@ -368,10 +398,10 @@ class SQLiteMemoryRepository:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem | None:
-        with closing(self._connect()) as connection:
+        with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_REVIEW} WHERE owner_id = ? AND review_id = ?",
-                (principal.owner_id, str(review_id)),
+                f"{_SELECT_REVIEW} WHERE owner_id = %s AND review_id = %s",
+                (principal.owner_id, review_id),
             ).fetchone()
         if row is None:
             return None
@@ -388,10 +418,10 @@ class SQLiteMemoryRepository:
     ) -> ReviewItem | None:
         if status not in {ReviewStatus.CONFIRMED, ReviewStatus.REJECTED}:
             raise ValueError("review resolution must be confirmed or rejected")
-        with closing(self._connect()) as connection, connection:
+        with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_REVIEW} WHERE owner_id = ? AND review_id = ?",
-                (principal.owner_id, str(review_id)),
+                f"{_SELECT_REVIEW} WHERE owner_id = %s AND review_id = %s FOR UPDATE",
+                (principal.owner_id, review_id),
             ).fetchone()
             if row is None:
                 return None
@@ -407,29 +437,28 @@ class SQLiteMemoryRepository:
                 self._insert_record(connection, memory)
             elif memory is not None:
                 raise ValueError("rejected review cannot create memory")
-
             cursor = connection.execute(
                 """
                 UPDATE memory_review_items
-                SET status = ?, decided_at = ?, resolved_memory_id = ?
-                WHERE owner_id = ?
-                  AND review_id = ?
+                SET status = %s, decided_at = %s, resolved_memory_id = %s
+                WHERE owner_id = %s
+                  AND review_id = %s
                   AND status = 'pending'
                 """,
                 (
                     status.value,
-                    decided_at.isoformat(),
+                    decided_at,
                     (
-                        str(memory.item.memory_id)
+                        memory.item.memory_id
                         if status is ReviewStatus.CONFIRMED and memory is not None
                         else None
                     ),
                     principal.owner_id,
-                    str(review_id),
+                    review_id,
                 ),
             )
             if cursor.rowcount != 1:
-                raise sqlite3.IntegrityError("pending review changed during resolution")
+                raise RuntimeError("pending review changed during resolution")
         return replace(
             review,
             status=status,
@@ -441,9 +470,9 @@ class SQLiteMemoryRepository:
             ),
         )
 
+    @staticmethod
     def _insert_capture_run(
-        self,
-        connection: sqlite3.Connection,
+        connection,
         result: CaptureResult,
     ) -> None:
         connection.execute(
@@ -455,10 +484,13 @@ class SQLiteMemoryRepository:
                 created_at, completed_at, event_id, contract_version,
                 payload_fingerprint
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s
+            )
             """,
             (
-                str(result.capture_id),
+                result.capture_id,
                 result.owner_id,
                 result.scenario,
                 result.conversation_id,
@@ -469,19 +501,16 @@ class SQLiteMemoryRepository:
                 result.metadata.model_id,
                 result.status.value,
                 result.failure_code,
-                result.created_at.isoformat(),
-                result.completed_at.isoformat(),
+                result.created_at,
+                result.completed_at,
                 result.event_id,
                 result.contract_version,
                 result.payload_fingerprint,
             ),
         )
 
-    def _insert_record(
-        self,
-        connection: sqlite3.Connection,
-        record: MemoryRecord,
-    ) -> None:
+    @staticmethod
+    def _insert_record(connection, record: MemoryRecord) -> None:
         item = record.item
         revision = record.current_revision
         connection.execute(
@@ -489,15 +518,15 @@ class SQLiteMemoryRepository:
             INSERT INTO memory_items (
                 memory_id, owner_id, scenario, subject, memory_type, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
-                str(item.memory_id),
+                item.memory_id,
                 item.owner_id,
                 item.scenario,
                 item.subject,
                 item.memory_type,
-                item.created_at.isoformat(),
+                item.created_at,
             ),
         )
         connection.execute(
@@ -508,11 +537,14 @@ class SQLiteMemoryRepository:
                 save_rationale, observed_at, created_at, is_current,
                 primary_evidence_id, original_time_expression, normalized_time
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s
+            )
             """,
             (
-                str(revision.revision_id),
-                str(revision.memory_id),
+                revision.revision_id,
+                revision.memory_id,
                 revision.owner_id,
                 revision.revision_number,
                 revision.content,
@@ -520,16 +552,12 @@ class SQLiteMemoryRepository:
                 revision.lifecycle_status.value,
                 revision.business_progress,
                 revision.save_rationale,
-                revision.observed_at.isoformat(),
-                revision.created_at.isoformat(),
-                int(revision.is_current),
-                str(record.evidence[0].evidence_id),
+                revision.observed_at,
+                revision.created_at,
+                revision.is_current,
+                record.evidence[0].evidence_id,
                 revision.original_time_expression,
-                (
-                    revision.normalized_time.isoformat()
-                    if revision.normalized_time is not None
-                    else None
-                ),
+                revision.normalized_time,
             ),
         )
         connection.executemany(
@@ -540,19 +568,22 @@ class SQLiteMemoryRepository:
                 observed_at, created_at, source_role, source_message_id,
                 source_tool_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
             """,
             [
                 (
-                    str(source.evidence_id),
-                    str(source.memory_id),
-                    str(source.revision_id),
+                    source.evidence_id,
+                    source.memory_id,
+                    source.revision_id,
                     source.owner_id,
                     source.conversation_id,
                     source.source_turn_id,
                     source.source_expression,
-                    source.observed_at.isoformat(),
-                    source.created_at.isoformat(),
+                    source.observed_at,
+                    source.created_at,
                     (
                         source.source_role.value
                         if source.source_role is not None
@@ -565,9 +596,9 @@ class SQLiteMemoryRepository:
             ],
         )
 
+    @staticmethod
     def _insert_review(
-        self,
-        connection: sqlite3.Connection,
+        connection,
         capture_id: UUID,
         review: ReviewItem,
     ) -> None:
@@ -585,14 +616,15 @@ class SQLiteMemoryRepository:
                 source_tool_name
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             """,
             (
-                str(review.review_id),
-                str(candidate.candidate_id),
-                str(capture_id),
+                review.review_id,
+                candidate.candidate_id,
+                capture_id,
                 candidate.owner_id,
                 candidate.scenario,
                 candidate.subject,
@@ -607,21 +639,13 @@ class SQLiteMemoryRepository:
                 candidate.confidence,
                 candidate.durability.value,
                 candidate.expression_basis.value,
-                candidate.observed_at.isoformat(),
-                candidate.created_at.isoformat(),
+                candidate.observed_at,
+                candidate.created_at,
                 candidate.original_time_expression,
-                (
-                    candidate.normalized_time.isoformat()
-                    if candidate.normalized_time is not None
-                    else None
-                ),
+                candidate.normalized_time,
                 review.status.value,
-                review.created_at.isoformat(),
-                (
-                    review.decided_at.isoformat()
-                    if review.decided_at is not None
-                    else None
-                ),
+                review.created_at,
+                review.decided_at,
                 (
                     candidate.source_role.value
                     if candidate.source_role is not None
@@ -632,39 +656,28 @@ class SQLiteMemoryRepository:
             ),
         )
 
-    def _to_capture_result(
-        self,
-        connection: sqlite3.Connection,
-        row: sqlite3.Row,
-    ) -> CaptureResult:
+    @staticmethod
+    def _to_capture_result(connection, row: Mapping[str, Any]) -> CaptureResult:
         outcomes = tuple(
             CaptureOutcome(
-                candidate_id=UUID(outcome["candidate_id"]),
+                candidate_id=_as_uuid(outcome["candidate_id"]),
                 decision=AdmissionDecision(outcome["decision"]),
                 reason_code=outcome["reason_code"],
-                memory_id=(
-                    UUID(outcome["memory_id"])
-                    if outcome["memory_id"] is not None
-                    else None
-                ),
-                review_id=(
-                    UUID(outcome["review_id"])
-                    if outcome["review_id"] is not None
-                    else None
-                ),
+                memory_id=_optional_uuid(outcome["memory_id"]),
+                review_id=_optional_uuid(outcome["review_id"]),
             )
             for outcome in connection.execute(
                 """
                 SELECT candidate_id, decision, reason_code, memory_id, review_id
                 FROM memory_capture_outcomes
-                WHERE capture_id = ? AND owner_id = ?
-                ORDER BY rowid
+                WHERE capture_id = %s AND owner_id = %s
+                ORDER BY outcome_order
                 """,
                 (row["capture_id"], row["owner_id"]),
             ).fetchall()
         )
         return CaptureResult(
-            capture_id=UUID(row["capture_id"]),
+            capture_id=_as_uuid(row["capture_id"]),
             owner_id=row["owner_id"],
             scenario=row["scenario"],
             conversation_id=row["conversation_id"],
@@ -678,22 +691,17 @@ class SQLiteMemoryRepository:
             status=CaptureStatus(row["status"]),
             outcomes=outcomes,
             failure_code=row["failure_code"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            completed_at=datetime.fromisoformat(row["completed_at"]),
+            created_at=_as_datetime(row["created_at"]),
+            completed_at=_as_datetime(row["completed_at"]),
             event_id=row["event_id"],
             contract_version=row["contract_version"],
             payload_fingerprint=row["payload_fingerprint"],
         )
 
     @staticmethod
-    def _to_review(row: sqlite3.Row) -> ReviewItem:
-        normalized_time = (
-            datetime.fromisoformat(row["normalized_time"])
-            if row["normalized_time"] is not None
-            else None
-        )
+    def _to_review(row: Mapping[str, Any]) -> ReviewItem:
         candidate = Candidate(
-            candidate_id=UUID(row["candidate_id"]),
+            candidate_id=_as_uuid(row["candidate_id"]),
             owner_id=row["owner_id"],
             scenario=row["scenario"],
             subject=row["subject"],
@@ -707,11 +715,11 @@ class SQLiteMemoryRepository:
             confidence=row["confidence"],
             durability=CandidateDurability(row["durability"]),
             expression_basis=ExpressionBasis(row["expression_basis"]),
-            observed_at=datetime.fromisoformat(row["observed_at"]),
-            created_at=datetime.fromisoformat(row["candidate_created_at"]),
+            observed_at=_as_datetime(row["observed_at"]),
+            created_at=_as_datetime(row["candidate_created_at"]),
             business_progress=row["business_progress"],
             original_time_expression=row["original_time_expression"],
-            normalized_time=normalized_time,
+            normalized_time=_optional_datetime(row["normalized_time"]),
             source_role=(
                 MessageRole(row["source_role"])
                 if row["source_role"] is not None
@@ -721,20 +729,12 @@ class SQLiteMemoryRepository:
             source_tool_name=row["source_tool_name"],
         )
         return ReviewItem(
-            review_id=UUID(row["review_id"]),
+            review_id=_as_uuid(row["review_id"]),
             candidate=candidate,
             status=ReviewStatus(row["status"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            decided_at=(
-                datetime.fromisoformat(row["decided_at"])
-                if row["decided_at"] is not None
-                else None
-            ),
-            resolved_memory_id=(
-                UUID(row["resolved_memory_id"])
-                if row["resolved_memory_id"] is not None
-                else None
-            ),
+            created_at=_as_datetime(row["created_at"]),
+            decided_at=_optional_datetime(row["decided_at"]),
+            resolved_memory_id=_optional_uuid(row["resolved_memory_id"]),
         )
 
     @staticmethod
@@ -806,22 +806,22 @@ class SQLiteMemoryRepository:
         ):
             raise ValueError("confirmed memory source must match pending candidate")
 
+    @staticmethod
     def _to_record(
-        self,
-        connection: sqlite3.Connection,
-        row: sqlite3.Row,
+        connection,
+        row: Mapping[str, Any],
         owner_id: str,
     ) -> MemoryRecord:
         item = MemoryItem(
-            memory_id=UUID(row["memory_id"]),
+            memory_id=_as_uuid(row["memory_id"]),
             owner_id=row["owner_id"],
             scenario=row["scenario"],
             subject=row["subject"],
             memory_type=row["memory_type"],
-            created_at=datetime.fromisoformat(row["item_created_at"]),
+            created_at=_as_datetime(row["item_created_at"]),
         )
         revision = MemoryRevision(
-            revision_id=UUID(row["revision_id"]),
+            revision_id=_as_uuid(row["revision_id"]),
             memory_id=item.memory_id,
             owner_id=item.owner_id,
             revision_number=row["revision_number"],
@@ -830,27 +830,23 @@ class SQLiteMemoryRepository:
             lifecycle_status=LifecycleStatus(row["lifecycle_status"]),
             business_progress=row["business_progress"],
             save_rationale=row["save_rationale"],
-            observed_at=datetime.fromisoformat(row["revision_observed_at"]),
-            created_at=datetime.fromisoformat(row["revision_created_at"]),
-            is_current=bool(row["is_current"]),
+            observed_at=_as_datetime(row["revision_observed_at"]),
+            created_at=_as_datetime(row["revision_created_at"]),
+            is_current=row["is_current"],
             original_time_expression=row["original_time_expression"],
-            normalized_time=(
-                datetime.fromisoformat(row["normalized_time"])
-                if row["normalized_time"] is not None
-                else None
-            ),
+            normalized_time=_optional_datetime(row["normalized_time"]),
         )
         evidence = tuple(
             Evidence(
-                evidence_id=UUID(source["evidence_id"]),
-                memory_id=UUID(source["memory_id"]),
-                revision_id=UUID(source["revision_id"]),
+                evidence_id=_as_uuid(source["evidence_id"]),
+                memory_id=_as_uuid(source["memory_id"]),
+                revision_id=_as_uuid(source["revision_id"]),
                 owner_id=source["owner_id"],
                 conversation_id=source["conversation_id"],
                 source_turn_id=source["source_turn_id"],
                 source_expression=source["source_expression"],
-                observed_at=datetime.fromisoformat(source["observed_at"]),
-                created_at=datetime.fromisoformat(source["created_at"]),
+                observed_at=_as_datetime(source["observed_at"]),
+                created_at=_as_datetime(source["created_at"]),
                 source_role=(
                     MessageRole(source["source_role"])
                     if source["source_role"] is not None
@@ -866,10 +862,10 @@ class SQLiteMemoryRepository:
                        observed_at, created_at, source_role,
                        source_message_id, source_tool_name
                 FROM memory_evidence
-                WHERE owner_id = ? AND revision_id = ?
+                WHERE owner_id = %s AND revision_id = %s
                 ORDER BY created_at, evidence_id
                 """,
-                (owner_id, str(revision.revision_id)),
+                (owner_id, revision.revision_id),
             ).fetchall()
         )
         return MemoryRecord(
@@ -877,6 +873,22 @@ class SQLiteMemoryRepository:
             current_revision=revision,
             evidence=evidence,
         )
+
+
+def _as_uuid(value: UUID | str) -> UUID:
+    return value if isinstance(value, UUID) else UUID(value)
+
+
+def _optional_uuid(value: UUID | str | None) -> UUID | None:
+    return None if value is None else _as_uuid(value)
+
+
+def _as_datetime(value: datetime | str) -> datetime:
+    return value if isinstance(value, datetime) else datetime.fromisoformat(value)
+
+
+def _optional_datetime(value: datetime | str | None) -> datetime | None:
+    return None if value is None else _as_datetime(value)
 
 
 _SELECT_CURRENT_RECORD = """
@@ -891,7 +903,7 @@ FROM memory_items AS i
 JOIN memory_revisions AS r
   ON r.memory_id = i.memory_id
  AND r.owner_id = i.owner_id
- AND r.is_current = 1
+ AND r.is_current
 """
 
 _SELECT_REVIEW = """

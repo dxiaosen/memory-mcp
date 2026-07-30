@@ -100,6 +100,9 @@ MCP 服务、最小生命周期、Hook 接入和现场演示。
 **Goals:**
 
 - 以远程 MCP Server 作为唯一正式交付入口。
+- 把服务部署为平台无关的公网 Streamable HTTP MCP，兼容客户端可直接接入。
+- 在 Linux 云服务器上以 `uv + systemd` 运行，并通过可替换的 HTTPS 终止层
+  连接托管 PostgreSQL。
 - 让至少两个独立 Agent 客户端通过同一 MCP 服务共享同一用户的当前有效记忆。
 - 通过 Agent 运行前 Hook 主动召回，通过成功完成后的 Hook 主动捕获。
 - owner 始终来自服务端可信认证上下文，不能由工具参数或模型输出决定。
@@ -114,6 +117,8 @@ MCP 服务、最小生命周期、Hook 接入和现场演示。
 **Non-Goals:**
 
 - 不把 Memory Core 继续作为现有 Knowledge Agent 的进程内插件交付。
+- 不把阿里云百炼、Codex、LangChain 或任何单一 Agent Host 作为服务端运行依赖。
+- 不要求 Docker、Kubernetes、Nginx 或某一种云网关；它们只是可选部署组件。
 - 不实现 Agent 编排、Agent 间消息总线或共享任务调度。
 - 不承诺所有 Agent Host 都具有相同 Hook API；本项目提供通用 Hook 语义和至少
   两个接入示例。
@@ -157,7 +162,7 @@ MCP 服务、最小生命周期、Hook 接入和现场演示。
 │                         │                                  │
 │         ScenarioPolicy │ Model Ports │ Repository Ports     │
 │                         │                                  │
-│           SQLite + server-side structured model            │
+│        PostgreSQL + server-side structured model            │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -171,7 +176,7 @@ Infrastructure Adapters ──> Ports
 ScenarioPolicy implementations ──> Core contracts
 
 Memory Domain / Ports 不依赖：
-MCP SDK、HTTP、Agent Runtime、配置、模型 SDK 或 SQLite。
+MCP SDK、HTTP、Agent Runtime、配置、模型 SDK 或具体数据库驱动。
 ```
 
 MCP transport 只是应用核心的远程入口，但从产品交付和验收角度，只有通过 MCP
@@ -197,6 +202,14 @@ POST/GET https://<host>/mcp
 
 MCP SDK 版本必须显式锁定，并用实际演示客户端执行契约测试。项目不依赖实验性
 MCP Tasks、MCP Apps 或 server-side sampling；捕获和召回使用普通工具调用。
+
+公网正式入口必须使用 HTTPS。TLS 可以由同机 Nginx、云负载均衡或等价网关终止，
+MCP 服务只关心代理后的标准 HTTP 请求与认证头。Nginx 和 Docker 均不是 MCP
+协议要求；默认 Linux 部署不使用 Docker，避免把镜像构建加入 20 天关键路径。
+
+服务不得要求客户端先接入某一家 Agent 平台。每个兼容 Host 直接配置 MCP URL 和
+认证信息即可发现工具；如果 Host 只支持 stdio 或没有生命周期 Hook，则由本地
+Bridge/Runner 适配，而不是改变服务端协议。
 
 ### 3. Hook 直接调用 MCP 工具，不让模型决定是否调用
 
@@ -801,27 +814,56 @@ MCP Server 内部使用一个结构化模型适配器完成候选发现。模型
 
 ### 13. 存储与进程模型
 
-本期继续使用 SQLite：
+阶段一至三使用 SQLite 验证领域约束、捕获事务和 MCP 重启幂等。最终部署目标已经
+明确为独立 Linux 云服务器与托管 PostgreSQL，因此本期把 PostgreSQL 提升为正式
+运行后端：
 
-- 单个 MCP Server 进程；
-- 单个数据库文件；
-- 短事务；
-- `foreign_keys=ON`；
-- `busy_timeout`；
-- 现有版本化迁移；
-- owner-scoped SQL。
+- PostgreSQL 是部署环境唯一权威存储；
+- 使用连接池和短事务，连接通过私网建立；
+- migration 由显式发布步骤执行，不由多个应用进程并发抢跑；
+- capture、review resolution 和 replacement 各自在一个数据库事务内完成；
+- owner 条件必须进入每条用户数据查询，而不只在应用层事后过滤；
+- 数据库使用 UUID、带时区时间、布尔值、约束和部分唯一索引表达领域语义；
+- 托管备份、恢复和可用性由数据库服务提供，但恢复演练仍属于项目验收。
 
-MCP Server 可以处理多个 HTTP 客户端，但本期不声称支持多 worker 并发写入。启动
-配置必须避免多个独立 worker 同时把 SQLite 当作高并发共享数据库。
+SQLite 不再作为部署回退或第二套生产实现。迁移期间保留现有 SQLite adapter，
+只用于证明 PostgreSQL Repository 的行为等价；当 PostgreSQL migration、契约测试
+和 MCP transport 测试全部通过后，删除 SQLite adapter、迁移和专项测试。单元测试
+继续使用 `InMemoryMemoryRepository`，本地持久化集成测试使用 PostgreSQL。
 
-未来迁移 PostgreSQL 的触发条件：
+本期不引入向量数据库或独立搜索引擎。未来如果失败案例证明结构化召回不足，可以
+先评估 PostgreSQL 内部扩展；任何外部索引只能是可重建候选索引，召回结果仍必须
+回 PostgreSQL 校验 owner、current revision 和 lifecycle status。
 
-- 需要多个 Server worker；
-- 需要组织级多租户和数据库授权；
-- 需要高并发捕获；
-- 需要正式备份恢复和运维。
+#### 13.1 Linux 云服务器部署拓扑
 
-Repository port 保持存储无关，因此本期不提前实现 PostgreSQL adapter。
+```text
+Agent Host / Hook / Runner
+          │
+          │ HTTPS + Authorization
+          ▼
+TLS termination（Nginx、云负载均衡或等价组件）
+          │
+          │ 127.0.0.1:<port> 或受限私网端口
+          ▼
+Memory MCP（systemd 管理的单实例 Python 服务）
+          │
+          │ VPC 私网 + TLS（数据库支持时）
+          ▼
+托管 PostgreSQL
+```
+
+MCP 协议不要求 Nginx、Docker 或特定云平台。20 天实现默认不引入 Docker：
+
+- Python 环境和依赖由 `uv` 安装；
+- `systemd` 负责启动、重启和退出状态；
+- TLS 可由 Nginx、云负载均衡或其他反向代理终止；
+- 如果 TLS 终止层与服务同机，MCP 默认只监听 `127.0.0.1`；
+- 如果使用云负载均衡，MCP 只监听受安全组限制的私网地址；
+- PostgreSQL 端口不得暴露公网。
+
+阿里云百炼或其他托管 Agent 平台可以作为兼容性客户端接入，但不进入服务端依赖、
+核心验收或身份事实源。
 
 ### 14. 配置边界
 
@@ -829,7 +871,9 @@ Repository port 保持存储无关，因此本期不提前实现 PostgreSQL adap
 
 ```text
 MemoryServerSettings
-├── database_path
+├── database_url（secret）
+├── database_pool_min_size / database_pool_max_size
+├── database_connect_timeout
 ├── host / port / mcp_path
 ├── model provider / model / credentials
 ├── request timeout
@@ -846,8 +890,12 @@ MemoryHookSettings
 └── fail_open
 ```
 
-Server 凭据与 Agent 模型凭据相互独立。只运行 MCP Server 不要求 Knowledge
-Embedding 或 Chroma 配置；只运行 Hook Client 不要求 Server 的模型密钥。
+Server 凭据、数据库凭据与 Agent 模型凭据相互独立。只运行 MCP Server 不要求
+Knowledge Embedding、Chroma 或任意托管 Agent 平台配置；只运行 Hook Client
+不要求 Server 的数据库或模型密钥。
+
+生产环境通过受限权限的 EnvironmentFile 或等价密钥注入机制提供 secret。数据库
+URL、Bearer token 和模型密钥不得写入仓库、systemd unit、命令行参数或日志。
 
 ### 15. 可观测性
 
@@ -906,6 +954,7 @@ src/agent_lab/
 │   ├── application/
 │   ├── ports/
 │   ├── adapters/
+│   │   └── postgresql/       # 正式持久化 adapter 与 migration
 │   └── composition.py
 ├── memory_mcp/
 │   ├── server.py             # MCP Server composition root
@@ -928,6 +977,12 @@ examples/
 ├── memory_mcp_client_a.py
 ├── memory_mcp_client_b.py
 └── memory_hook_runner.py
+
+deploy/
+├── systemd/
+│   └── agent-lab-memory.service
+└── nginx/
+    └── agent-lab-memory.conf.example
 ```
 
 依赖守卫必须保证：
@@ -936,16 +991,18 @@ examples/
 - `memory_mcp` 只调用 application/public port；
 - `memory_hooks` 不导入 Memory Core 内部 Repository；
 - `general_work` 只实现 ScenarioPolicy；
-- Agent client 不能直接访问 SQLite。
+- Agent client 不能直接访问 PostgreSQL 或任何 Repository。
 
 #### 17.1 代码保留、迁移与删除边界
 
 | 现有区域 | 决策 | 理由/前置条件 |
 | --- | --- | --- |
-| `memory/domain`、`application`、`ports`、SQLite adapter | 保留并演进 | 已实现的领域、隔离、准入和持久化基础 |
+| `memory/domain`、`application`、`ports` | 保留并演进 | 已实现的领域、隔离和准入基础 |
+| SQLite adapter、migration 和专项测试 | PostgreSQL 契约通过后删除 | 不长期维护两套正式持久化语义 |
+| PostgreSQL adapter、migration 和连接池 | 本期新增并作为正式后端 | 支撑独立服务、私网 RDS、备份恢复和未来扩容 |
 | 敏感检测、结构化 extractor、通用 chat model factory | 保留或提取 | MCP Server 的捕获仍依赖 |
 | `ScenarioPolicy` 完整字段 | 保留 | 多场景和关系/排序扩展边界 |
-| `InMemoryMemoryRepository` | 暂保留为测试替身；不作为产品 adapter 宣传 | SQLite 契约测试稳定后可移动到 `tests/fakes` |
+| `InMemoryMemoryRepository` | 保留为快速单元测试替身；不作为产品 adapter 宣传 | PostgreSQL 集成测试单独验证数据库约束 |
 | 顶层 `agent_lab.memory` 大量 re-export | 收窄 | 外部正式 API 已转为 MCP；只保留必要内部兼容入口 |
 | `agents/`、`knowledge/`、旧 `cli/`、`bootstrap.py` | MCP 入口替代后删除 | 属于旧 RAG 产品线，不承载 Memory Core 领域语义 |
 | Embedding、Chroma、文档切分/PDF 集成与依赖 | 删除 | P0 不使用向量知识库；避免安装、配置和叙事噪声 |
@@ -963,12 +1020,13 @@ examples/
 
 | 时间 | 阶段目标 | 必须得到的退出证据 |
 | --- | --- | --- |
-| D1～D4（已完成） | 通用模型、来源、owner 隔离、SQLite | Core 契约和隔离测试 |
+| D1～D4（已完成） | 通用模型、来源、owner 隔离、SQLite 原型 | Core 契约和隔离测试 |
 | D5～D8（已完成） | 结构化捕获、四类准入、敏感边界、pending | 阶段二测试与验收记录 |
 | D9～D12 | Streamable HTTP MCP、可信 principal、管理工具、清理旧 RAG 入口 | 远程捕获可重放、跨用户不可见、Inspector 契约通过 |
-| D13～D16 | duplicate/replacement/recall、Hook Client/Bridge、两个客户端 | A 写 B 读、旧版本排除、用户 B 空结果 |
-| D17～D18 | 真实抽取、固定 backend、脚本与延迟测试 | 10～15 个确定性案例可重复 |
-| D19～D20 | 文档收敛、录屏、环境冻结和演练 | 从空库一条命令启动并完成 5～7 分钟演示 |
+| D13～D15 | PostgreSQL 正式后端、duplicate/replacement/recall | 数据库重启幂等、旧版本排除、owner-first 召回 |
+| D16～D17 | Hook Client/Bridge、两个平台无关客户端、ECS 直部署 | A 写 B 读、用户 B 空结果、公网 HTTPS 可接入 |
+| D18～D19 | 真实抽取、固定 backend、脚本与延迟/恢复测试 | 10～15 个确定性案例和数据库恢复路径可重复 |
+| D20 | 文档收敛、录屏、环境冻结和演练 | 从空 PostgreSQL 启动并完成 5～7 分钟演示 |
 
 D9～D12 清理旧 RAG 产品线时不能删除 Memory Core、结构化抽取或通用模型工厂；
 先由 MCP 入口和最小客户端接管，再在测试保护下移除旧入口与依赖。
@@ -981,6 +1039,8 @@ D9～D12 清理旧 RAG 产品线时不能删除 Memory Core、结构化抽取或
 - 服务端可信 owner 映射；
 - `capture_completed_turn`；
 - `recall_memory`；
+- PostgreSQL 权威存储、migration 和私网连接；
+- Linux 云服务器上的 HTTPS 远程端点与 systemd 守护；
 - source turn 幂等；
 - auto-save / pending / discard / blocked；
 - 当前有效过滤；
@@ -1007,8 +1067,9 @@ D9～D12 清理旧 RAG 产品线时不能删除 Memory Core、结构化抽取或
 - Web 管理后台；
 - MCP Apps；
 - 异步任务和消息队列；
-- PostgreSQL；
 - 生产 OAuth 授权服务器；
+- 多实例自动伸缩和数据库级 RLS；
+- Docker/ACK/Kubernetes 部署；
 - 自动过期；
 - 完整删除抑制；
 - 复杂关系图；
@@ -1031,7 +1092,8 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
 7. 展示旧偏好进入历史，新偏好被使用。
 8. 切换用户 B，执行相同查询，结果为空。
 9. 展示 source、request/capture id、client id 和幂等 replay。
-10. 用一页说明原型边界：演示 token、SQLite 单进程、无真实敏感数据。
+10. 展示 Linux 服务状态、PostgreSQL 健康检查和 HTTPS MCP URL；
+11. 用一页说明原型边界：演示 token、单实例服务、无真实敏感数据。
 
 现场不依赖临时联网下载依赖。真实模型不可用时切换固定 backend，核心 MCP、
 隔离、幂等、召回和替代流程仍可完整演示。
@@ -1069,14 +1131,22 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
   当前指令优先，记忆不作为系统命令。
 - **[没有向量检索导致召回能力有限]** → 本期依赖 scenario、subject 和小规模结构化
   排序；将失败案例作为是否增加语义检索的依据。
-- **[SQLite 无法支撑多 worker]** → 单进程部署并明确边界，未来通过 Repository
-  port 迁移 PostgreSQL。
+- **[PostgreSQL adapter 与已验证 SQLite 行为漂移]** → 用同一组 Repository
+  contract cases 验证 owner、事务、幂等和当前版本约束；通过后再删除 SQLite。
+- **[公网 MCP 暴露扩大攻击面]** → 强制 HTTPS 与认证，MCP 应用端口不直接暴露，
+  PostgreSQL 仅允许私网访问，secret 不进入 URL、日志或仓库。
+- **[不同 Agent Host 只支持部分 transport 或没有 Hook]** → 服务端坚持标准
+  Streamable HTTP；分别验收“能连接工具”和“能自动运行 Hook”，无 Hook 时使用
+  外层 Runner，不为单个平台修改核心协议。
+- **[云服务器或 PostgreSQL 在现场不可用]** → 保留固定 extractor、可重复 migration
+  和本地 PostgreSQL 启动说明；录屏只作为展示兜底，不替代端到端验收。
 - **[真实模型影响现场稳定性]** → 固定 backend 和预置脚本兜底。
 - **[剩余 12 天范围仍过大]** → P0 先打通跨 Agent 竖切，P1/P2 不反向阻塞演示。
 
 ## Migration Plan
 
-这是规划和产品形态调整，不迁移已持久化的真实用户数据。
+这是新项目的原型存储迁移，不迁移真实用户数据，也不建设 SQLite 到 PostgreSQL
+的通用数据搬迁产品。
 
 实施顺序：
 
@@ -1087,9 +1157,13 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
 5. 增加完成轮次 DTO，在 adapter 中转换为 Core 捕获输入。
 6. 提取旧 RAG 产品线中仍需复用的通用 chat model adapter；MCP 入口接管后删除
    Knowledge Agent、知识索引、旧 CLI、向量依赖和对应测试。
-7. 增加最小 duplicate/replacement/recall。
-8. 增加单一 Hook Client、Hook Bridge 和两个 Agent 接入。
-9. 将阶段一/二重复文档合并为实现基线；更新 README、需求和架构，使 OpenSpec
+7. 建立 PostgreSQL schema、migration、连接池和 Repository contract tests。
+8. 将 MCP composition root 切换到 PostgreSQL，完成重启幂等和健康检查后删除
+   SQLite 正式运行路径。
+9. 增加最小 duplicate/replacement/recall。
+10. 增加单一 Hook Client、Hook Bridge 和两个平台无关 Agent 接入。
+11. 增加 systemd unit、可选反向代理样例和 ECS 发布/回滚说明。
+12. 将阶段一/二重复文档合并为实现基线；更新 README、需求和架构，使 OpenSpec
    成为当前方案与验收的唯一事实源。
 
 回滚策略：
@@ -1097,17 +1171,22 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
 - MCP adapter 和 Hook adapter 都位于 Core 外层；
 - 如果某个 Agent adapter 失败，服务端工具仍可由 Inspector/第二客户端验证；
 - 如果真实模型失败，切换固定 backend；
+- 如果 PostgreSQL migration 失败，发布过程停止且不启动新服务版本；恢复旧应用
+  版本时不得回滚已经成功提交且向后兼容的 migration；
+- 如果 TLS 终止组件失败，MCP 应用继续只监听受限地址，不临时开放无认证 HTTP；
 - 如果旧 RAG 清理暴露仍被 MCP 复用的能力，先提取到独立 adapter 并补测试，不
   恢复旧产品入口；
 - 不回滚已通过的阶段一、二领域和存储基础。
 
 ## Implementation Defaults
 
-- 第二客户端以独立 `MemoryHookBridge` Runner 作为确定性验收对象；Codex 直接连接
-  MCP tools 作为真实兼容性展示，只有 Host 暴露稳定生命周期 Hook 时才声称自动
-  Before/After 接入。
-- Server 默认只监听 `127.0.0.1`；局域网访问必须显式配置监听地址并沿用认证，
-  不为了“远程”演示默认扩大暴露面。
+- 第二客户端以独立 `MemoryHookBridge` Runner 作为确定性验收对象；任一真实
+  Agent Host 直接连接 MCP tools 作为兼容性展示，只有 Host 暴露稳定生命周期
+  Hook 时才声称自动 Before/After 接入。百炼、Codex 或其他平台都不是必选项。
+- Server 默认只监听 `127.0.0.1`，适用于同机 TLS 终止；使用云负载均衡时必须
+  显式配置受安全组限制的私网监听地址，不为了“远程”演示直接暴露应用端口。
+- 默认部署使用 `uv + systemd`，不引入 Docker。Nginx 只是一个可替换的 HTTPS
+  样例；如果云负载均衡或网关负责 TLS，服务器上无需安装 Nginx。
 - 演示 token 按“用户 × client”配置，以便同时证明 owner 共享和 actor 区分。
 - `general-work` 四类记忆足够作为本期唯一正式场景；新增类型必须由失败案例驱动。
 - P1 展示优先级为历史详情，其次 revoke，再次 usage report。

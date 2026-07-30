@@ -197,6 +197,8 @@ memory.get.unavailable
 memory.list.completed
 memory.sqlite.scenario_registered
 memory.sqlite.record_committed
+memory.postgresql.scenario_registered
+memory.postgresql.record_committed
 memory.capture.started
 memory.capture.completed
 memory.capture.incomplete
@@ -204,12 +206,13 @@ memory.capture.processing_failed
 memory.review.confirmed
 memory.review.rejected
 memory.sqlite.capture_committed
+memory.postgresql.capture_committed
 ```
 
 记录场景、类型、技术 ID、owner 哈希、状态、来源数量、四类准入数量和结果数量，
 不记录 turn、候选、记忆内容与来源表达。敏感拦截只记录不含正文的类别原因码。
 
-### 7.6 SQLite 运维
+### 7.6 数据库运维
 
 ```text
 memory.sqlite.migration.started
@@ -217,6 +220,9 @@ memory.sqlite.migration.applied
 memory.sqlite.migration.skipped
 memory.sqlite.migration.completed
 memory.sqlite.health_check.completed
+memory.postgresql.migration.started
+memory.postgresql.migration.applied
+memory.postgresql.health_check.completed
 ```
 
 ## 8. 如何查看详细日志

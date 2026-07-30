@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from agent_lab.memory.domain.models import AssertionKind
+from agent_lab.memory.domain.models import AssertionKind, MessageRole
 
 
 def _require_text(value: str, field_name: str) -> str:
@@ -69,6 +69,33 @@ class ReviewStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class TurnMessage:
+    """由 MCP adapter 校验后交给 Core 的单个消息块。"""
+
+    role: MessageRole
+    content: str
+    message_id: str | None = None
+    tool_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, MessageRole):
+            raise ValueError("role must be a MessageRole")
+        object.__setattr__(self, "content", _require_text(self.content, "content"))
+        object.__setattr__(
+            self,
+            "message_id",
+            _require_optional_text(self.message_id, "message_id"),
+        )
+        object.__setattr__(
+            self,
+            "tool_name",
+            _require_optional_text(self.tool_name, "tool_name"),
+        )
+        if self.tool_name is not None and self.role is not MessageRole.TOOL:
+            raise ValueError("tool_name is only valid for tool messages")
+
+
+@dataclass(frozen=True, slots=True)
 class TurnEnvelope:
     """完成的一轮会话；owner 只能由独立的可信 PrincipalContext 提供。"""
 
@@ -80,6 +107,7 @@ class TurnEnvelope:
     event_id: str | None = None
     contract_version: str | None = None
     payload_fingerprint: str | None = None
+    messages: tuple[TurnMessage, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -116,6 +144,8 @@ class TurnEnvelope:
                 "event_id, contract_version, and payload_fingerprint "
                 "must be supplied together"
             )
+        if any(not isinstance(message, TurnMessage) for message in self.messages):
+            raise ValueError("messages must contain TurnMessage values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +234,9 @@ class Candidate:
     business_progress: str | None = None
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -247,6 +280,22 @@ class Candidate:
         _require_aware_datetime(self.created_at, "created_at")
         if self.normalized_time is not None:
             _require_aware_datetime(self.normalized_time, "normalized_time")
+        if self.source_role is not None and not isinstance(
+            self.source_role,
+            MessageRole,
+        ):
+            raise ValueError("source_role must be a MessageRole")
+        for field_name in ("source_message_id", "source_tool_name"):
+            object.__setattr__(
+                self,
+                field_name,
+                _require_optional_text(getattr(self, field_name), field_name),
+            )
+        if (
+            self.source_tool_name is not None
+            and self.source_role is not MessageRole.TOOL
+        ):
+            raise ValueError("source_tool_name is only valid for tool sources")
 
 
 @dataclass(frozen=True, slots=True)

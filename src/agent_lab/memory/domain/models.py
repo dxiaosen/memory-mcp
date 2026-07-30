@@ -28,6 +28,14 @@ class AssertionKind(StrEnum):
     SYSTEM_INFERENCE = "system_inference"
 
 
+class MessageRole(StrEnum):
+    """完成轮次中可追溯的消息来源角色。"""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
 class LifecycleStatus(StrEnum):
     """由 Core 管理、场景不得重新定义的有效状态。"""
 
@@ -137,6 +145,9 @@ class Evidence:
     source_expression: str
     observed_at: datetime
     created_at: datetime
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))
@@ -157,6 +168,24 @@ class Evidence:
         )
         _require_aware_datetime(self.observed_at, "observed_at")
         _require_aware_datetime(self.created_at, "created_at")
+        if self.source_role is not None and not isinstance(
+            self.source_role,
+            MessageRole,
+        ):
+            raise ValueError("source_role must be a MessageRole")
+        for field_name in ("source_message_id", "source_tool_name"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _require_text(value, field_name),
+                )
+        if (
+            self.source_tool_name is not None
+            and self.source_role is not MessageRole.TOOL
+        ):
+            raise ValueError("source_tool_name is only valid for tool sources")
 
 
 @dataclass(frozen=True, slots=True)

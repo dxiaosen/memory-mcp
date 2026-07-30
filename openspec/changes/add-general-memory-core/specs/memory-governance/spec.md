@@ -108,3 +108,36 @@ message content, memory content, source expressions, or prohibited raw text.
 - **WHEN** Agent A captures memory for an authenticated owner
 - **THEN** the log records opaque owner and client references, tool, status, counts, and duration
 - **AND** contains no user-message or memory content
+
+### Requirement: Remain independent of an Agent platform
+The remote MCP service MUST expose its complete product contract through authenticated
+Streamable HTTP and MUST NOT require a specific Agent platform, cloud orchestration
+product, or vendor SDK. Platform-specific adapters MAY configure the standard endpoint
+but MUST NOT change ownership, lifecycle, or tool semantics.
+
+#### Scenario: Two different MCP hosts connect directly
+- **WHEN** two compatible Agent hosts connect to the same HTTPS MCP endpoint with their own credentials
+- **THEN** both discover and call the same versioned memory tools
+- **AND** neither requires an Alibaba Cloud Model Studio runtime or another intermediary
+
+### Requirement: Do not confuse service credentials with end-user identity
+A shared platform or application credential MUST NOT be used to represent multiple
+end users as one owner. The authentication boundary MUST map every accepted credential
+to exactly one trusted tenant and subject identity, while recording the calling client
+separately.
+
+#### Scenario: One credential is configured for a shared Agent application
+- **WHEN** the application cannot provide a distinct trusted subject for each end user
+- **THEN** the service treats the integration as a single-owner prototype
+- **AND** documentation does not claim end-user isolation for that integration
+
+### Requirement: Protect the public deployment boundary
+The deployed MCP endpoint MUST use HTTPS, require authentication on every memory
+operation, and keep PostgreSQL unreachable from the public Internet. Secrets MUST be
+loaded from runtime configuration and MUST NOT be stored in source code, service unit
+files, URLs, or logs.
+
+#### Scenario: Agent calls the public service
+- **WHEN** an Agent sends an authenticated request to the public MCP URL
+- **THEN** TLS terminates before the request reaches the MCP application
+- **AND** the application reaches PostgreSQL only through the deployment's private network

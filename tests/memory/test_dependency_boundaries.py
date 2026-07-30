@@ -2,7 +2,21 @@ import ast
 from pathlib import Path
 
 _MEMORY_ROOT = Path(__file__).parents[2] / "src" / "agent_lab" / "memory"
+_CORE_LAYER_ROOTS = (
+    _MEMORY_ROOT / "domain",
+    _MEMORY_ROOT / "application",
+    _MEMORY_ROOT / "ports",
+)
 _FORBIDDEN_MODULE_PARTS = {"investment", "research_question"}
+_FORBIDDEN_CORE_DEPENDENCIES = {
+    "httpx",
+    "mcp",
+    "sqlite3",
+    "starlette",
+    "uvicorn",
+    "agent_lab.integrations",
+    "agent_lab.memory_mcp",
+}
 _FORBIDDEN_CORE_TYPE_CONSTANTS = {
     "hypothesis",
     "validation_condition",
@@ -41,3 +55,23 @@ def test_memory_core_does_not_define_formal_scenario_type_constants() -> None:
         )
 
     assert _FORBIDDEN_CORE_TYPE_CONSTANTS.isdisjoint(string_constants)
+
+
+def test_domain_application_and_ports_do_not_depend_on_transport_or_infrastructure() -> (
+    None
+):
+    imported_modules: set[str] = set()
+    for root in _CORE_LAYER_ROOTS:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported_modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported_modules.add(node.module)
+
+    assert not any(
+        module == forbidden or module.startswith(f"{forbidden}.")
+        for module in imported_modules
+        for forbidden in _FORBIDDEN_CORE_DEPENDENCIES
+    )

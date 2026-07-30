@@ -89,3 +89,14 @@ long-term memory.
 - **WHEN** the Hook times out or the server reports temporary unavailability
 - **THEN** the Agent may continue without memory
 - **AND** no stale cross-user context is substituted
+
+### Requirement: Keep PostgreSQL authoritative for recall
+The deployed recall path MUST derive its eligible current set from PostgreSQL. If a
+future text or vector index is introduced, it MAY propose candidates only; the service
+MUST revalidate owner, current revision, and lifecycle eligibility against PostgreSQL
+before returning or rendering any item.
+
+#### Scenario: Optional index contains a stale revision
+- **WHEN** an external index returns a superseded or differently owned revision
+- **THEN** the service removes it during authoritative revalidation
+- **AND** the stale content does not enter the structured result or rendered context

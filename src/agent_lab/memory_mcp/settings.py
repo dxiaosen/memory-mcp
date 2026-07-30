@@ -40,7 +40,13 @@ class MemoryServerSettings(BaseSettings):
         extra="ignore",
     )
 
+    storage_backend: Literal["sqlite", "postgresql"] = "sqlite"
     database_path: Path = Path(".agent-lab/memory.db")
+    database_url: SecretStr | None = None
+    database_pool_min_size: int = Field(default=1, ge=1, le=50)
+    database_pool_max_size: int = Field(default=5, ge=1, le=100)
+    database_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=300)
+    database_migrate_on_startup: bool = False
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     mcp_path: str = "/mcp"
@@ -78,6 +84,29 @@ class MemoryServerSettings(BaseSettings):
                 )
         if self.mcp_path == self.health_path:
             raise ValueError("mcp_path and health_path must be different")
+        if self.database_pool_max_size < self.database_pool_min_size:
+            raise ValueError(
+                "database_pool_max_size must be greater than or equal to "
+                "database_pool_min_size"
+            )
+        if self.storage_backend == "postgresql" and self.database_url is None:
+            raise ValueError(
+                "MEMORY_MCP_DATABASE_URL is required for PostgreSQL storage"
+            )
+
+    def require_postgresql_url(self) -> str:
+        """Return the PostgreSQL DSN only at the infrastructure boundary."""
+
+        if self.storage_backend != "postgresql":
+            raise ValueError(
+                "MEMORY_MCP_STORAGE_BACKEND must be 'postgresql' for this command"
+            )
+        if self.database_url is None:
+            raise ValueError("MEMORY_MCP_DATABASE_URL is required")
+        value = self.database_url.get_secret_value().strip()
+        if not value:
+            raise ValueError("MEMORY_MCP_DATABASE_URL must not be empty")
+        return value
 
     def demo_principals(self) -> dict[str, DemoPrincipalSettings]:
         """Parse the secret JSON token mapping without exposing it in settings repr."""
@@ -91,9 +120,14 @@ class MemoryServerSettings(BaseSettings):
             raise ValueError("MEMORY_MCP_DEMO_TOKENS_JSON must be a JSON object")
         principals: dict[str, DemoPrincipalSettings] = {}
         for token, value in payload.items():
-            if not isinstance(token, str) or not token.strip():
+            if (
+                not isinstance(token, str)
+                or not token.strip()
+                or token != token.strip()
+            ):
                 raise ValueError("demo token keys must be non-empty strings")
             principals[token] = DemoPrincipalSettings.model_validate(value)
+        _validate_principal_mapping(principals)
         return principals
 
     def require_demo_principals(self) -> dict[str, DemoPrincipalSettings]:
@@ -109,3 +143,24 @@ class MemoryServerSettings(BaseSettings):
     @classmethod
     def from_environment(cls) -> Self:
         return cls()
+
+
+def _validate_principal_mapping(
+    principals: dict[str, DemoPrincipalSettings],
+) -> None:
+    """Prevent configuration from aliasing distinct subjects into one owner."""
+
+    owner_by_subject: dict[tuple[str, str], str] = {}
+    subject_by_owner: dict[str, tuple[str, str]] = {}
+    for principal in principals.values():
+        subject = (principal.tenant_id, principal.subject_id)
+        existing_owner = owner_by_subject.setdefault(subject, principal.owner_key)
+        if existing_owner != principal.owner_key:
+            raise ValueError(
+                "one tenant/subject identity must map to exactly one owner_key"
+            )
+        existing_subject = subject_by_owner.setdefault(principal.owner_key, subject)
+        if existing_subject != subject:
+            raise ValueError(
+                "one owner_key must not alias different tenant/subject identities"
+            )

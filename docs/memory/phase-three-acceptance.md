@@ -1,5 +1,9 @@
 # Memory MCP 阶段三验收记录
 
+> 本文是阶段三 SQLite 原型与远程 MCP 边界的历史验收证据。最终部署已经调整为
+> Linux ECS + PostgreSQL；新存储必须复用这些行为用例完成契约验收，不能把本文
+> 的 SQLite 结果当作 PostgreSQL 已验收。
+
 验收日期：2026-07-30
 
 ## 结论
@@ -18,12 +22,14 @@ MCP 服务，并建立了可信身份边界。旧 RAG 产品线已经从运行�
 - 固定 `mcp==1.29.0`，使用 Streamable HTTP `/mcp` 和公开 `/health`；
 - `MEMORY_MCP_DEMO_TOKENS_JSON` 为空时拒绝启动；
 - token 在服务端映射到 owner、tenant、subject、client、agent 和 scopes；
+- token 配置拒绝不同 subject 共享同一 owner 的危险别名；
 - 工具参数不接受 owner 字段，所有 Core 调用使用服务端生成的
   `PrincipalContext`；
 - 完成 `capture_completed_turn`、`list_memories`、`get_memory`、
   `list_pending_reviews`、`confirm_pending_memory`、
   `reject_pending_memory` 六个工具；
 - 完成版本化事件、payload fingerprint、稳定错误码、request id 和无正文日志；
+- 保留消息级角色来源，assistant/tool 候选不能自动保存为用户表达；
 - 相同 event/payload 可安全 replay，相同 event/不同 payload 返回 conflict；
 - confirmed/rejected review 重试返回稳定结果；
 - SQLite 重启后仍保持 event 幂等和用户隔离。
@@ -37,14 +43,15 @@ MCP 服务，并建立了可信身份边界。旧 RAG 产品线已经从运行�
 2. `tools/list` 只返回预期六个工具，输入 schema 为
    `additionalProperties=false`；
 3. 调用方注入 `owner_id` 被协议层拒绝；
-4. 一轮内容同时产生 1 个自动保存、1 个 pending、1 个敏感拦截；
-5. 响应和 SQLite 文件都不包含测试中的敏感明文；
-6. 同 event replay、不一致 payload conflict、未知 contract version
+4. 一轮内容同时产生 1 个自动保存、2 个 pending、1 个敏感拦截；
+5. user 与 assistant 来源在 pending 结果和持久化层中保持可区分；
+6. 响应和 SQLite 文件都不包含测试中的敏感明文；
+7. 同 event replay、不一致 payload conflict、未知 contract version
    安全失败；
-7. 同 owner 的 Agent A 与 Agent B 共享记忆；
-8. 另一 owner 列表为空，猜测 memory/review identifier 也只得到 unavailable；
-9. 只有 `memory:read` 的 token 不能执行 capture；
-10. 关闭并重开 SQLite 服务后 replay 不会再次调用 extractor 或重复写入。
+8. 同 owner 的 Agent A 与 Agent B 共享记忆；
+9. 另一 owner 列表为空，猜测 memory/review identifier 也只得到 unavailable；
+10. 只有 `memory:read` 的 token 不能执行 capture；
+11. 关闭并重开 SQLite 服务后 replay 不会再次调用 extractor 或重复写入。
 
 另外使用官方 MCP Inspector 对真实 `/mcp` 地址执行 `tools/list`，结果为：
 
@@ -63,7 +70,7 @@ Inspector 进程正常退出，说明该入口不是仅在单元测试内部可�
 
 ```text
 .venv\Scripts\python.exe -m pytest -q
-52 passed in 14.30s
+54 passed in 12.01s
 
 .venv\Scripts\python.exe -m ruff check src tests examples
 All checks passed!
