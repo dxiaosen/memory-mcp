@@ -19,12 +19,13 @@ Core 不得导入投资假设、调研问题等正式场景模块。场景只能
 
 `domain` 和 `ports` 不读取环境变量，也不依赖 Agent、LangChain、MCP 或数据库
 驱动。部署组合根通过 `MemoryServerSettings` 读取 PostgreSQL secret，应用层和
-适配器只依赖共享的结构化日志接口。SQLite 是阶段一至三的过渡原型；
-PostgreSQL 是远程 MCP 的正式运行后端。顶层 `memory_mcp` 包保持轻量，因此导入
-本模块不会主动连接数据库或加载 Agent 平台。
+适配器只依赖共享的结构化日志接口。真实数据库契约通过后，SQLite 原型 adapter
+已经删除；PostgreSQL 是远程 MCP 的唯一运行后端。顶层 `memory_mcp` 包保持轻量，
+因此导入本模块不会主动连接数据库或加载 Agent 平台。
 
-阶段二已提供结构化候选抽取端口、敏感预检、四类准入、source turn 幂等和
-pending 确认/拒绝。当前仍不包含关系演进、语义召回或 Agent 集成。
+当前已提供结构化候选抽取、敏感预检、四类准入、source turn 幂等、pending
+确认/拒绝、确定性 duplicate/replacement/history 和 owner-first 文本召回。
+当前仍不包含复杂关系演进、Embedding/向量检索或 Agent Hook 集成。
 
 详细说明：
 

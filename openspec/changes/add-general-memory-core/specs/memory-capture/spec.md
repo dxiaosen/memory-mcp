@@ -15,6 +15,15 @@ blocks. The tool MUST NOT accept a memory owner identifier.
 - **WHEN** an Agent run is cancelled or fails before producing a final result
 - **THEN** the default Hook does not submit the turn for automatic long-term capture
 
+#### Scenario: A top-level user run completes
+- **WHEN** one top-level user task produces its final Agent response
+- **THEN** the AfterRun Hook submits exactly one completed-turn event for that run
+- **AND** it does not wait for the broader conversation to be closed
+
+#### Scenario: An Agent executes internal steps
+- **WHEN** the Agent invokes tools, child runs, or internal retries before its final response
+- **THEN** those internal steps do not independently trigger the default AfterRun capture
+
 #### Scenario: Hook uses an unsupported event version
 - **WHEN** a Hook submits a completed-turn contract major version the server does not support
 - **THEN** the server returns `unsupported_contract_version`
@@ -49,6 +58,28 @@ ScenarioPolicy and MUST NOT require the user to say “remember this”.
 #### Scenario: A turn contains no durable information
 - **WHEN** a submitted turn contains only casual conversation or a one-time formatting instruction
 - **THEN** the system does not create active long-term memory from that content
+
+### Requirement: Provide configured structured extraction
+The runnable MCP Server SHALL construct a CandidateExtractor from protected runtime
+configuration. It MUST support one real OpenAI-compatible structured model backend and
+one deterministic fixed backend implementing the same CandidateExtractor contract.
+Backend selection MUST NOT change trusted identity, provenance, admission, lifecycle,
+or persistence rules.
+
+#### Scenario: Real structured extraction is configured
+- **WHEN** the server starts with a supported model provider, model, endpoint, and credential
+- **THEN** completed turns are submitted to the real structured backend after redaction
+- **AND** validated candidates continue through the common admission pipeline
+
+#### Scenario: Fixed extraction is selected
+- **WHEN** tests, offline demonstration, or recovery configuration selects the fixed backend
+- **THEN** the server produces deterministic configured candidates without external network access
+- **AND** the MCP and Hook contracts remain identical to the real-backend path
+
+#### Scenario: Model configuration is incomplete
+- **WHEN** the selected real backend lacks required model credentials or settings
+- **THEN** server startup fails with a non-content configuration error
+- **AND** it does not silently change identity, owner scope, or storage behavior
 
 ### Requirement: Give every candidate exactly one admission result
 The system SHALL assign every candidate exactly one of `auto_save`, `pending`, `discard`,
@@ -129,6 +160,29 @@ payload MUST fail with `idempotency_conflict`.
 - **WHEN** a client submits different message content under an already completed event identifier
 - **THEN** the system rejects the request with `idempotency_conflict`
 - **AND** preserves the original completed result
+
+#### Scenario: Hook run key is reused with a different payload
+- **WHEN** one Hook process receives different user or final-output content under an already observed top-level run key
+- **THEN** the Hook rejects the conflicting local invocation instead of returning the first payload's cached result
+- **AND** it does not submit a second ambiguous event
+
+### Requirement: Run AfterRun asynchronously without requiring a queue
+The Hook SDK SHALL expose AfterRun as an asynchronous operation so network I/O does not
+block the Agent event loop. The default Runner MUST await the structured capture receipt
+before declaring its wrapped run complete. The single-process MVP MUST NOT require an
+external message queue; a Host MAY schedule the coroutine after emitting the final user
+response only if it explicitly accepts process-crash loss and still preserves the stable
+event identifier.
+
+#### Scenario: Default Runner captures a successful result
+- **WHEN** the Agent callable returns its final output
+- **THEN** the Runner asynchronously calls `capture_completed_turn`
+- **AND** returns only after it has a capture receipt or a configured fail-open warning
+
+#### Scenario: Host emits the response before capture finishes
+- **WHEN** a Host chooses to schedule AfterRun in its own background task
+- **THEN** the Hook uses the same stable event identifier and bounded retry behavior
+- **AND** documentation states that an in-process background task is not a durable queue
 
 ### Requirement: Return a structured capture receipt
 The capture tool SHALL return capture status, replay state, policy version, decision

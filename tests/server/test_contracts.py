@@ -1,21 +1,19 @@
 import json
-from pathlib import Path
-from uuid import uuid4
 
 import anyio
 import pytest
-from core.fakes import FakeCandidateExtractor, TestScenarioPolicy
 from pydantic import SecretStr, ValidationError
 
-from memory_mcp.core.adapters import InMemoryMemoryRepository
+from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.server import MemoryServerSettings, create_memory_mcp_server
+from memory_mcp.server.app import create_memory_mcp_server
 from memory_mcp.server.schemas import CompletedTurnEventV1
+from memory_mcp.server.settings import MemoryServerSettings
+from tests.support.fakes import FakeCandidateExtractor, TestScenarioPolicy
 
 
-def _settings(database_path: Path) -> MemoryServerSettings:
+def _settings() -> MemoryServerSettings:
     return MemoryServerSettings(
-        database_path=database_path,
         demo_tokens_json=SecretStr(
             json.dumps(
                 {
@@ -70,42 +68,38 @@ def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
         CompletedTurnEventV1.model_validate({**payload, "owner_id": "other-user"})
 
 
-def test_server_exposes_only_stage_three_tools_without_owner_inputs() -> None:
-    path = Path(".memory-mcp/test-memory") / f"contract-{uuid4().hex}.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        service = create_memory_service(
-            InMemoryMemoryRepository(),
-            [TestScenarioPolicy()],
-            candidate_extractor=FakeCandidateExtractor(),
-        )
-        server = create_memory_mcp_server(
-            _settings(path),
-            memory_service=service,
-        )
+def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestScenarioPolicy()],
+        candidate_extractor=FakeCandidateExtractor(),
+    )
+    server = create_memory_mcp_server(
+        _settings(),
+        memory_service=service,
+    )
 
-        tools = anyio.run(server.list_tools)
+    tools = anyio.run(server.list_tools)
 
-        assert {tool.name for tool in tools} == {
-            "capture_completed_turn",
-            "list_memories",
-            "get_memory",
-            "list_pending_reviews",
-            "confirm_pending_memory",
-            "reject_pending_memory",
-        }
-        capture = next(tool for tool in tools if tool.name == "capture_completed_turn")
-        serialized_schema = json.dumps(capture.inputSchema)
-        assert "owner_id" not in serialized_schema
-        assert "owner_key" not in serialized_schema
-        assert "tenant_id" not in serialized_schema
-        assert capture.inputSchema.get("additionalProperties") is False
-    finally:
-        path.unlink(missing_ok=True)
+    assert {tool.name for tool in tools} == {
+        "capture_completed_turn",
+        "list_memories",
+        "get_memory",
+        "list_pending_reviews",
+        "confirm_pending_memory",
+        "reject_pending_memory",
+        "recall_memory",
+    }
+    capture = next(tool for tool in tools if tool.name == "capture_completed_turn")
+    serialized_schema = json.dumps(capture.inputSchema)
+    assert "owner_id" not in serialized_schema
+    assert "owner_key" not in serialized_schema
+    assert "tenant_id" not in serialized_schema
+    assert capture.inputSchema.get("additionalProperties") is False
 
 
 def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:
-    settings = _settings(Path(".memory-mcp/test-memory/settings.db"))
+    settings = _settings()
 
     assert "token-a" not in repr(settings)
     assert settings.require_demo_principals()["token-a"].owner_key == "analyst-a"
@@ -146,23 +140,18 @@ def test_demo_principal_mapping_rejects_owner_aliases() -> None:
 
 def test_postgresql_settings_require_and_hide_database_url() -> None:
     settings = MemoryServerSettings(
-        storage_backend="postgresql",
         database_url=SecretStr(
             "postgresql://memory_app:secret-password@db.internal/memory_mcp"
         ),
         _env_file=None,
     )
 
-    assert settings.storage_backend == "postgresql"
     assert "secret-password" not in repr(settings)
     assert settings.require_postgresql_url().startswith("postgresql://")
 
-    with pytest.raises(ValidationError, match="DATABASE_URL"):
-        MemoryServerSettings(
-            storage_backend="postgresql",
-            database_url=None,
-            _env_file=None,
-        )
+    missing = MemoryServerSettings(database_url=None, _env_file=None)
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        missing.require_postgresql_url()
 
 
 def test_database_pool_bounds_are_consistent() -> None:

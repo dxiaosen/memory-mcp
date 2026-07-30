@@ -9,10 +9,8 @@ from memory_mcp.core import (
     ExtractionRequest,
     InvalidModelOutputError,
 )
-from memory_mcp.core.adapters import (
-    RegexSensitiveContentGuard,
-    StructuredCandidateExtractor,
-)
+from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
+from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 
 
 def test_structured_model_adapter_parses_candidates_and_exposes_versions() -> None:

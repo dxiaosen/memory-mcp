@@ -1,4 +1,4 @@
-"""Minimal authenticated client for the phase-three Memory MCP service."""
+"""Minimal authenticated client for the remote Memory MCP service."""
 
 import argparse
 import asyncio
@@ -9,20 +9,24 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from memory_mcp.memory_hooks import MemoryHookSettings
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--url",
-        default="http://127.0.0.1:8765/mcp",
-        help="Streamable HTTP MCP endpoint",
+        "--profile",
+        default="agent-a",
+        help="Environment profile containing MCP URL and bearer token",
     )
-    parser.add_argument("--token", required=True, help="Prototype bearer token")
     parser.add_argument(
         "command",
-        choices=("tools", "memories", "pending"),
+        choices=("tools", "memories", "pending", "recall"),
         help="Read-only operation to demonstrate",
     )
+    parser.add_argument("--scenario", default="general-work")
+    parser.add_argument("--query", default="当前任务相关的用户偏好和上下文")
+    parser.add_argument("--subject")
     return parser
 
 
@@ -34,7 +38,15 @@ def _structured_payload(result: Any) -> dict[str, Any]:
     return nested if isinstance(nested, dict) else payload
 
 
-async def _run(url: str, token: str, command: str) -> None:
+async def _run(
+    url: str,
+    token: str,
+    command: str,
+    *,
+    scenario: str,
+    query: str,
+    subject: str | None,
+) -> None:
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
@@ -55,6 +67,16 @@ async def _run(url: str, token: str, command: str) -> None:
                         }
                         for tool in result.tools
                     ]
+                elif command == "recall":
+                    result = await session.call_tool(
+                        "recall_memory",
+                        arguments={
+                            "scenario": scenario,
+                            "query": query,
+                            "subject": subject,
+                        },
+                    )
+                    output = _structured_payload(result)
                 else:
                     tool_name = (
                         "list_memories"
@@ -68,7 +90,17 @@ async def _run(url: str, token: str, command: str) -> None:
 
 def main() -> None:
     args = _parser().parse_args()
-    asyncio.run(_run(args.url, args.token, args.command))
+    settings = MemoryHookSettings.from_profile(args.profile)
+    asyncio.run(
+        _run(
+            str(settings.mcp_url),
+            settings.token_value(),
+            args.command,
+            scenario=args.scenario,
+            query=args.query,
+            subject=args.subject,
+        )
+    )
 
 
 if __name__ == "__main__":

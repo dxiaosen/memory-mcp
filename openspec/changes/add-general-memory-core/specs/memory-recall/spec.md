@@ -10,6 +10,16 @@ to call a memory tool.
 - **WHEN** an authenticated Agent Hook submits the current scenario, query, and optional subject
 - **THEN** the MCP Server returns a structured current-memory context before model execution
 
+#### Scenario: BeforeRun uses asynchronous transport
+- **WHEN** a Runner starts one top-level user task
+- **THEN** it asynchronously awaits `recall_memory` without blocking the event loop
+- **AND** it does not invoke the Agent model until the validated recall result or fail-open empty result is available
+
+#### Scenario: One user task has multiple internal steps
+- **WHEN** a top-level Agent run invokes tools, middleware, or child operations
+- **THEN** the default BeforeRun Hook recalls at most once for that top-level user task
+- **AND** internal operations reuse the validated injected context rather than recalling again
+
 #### Scenario: Host lacks a native Hook API
 - **WHEN** an Agent Host cannot run a native BeforeRun callback
 - **THEN** an outer Runner MAY perform the same MCP call before invoking the Agent

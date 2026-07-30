@@ -4,22 +4,24 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
-from uuid import uuid4
 
 import anyio
 import httpx
 import uvicorn
-from core.fakes import (
-    FakeCandidateExtractor,
-    candidate_proposal,
-)
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import SecretStr
 
 from memory_mcp.core import AssertionKind, ExpressionBasis
-from memory_mcp.server import MemoryServerSettings, create_memory_mcp_server
+from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
+from memory_mcp.core.composition import create_memory_service
+from memory_mcp.scenarios import GeneralWorkPolicy
+from memory_mcp.server.app import create_memory_mcp_server
+from memory_mcp.server.settings import MemoryServerSettings
+from tests.support.fakes import (
+    FakeCandidateExtractor,
+    candidate_proposal,
+)
 
 _OBSERVED_AT = "2026-07-30T10:00:00+08:00"
 
@@ -71,9 +73,8 @@ def _token_payload() -> str:
     )
 
 
-def _settings(database_path: Path, port: int) -> MemoryServerSettings:
+def _settings(port: int) -> MemoryServerSettings:
     return MemoryServerSettings(
-        database_path=database_path,
         host="127.0.0.1",
         port=port,
         demo_tokens_json=SecretStr(_token_payload()),
@@ -90,7 +91,7 @@ def _event(
     return {
         "event_id": event_id,
         "contract_version": contract_version,
-        "scenario": "project-work",
+        "scenario": "general-work",
         "conversation_id": "conversation-1",
         "turn_id": "turn-1",
         "observed_at": _OBSERVED_AT,
@@ -137,15 +138,19 @@ def _free_port() -> int:
 
 @contextmanager
 def _running_server(
-    database_path: Path,
     *,
     extractor: FakeCandidateExtractor,
 ) -> Iterator[str]:
     port = _free_port()
-    settings = _settings(database_path, port)
+    settings = _settings(port)
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [GeneralWorkPolicy()],
+        candidate_extractor=extractor,
+    )
     mcp_server = create_memory_mcp_server(
         settings,
-        candidate_extractor=extractor,
+        memory_service=service,
     )
     app = mcp_server.streamable_http_app()
     uvicorn_server = uvicorn.Server(
@@ -208,14 +213,10 @@ def _payload(result) -> dict[str, object]:
     return payload
 
 
-def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
-    directory = Path(".memory-mcp/test-memory")
-    directory.mkdir(parents=True, exist_ok=True)
-    database_path = directory / f"mcp-{uuid4().hex}.db"
+def test_remote_transport_auth_schema_capture_and_governance() -> None:
     first_extractor = _extractor()
     try:
         with _running_server(
-            database_path,
             extractor=first_extractor,
         ) as url:
             unauthenticated = httpx.post(
@@ -238,6 +239,7 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                     "list_pending_reviews",
                     "confirm_pending_memory",
                     "reject_pending_memory",
+                    "recall_memory",
                 }
                 capture_tool = next(
                     tool
@@ -304,6 +306,25 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                     )
                 )
                 assert detail["item"]["evidence"][0]["source_role"] == "user"
+                recalled = _payload(
+                    await session.call_tool(
+                        "recall_memory",
+                        arguments={
+                            "scenario": "general-work",
+                            "query": "项目周报 表格",
+                            "subject": "weekly-report",
+                        },
+                    )
+                )
+                assert len(recalled["items"]) == 1
+                assert (
+                    recalled["items"][0]["revision_id"]
+                    == (detail["item"]["revision_id"])
+                )
+                assert (
+                    "current user request always takes priority"
+                    in (recalled["rendered_context"])
+                )
 
                 pending = await session.call_tool(
                     "list_pending_reviews",
@@ -344,6 +365,31 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                     )
                 )
                 assert repeated["status"] == "confirmed"
+                recalled = _payload(
+                    await session.call_tool(
+                        "recall_memory",
+                        arguments={
+                            "scenario": "general-work",
+                            "query": "周报 要点",
+                            "subject": "weekly-report",
+                        },
+                    )
+                )
+                assert [item["content"] for item in recalled["items"]] == [
+                    "用户可能偏好要点"
+                ]
+                detail = _payload(
+                    await session.call_tool(
+                        "get_memory",
+                        arguments={
+                            "memory_id": memory_id,
+                            "include_history": True,
+                        },
+                    )
+                )
+                assert detail["history_included"] is True
+                assert [item["revision_number"] for item in detail["history"]] == [2, 1]
+                assert detail["history"][1]["lifecycle_status"] == "superseded"
 
             anyio.run(
                 _with_session,
@@ -371,6 +417,16 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                     )
                 )
                 assert review["error_code"] == "review_unavailable"
+                recalled = _payload(
+                    await session.call_tool(
+                        "recall_memory",
+                        arguments={
+                            "scenario": "general-work",
+                            "query": "项目周报 表格",
+                        },
+                    )
+                )
+                assert recalled["items"] == []
 
             anyio.run(
                 _with_session,
@@ -395,41 +451,8 @@ def test_remote_transport_auth_schema_capture_governance_and_reopen() -> None:
                 read_only,
             )
 
-        reopened_extractor = FakeCandidateExtractor()
-        with _running_server(
-            database_path,
-            extractor=reopened_extractor,
-        ) as reopened_url:
-
-            async def after_reopen(session: ClientSession):
-                replay = _payload(
-                    await session.call_tool(
-                        "capture_completed_turn",
-                        arguments=_event(),
-                    )
-                )
-                assert replay["replayed"] is True
-                memories = _payload(
-                    await session.call_tool("list_memories", arguments={})
-                )
-                assert len(memories["items"]) == 2
-                pending = _payload(
-                    await session.call_tool(
-                        "list_pending_reviews",
-                        arguments={},
-                    )
-                )
-                assert len(pending["items"]) == 1
-                assert pending["items"][0]["source_role"] == "assistant"
-
-            anyio.run(
-                _with_session,
-                reopened_url,
-                "token-a-agent-a",
-                after_reopen,
-            )
-            assert reopened_extractor.requests == []
-
-        assert b"secret-password-123" not in database_path.read_bytes()
     finally:
-        database_path.unlink(missing_ok=True)
+        assert all(
+            "secret-password-123" not in request.content
+            for request in first_extractor.requests
+        )

@@ -28,8 +28,8 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 `MEMORY_MCP_LOG_FILE` 可以设为空值对应的运行配置，以便只使用终端或 systemd
 journal。ECS 示例写入 `/var/log/memory-mcp/memory-mcp.log`。
 
-离线模型和过渡 SQLite 工具使用同结构的 `LOG_*` 配置，因为它们不经过
-`MemoryServerSettings`。
+固定和真实候选抽取都在 MCP 服务进程中运行，统一使用上述
+`MEMORY_MCP_LOG_*` 配置。Hook Client 不记录业务正文或 Secret。
 
 ## 3. 格式
 
@@ -110,14 +110,6 @@ memory.review.rejected
 持久化与运维：
 
 ```text
-memory.sqlite.scenario_registered
-memory.sqlite.record_committed
-memory.sqlite.capture_committed
-memory.sqlite.migration.started
-memory.sqlite.migration.applied
-memory.sqlite.migration.skipped
-memory.sqlite.migration.completed
-memory.sqlite.health_check.completed
 memory.postgresql.scenario_registered
 memory.postgresql.record_committed
 memory.postgresql.capture_committed

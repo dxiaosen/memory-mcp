@@ -1,18 +1,8 @@
 import logging
-from collections.abc import Iterator
-from contextlib import closing
 from datetime import UTC, datetime
-from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
-from core.fakes import (
-    AlternateScenarioPolicy,
-    FakeCandidateExtractor,
-    TestScenarioPolicy,
-    candidate_proposal,
-)
 from memory_mcp.core import (
     AdmissionDecision,
     AssertionKind,
@@ -26,32 +16,16 @@ from memory_mcp.core import (
     TurnEnvelope,
     TurnMessage,
 )
-from memory_mcp.core.adapters import InMemoryMemoryRepository
-from memory_mcp.core.adapters.sqlite import (
-    SQLiteMemoryRepository,
-    connection_factory,
-)
-from memory_mcp.core.adapters.sqlite.runtime import apply_migrations
+from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
+from tests.support.fakes import (
+    AlternateScenarioPolicy,
+    FakeCandidateExtractor,
+    TestScenarioPolicy,
+    candidate_proposal,
+)
 
 _OBSERVED_AT = datetime(2026, 7, 29, 10, tzinfo=UTC)
-
-
-@pytest.fixture
-def capture_database_path() -> Iterator[Path]:
-    directory = Path(".memory-mcp/test-memory")
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"capture-{uuid4().hex}.db"
-    try:
-        assert apply_migrations(path) == (
-            "0001_memory_core.sql",
-            "0002_memory_capture.sql",
-            "0003_mcp_events.sql",
-            "0004_message_provenance.sql",
-        )
-        yield path
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> None:
@@ -150,13 +124,12 @@ def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> Non
 
 
 def test_sensitive_text_is_redacted_before_model_and_never_persisted(
-    capture_database_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     secret = "secret-password-123"
     safe_expression = "项目周报默认用表格"
     extractor = FakeCandidateExtractor((candidate_proposal(safe_expression),))
-    repository = SQLiteMemoryRepository(connection_factory(capture_database_path))
+    repository = InMemoryMemoryRepository()
     service = create_memory_service(
         repository,
         [TestScenarioPolicy()],
@@ -177,7 +150,10 @@ def test_sensitive_text_is_redacted_before_model_and_never_persisted(
     model_text = extractor.requests[0].content
     assert secret not in model_text
     assert "[REDACTED:credential]" in model_text
-    assert secret.encode() not in capture_database_path.read_bytes()
+    assert all(
+        secret not in record.current_revision.content
+        for record in service.list_memories(PrincipalContext("analyst-a"))
+    )
     assert secret not in caplog.text
     assert all(not hasattr(outcome, "content") for outcome in result.outcomes)
 
@@ -208,9 +184,7 @@ def test_subject_hint_is_redacted_before_extraction() -> None:
     assert secret not in extractor.requests[0].subject_hint
 
 
-def test_capture_is_idempotent_across_sqlite_repository_reopen(
-    capture_database_path: Path,
-) -> None:
+def test_capture_is_idempotent_without_duplicate_state() -> None:
     extractor = FakeCandidateExtractor(
         (
             candidate_proposal("以后项目周报默认用表格"),
@@ -224,8 +198,9 @@ def test_capture_is_idempotent_across_sqlite_repository_reopen(
     )
     principal = PrincipalContext("analyst-a")
     turn = _turn("以后项目周报默认用表格。我可能也喜欢要点。")
+    repository = InMemoryMemoryRepository()
     service = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
+        repository,
         [TestScenarioPolicy()],
         candidate_extractor=extractor,
     )
@@ -238,38 +213,11 @@ def test_capture_is_idempotent_across_sqlite_repository_reopen(
     assert second.outcomes == first.outcomes
     assert len(extractor.requests) == 1
 
-    reopened_extractor = FakeCandidateExtractor()
-    reopened = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
-        [TestScenarioPolicy()],
-        candidate_extractor=reopened_extractor,
-    )
-    third = reopened.capture_turn(principal, turn)
-    assert third.capture_id == first.capture_id
-    assert third.replayed is True
-    assert reopened_extractor.requests == []
-
-    with closing(connection_factory(capture_database_path)()) as connection:
-        assert (
-            connection.execute("SELECT count(*) FROM memory_capture_runs").fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute("SELECT count(*) FROM memory_items").fetchone()[0] == 1
-        )
-        assert (
-            connection.execute("SELECT count(*) FROM memory_evidence").fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute("SELECT count(*) FROM memory_review_items").fetchone()[0]
-            == 1
-        )
+    assert len(service.list_memories(principal)) == 1
+    assert len(service.list_pending_reviews(principal)) == 1
 
 
-def test_sensitive_model_output_is_blocked_before_persistence(
-    capture_database_path: Path,
-) -> None:
+def test_sensitive_model_output_is_blocked_before_persistence() -> None:
     secret = "model-secret-456"
     extractor = FakeCandidateExtractor(
         (
@@ -280,7 +228,7 @@ def test_sensitive_model_output_is_blocked_before_persistence(
         )
     )
     service = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
+        InMemoryMemoryRepository(),
         [TestScenarioPolicy()],
         candidate_extractor=extractor,
     )
@@ -293,12 +241,10 @@ def test_sensitive_model_output_is_blocked_before_persistence(
     ]
     assert service.list_memories(principal) == ()
     assert service.list_pending_reviews(principal) == ()
-    assert secret.encode() not in capture_database_path.read_bytes()
 
 
 @pytest.mark.parametrize("sensitive_field", ("subject", "save_rationale"))
 def test_sensitive_model_metadata_is_blocked_before_persistence(
-    capture_database_path: Path,
     caplog: pytest.LogCaptureFixture,
     sensitive_field: str,
 ) -> None:
@@ -313,7 +259,7 @@ def test_sensitive_model_metadata_is_blocked_before_persistence(
         )
     )
     service = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
+        InMemoryMemoryRepository(),
         [TestScenarioPolicy()],
         candidate_extractor=extractor,
     )
@@ -327,18 +273,15 @@ def test_sensitive_model_metadata_is_blocked_before_persistence(
     ]
     assert service.list_memories(principal) == ()
     assert service.list_pending_reviews(principal) == ()
-    assert secret.encode() not in capture_database_path.read_bytes()
     assert secret not in caplog.text
 
 
-def test_sensitive_source_metadata_is_blocked_before_persistence(
-    capture_database_path: Path,
-) -> None:
+def test_sensitive_source_metadata_is_blocked_before_persistence() -> None:
     source = "这是一段安全输入"
     secret = "source-metadata-secret"
     extractor = FakeCandidateExtractor((candidate_proposal(source),))
     service = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
+        InMemoryMemoryRepository(),
         [TestScenarioPolicy()],
         candidate_extractor=extractor,
     )
@@ -363,7 +306,6 @@ def test_sensitive_source_metadata_is_blocked_before_persistence(
         AdmissionDecision.BLOCKED
     ]
     assert service.list_memories(PrincipalContext("analyst-a")) == ()
-    assert secret.encode() not in capture_database_path.read_bytes()
 
 
 def test_backend_exception_message_is_not_logged(
@@ -503,70 +445,6 @@ def test_pending_confirmation_and_rejection_are_owner_scoped() -> None:
     )
     assert service.list_memories(analyst_a) == (memory,)
     assert service.list_pending_reviews(analyst_a) == ()
-
-
-def test_sqlite_persists_owner_scoped_review_resolution(
-    capture_database_path: Path,
-) -> None:
-    extractor = FakeCandidateExtractor(
-        (
-            candidate_proposal(
-                "我可能偏好表格",
-                content="用户可能偏好表格",
-                assertion_kind=AssertionKind.SYSTEM_INFERENCE,
-                expression_basis=ExpressionBasis.INFERRED,
-            ),
-            candidate_proposal(
-                "接口也许下周继续",
-                subject="interface-refactor",
-                memory_type="ongoing_item",
-                content="接口可能下周继续",
-                durability=CandidateDurability.UNCERTAIN,
-            ),
-        )
-    )
-    repository = SQLiteMemoryRepository(connection_factory(capture_database_path))
-    service = create_memory_service(
-        repository,
-        [TestScenarioPolicy()],
-        candidate_extractor=extractor,
-    )
-    analyst_a = PrincipalContext("analyst-a")
-    analyst_b = PrincipalContext("analyst-b")
-    service.capture_turn(
-        analyst_a,
-        _turn("我可能偏好表格。接口也许下周继续。"),
-    )
-    reviews = service.list_pending_reviews(analyst_a)
-
-    assert len(reviews) == 2
-    assert service.list_pending_reviews(analyst_b) == ()
-    with pytest.raises(ReviewNotFoundError):
-        service.reject_review(analyst_b, reviews[0].review_id)
-
-    confirmed = service.confirm_review(analyst_a, reviews[0].review_id)
-    service.reject_review(analyst_a, reviews[1].review_id)
-
-    reopened = create_memory_service(
-        SQLiteMemoryRepository(connection_factory(capture_database_path)),
-        [TestScenarioPolicy()],
-    )
-    assert (
-        reopened.get_review(
-            analyst_a,
-            reviews[0].review_id,
-        ).status
-        is ReviewStatus.CONFIRMED
-    )
-    assert (
-        reopened.get_review(
-            analyst_a,
-            reviews[1].review_id,
-        ).status
-        is ReviewStatus.REJECTED
-    )
-    assert reopened.list_memories(analyst_a) == (confirmed,)
-    assert reopened.list_memories(analyst_b) == ()
 
 
 def test_two_scenario_policies_supply_different_extraction_contracts() -> None:

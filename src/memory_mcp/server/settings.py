@@ -40,8 +40,6 @@ class MemoryServerSettings(BaseSettings):
         extra="ignore",
     )
 
-    storage_backend: Literal["sqlite", "postgresql"] = "sqlite"
-    database_path: Path = Path(".memory-mcp/memory.db")
     database_url: SecretStr | None = None
     database_pool_min_size: int = Field(default=1, ge=1, le=50)
     database_pool_max_size: int = Field(default=5, ge=1, le=100)
@@ -53,21 +51,14 @@ class MemoryServerSettings(BaseSettings):
     health_path: str = "/health"
     stateless_http: bool = True
     max_capture_characters: int = Field(default=100_000, ge=1_000, le=1_000_000)
+    recall_max_items: int = Field(default=10, ge=1, le=10)
+    recall_max_token_budget: int = Field(default=1_200, ge=64, le=8_000)
+    extractor_backend: Literal["fixed", "openai-compatible"] = "fixed"
+    fixed_candidates_json: SecretStr = SecretStr("[]")
 
     auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/demo-auth")
     resource_server_url: AnyHttpUrl | None = None
     demo_tokens_json: SecretStr = SecretStr("{}")
-
-    scenario_id: str = Field(default="project-work", min_length=1)
-    scenario_memory_types: frozenset[str] = frozenset(
-        {"preference", "ongoing_item", "stable_context"}
-    )
-    scenario_business_progress_values: frozenset[str] = frozenset({"open", "done"})
-    scenario_capture_guidance: str = Field(
-        default="Capture explicit, durable project-work context.",
-        min_length=1,
-    )
-    scenario_policy_version: str = Field(default="project-work-v1", min_length=1)
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_file: Path | None = Path(".memory-mcp/logs/memory-mcp.log")
@@ -88,24 +79,21 @@ class MemoryServerSettings(BaseSettings):
                 "database_pool_max_size must be greater than or equal to "
                 "database_pool_min_size"
             )
-        if self.storage_backend == "postgresql" and self.database_url is None:
-            raise ValueError(
-                "MEMORY_MCP_DATABASE_URL is required for PostgreSQL storage"
-            )
 
     def require_postgresql_url(self) -> str:
         """Return the PostgreSQL DSN only at the infrastructure boundary."""
 
-        if self.storage_backend != "postgresql":
-            raise ValueError(
-                "MEMORY_MCP_STORAGE_BACKEND must be 'postgresql' for this command"
-            )
         if self.database_url is None:
             raise ValueError("MEMORY_MCP_DATABASE_URL is required")
         value = self.database_url.get_secret_value().strip()
         if not value:
             raise ValueError("MEMORY_MCP_DATABASE_URL must not be empty")
         return value
+
+    def fixed_candidates_payload(self) -> str:
+        """Return the offline extractor fixture only at its parsing boundary."""
+
+        return self.fixed_candidates_json.get_secret_value()
 
     def demo_principals(self) -> dict[str, DemoPrincipalSettings]:
         """Parse the secret JSON token mapping without exposing it in settings repr."""

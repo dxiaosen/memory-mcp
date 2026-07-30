@@ -270,7 +270,7 @@ Host 没有原生 Hook 时，Runner 必须提供等价顺序。
 | `list_pending_reviews` | `memory:review` | 已实现 |
 | `confirm_pending_memory` | `memory:review` | 已实现 |
 | `reject_pending_memory` | `memory:review` | 已实现 |
-| `recall_memory` | `memory:read` | 阶段四 |
+| `recall_memory` | `memory:read` | 已实现 |
 
 所有输入 DTO 必须严格拒绝未知字段，特别是 owner、tenant 和 impersonation 字段。
 错误使用稳定业务码，不依赖客户端解析内部异常字符串。
@@ -309,8 +309,8 @@ Host 没有原生 Hook 时，Runner 必须提供等价顺序。
 - capture、review 和同一 MemoryItem 的 replacement revision 原子事务；
 - 版本化 migration 和 checksum。
 
-SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试通过后删除，不
-作为第二生产后端长期维护。
+SQLite 曾作为阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试通过后，
+其运行路径、adapter、migration 和专项测试已删除，不维护第二生产后端。
 
 ## 8. 部署需求
 
@@ -350,7 +350,7 @@ SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试
 | 敏感命中 | 不保存原文，只返回 blocked 分类 |
 | recall 失败 | Agent 可无记忆继续，不替换为其他用户缓存 |
 | capture 失败 | 保留 Agent 答案，使用相同 event id 重试 |
-| PostgreSQL 不可用 | 健康检查失败，不降级到 SQLite |
+| PostgreSQL 不可用 | 健康检查失败，不降级到其他本地存储 |
 | migration 失败 | 停止发布，不启动新版本 |
 | TLS 终止失败 | 不临时开放无认证明文 HTTP |
 
@@ -437,15 +437,17 @@ SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试
 | D5～D8 | 捕获、四类准入、敏感边界、pending | 阶段二验收 |
 | D9～D12 | 远程 MCP、认证、管理工具、旧 RAG 清理 | MCP Client/Inspector、跨用户测试 |
 | D13～D15 | PostgreSQL、生命周期、主动召回 | RDS 重启幂等、当前/历史过滤 |
-| D16～D17 | Hook SDK、两个 Agent、ECS HTTPS 部署 | 跨 Agent 公网闭环 |
-| D18～D19 | 真实模型、脚本、延迟与恢复测试 | 10～15 个可重复案例 |
+| D16～D17 | Hook SDK、两个 Agent、真实/固定模型 | 本地跨 Agent PostgreSQL 闭环 |
+| D18～D19 | ECS HTTPS、远端网络、脚本、延迟与恢复测试 | 10～15 个可重复案例 |
 | D20 | 文档、录屏和演练 | 5～7 分钟稳定演示 |
 
 ## 14. 当前状态
 
 - 阶段一、二、三已经实现；
-- PostgreSQL schema、Repository、migration 命令和 Linux 部署骨架已经加入；
-- PostgreSQL 尚需在用户实际 RDS 上运行 contract 与 MCP 重启验收；
-- `recall_memory`、duplicate、replacement 和 Hook SDK 尚未实现；
+- 阶段四的 `GeneralWorkPolicy`、duplicate、replacement、history 和
+  `recall_memory` 已实现，并通过 InMemory 单元测试与真实 MCP 验收；
+- PostgreSQL schema、Repository、migration 命令、contract 和 MCP 重启测试
+  已在隔离的真实 RDS 测试库通过，SQLite 原型实现已经退出；
+- Hook SDK 仍属于阶段五；
 - 完整任务状态以
   [OpenSpec tasks](../openspec/changes/add-general-memory-core/tasks.md)为准。

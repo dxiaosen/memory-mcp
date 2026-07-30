@@ -8,7 +8,10 @@ from uuid import UUID
 
 from memory_mcp.core.domain import (
     CaptureResult,
+    Evidence,
+    MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRevision,
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
@@ -23,6 +26,27 @@ class CaptureWrite:
     result: CaptureResult
     memories: tuple[MemoryRecord, ...] = ()
     reviews: tuple[ReviewItem, ...] = ()
+    duplicate_evidence: tuple[DuplicateEvidenceWrite, ...] = ()
+    replacements: tuple[ReplacementWrite, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateEvidenceWrite:
+    """为现有 current revision 增加一条独立来源。"""
+
+    memory_id: UUID
+    expected_revision_id: UUID
+    evidence: Evidence
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementWrite:
+    """在同一 MemoryItem 内原子替换 current revision。"""
+
+    memory_id: UUID
+    expected_revision_id: UUID
+    revision: MemoryRevision
+    evidence: tuple[Evidence, ...]
 
 
 class MemoryRepository(Protocol):
@@ -58,6 +82,27 @@ class MemoryRepository(Protocol):
         active_only: bool,
     ) -> Sequence[MemoryRecord]:
         """列出当前用户的当前版本，并可排除非活动记忆。"""
+
+        ...
+
+    def find_current(
+        self,
+        principal: PrincipalContext,
+        *,
+        scenario: str,
+        subject: str | None = None,
+        memory_type: str | None = None,
+    ) -> Sequence[MemoryRecord]:
+        """在 Repository 内先完成 owner/current/active/scenario/subject 缩小。"""
+
+        ...
+
+    def get_history(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> Sequence[MemoryHistoryEntry]:
+        """返回当前 owner 显式请求的一项完整 revision 历史。"""
 
         ...
 
@@ -111,7 +156,9 @@ class MemoryRepository(Protocol):
         status: ReviewStatus,
         decided_at: datetime,
         memory: MemoryRecord | None = None,
+        duplicate_evidence: DuplicateEvidenceWrite | None = None,
+        replacement: ReplacementWrite | None = None,
     ) -> ReviewItem | None:
-        """原子确认并保存记忆，或拒绝一项 pending 候选。"""
+        """原子确认新记忆/duplicate/replacement，或拒绝 pending 候选。"""
 
         ...

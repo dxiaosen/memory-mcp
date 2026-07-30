@@ -8,17 +8,26 @@ from uuid import UUID
 from memory_mcp.core.domain import (
     CaptureResult,
     CaptureStatus,
+    Evidence,
     LifecycleStatus,
+    MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRevision,
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
+    normalize_memory_text,
 )
 from memory_mcp.core.exceptions import (
     InvalidMemoryTypeError,
     ScenarioNotRegisteredError,
 )
-from memory_mcp.core.ports import CaptureWrite, ScenarioPolicy
+from memory_mcp.core.ports import (
+    CaptureWrite,
+    DuplicateEvidenceWrite,
+    ReplacementWrite,
+    ScenarioPolicy,
+)
 
 
 class InMemoryMemoryRepository:
@@ -26,6 +35,7 @@ class InMemoryMemoryRepository:
 
     def __init__(self) -> None:
         self._records: dict[UUID, MemoryRecord] = {}
+        self._history: dict[UUID, tuple[MemoryHistoryEntry, ...]] = {}
         self._scenario_types: dict[str, frozenset[str]] = {}
         self._captures: dict[
             tuple[str, ...],
@@ -45,6 +55,12 @@ class InMemoryMemoryRepository:
         if record.item.memory_id in self._records:
             raise ValueError("memory_id must be unique")
         self._records[record.item.memory_id] = record
+        self._history[record.item.memory_id] = (
+            MemoryHistoryEntry(
+                revision=record.current_revision,
+                evidence=record.evidence,
+            ),
+        )
 
     def get(
         self,
@@ -74,6 +90,51 @@ class InMemoryMemoryRepository:
                 if record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
             )
         return tuple(sorted(records, key=lambda value: value.item.created_at))
+
+    def find_current(
+        self,
+        principal: PrincipalContext,
+        *,
+        scenario: str,
+        subject: str | None = None,
+        memory_type: str | None = None,
+    ) -> Sequence[MemoryRecord]:
+        """先按可信 owner 和活动 current 集合收窄，再做规范化 subject 匹配。"""
+
+        subject_key = normalize_memory_text(subject) if subject is not None else None
+        records = (
+            record
+            for record in self._records.values()
+            if record.item.owner_id == principal.owner_id
+            and record.item.scenario == scenario
+            and record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+            and (memory_type is None or record.item.memory_type == memory_type)
+            and (
+                subject_key is None
+                or normalize_memory_text(record.item.subject) == subject_key
+            )
+        )
+        return tuple(
+            sorted(
+                records, key=lambda value: (value.item.created_at, value.item.memory_id)
+            )
+        )
+
+    def get_history(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> Sequence[MemoryHistoryEntry]:
+        record = self._records.get(memory_id)
+        if record is None or record.item.owner_id != principal.owner_id:
+            return ()
+        return tuple(
+            sorted(
+                self._history[memory_id],
+                key=lambda value: value.revision.revision_number,
+                reverse=True,
+            )
+        )
 
     def get_capture(
         self,
@@ -105,7 +166,10 @@ class InMemoryMemoryRepository:
         if result.owner_id != principal.owner_id:
             raise ValueError("capture owner must match trusted principal")
         if result.status is not CaptureStatus.COMPLETED and (
-            write.memories or write.reviews
+            write.memories
+            or write.reviews
+            or write.duplicate_evidence
+            or write.replacements
         ):
             raise ValueError("failed capture cannot persist candidate content")
         key = self._capture_key(result)
@@ -117,11 +181,21 @@ class InMemoryMemoryRepository:
                 raise ValueError("reprocessed capture must preserve capture_id")
 
         record_ids = {record.item.memory_id for record in write.memories}
+        lifecycle_ids = {
+            operation.memory_id
+            for operation in (*write.duplicate_evidence, *write.replacements)
+        }
         review_ids = {review.review_id for review in write.reviews}
         if len(record_ids) != len(write.memories):
             raise ValueError("capture contains duplicate memory ids")
         if len(review_ids) != len(write.reviews):
             raise ValueError("capture contains duplicate review ids")
+        if len(lifecycle_ids) != (
+            len(write.duplicate_evidence) + len(write.replacements)
+        ):
+            raise ValueError("capture contains conflicting lifecycle writes")
+        if record_ids & lifecycle_ids:
+            raise ValueError("new memories cannot also be lifecycle targets")
         for record in write.memories:
             self._validate_record(principal, record)
             if record.item.memory_id in self._records:
@@ -131,18 +205,84 @@ class InMemoryMemoryRepository:
             if review.review_id in self._reviews:
                 raise ValueError("review_id must be unique")
         for outcome in result.outcomes:
-            if outcome.memory_id is not None and outcome.memory_id not in record_ids:
+            if (
+                outcome.memory_id is not None
+                and outcome.memory_id not in record_ids | lifecycle_ids
+            ):
                 raise ValueError("capture outcome references unknown memory")
             if outcome.review_id is not None and outcome.review_id not in review_ids:
                 raise ValueError("capture outcome references unknown review")
 
         records = dict(self._records)
+        history = dict(self._history)
         reviews = dict(self._reviews)
         captures = dict(self._captures)
-        records.update((record.item.memory_id, record) for record in write.memories)
+        for record in write.memories:
+            records[record.item.memory_id] = record
+            history[record.item.memory_id] = (
+                MemoryHistoryEntry(
+                    revision=record.current_revision,
+                    evidence=record.evidence,
+                ),
+            )
+        for duplicate in write.duplicate_evidence:
+            current = self._require_lifecycle_target(
+                records,
+                principal,
+                duplicate.memory_id,
+                duplicate.expected_revision_id,
+            )
+            self._validate_new_evidence(
+                principal,
+                current.current_revision,
+                duplicate.evidence,
+            )
+            updated = replace(
+                current,
+                evidence=(*current.evidence, duplicate.evidence),
+            )
+            records[duplicate.memory_id] = updated
+            history[duplicate.memory_id] = tuple(
+                replace(entry, evidence=updated.evidence)
+                if entry.revision.revision_id == duplicate.expected_revision_id
+                else entry
+                for entry in history[duplicate.memory_id]
+            )
+        for replacement in write.replacements:
+            current = self._require_lifecycle_target(
+                records,
+                principal,
+                replacement.memory_id,
+                replacement.expected_revision_id,
+            )
+            self._validate_replacement(principal, current, replacement)
+            superseded = replace(
+                current.current_revision,
+                lifecycle_status=LifecycleStatus.SUPERSEDED,
+                is_current=False,
+            )
+            new_record = MemoryRecord(
+                item=current.item,
+                current_revision=replacement.revision,
+                evidence=replacement.evidence,
+            )
+            records[replacement.memory_id] = new_record
+            history[replacement.memory_id] = (
+                *(
+                    replace(entry, revision=superseded)
+                    if entry.revision.revision_id == replacement.expected_revision_id
+                    else entry
+                    for entry in history[replacement.memory_id]
+                ),
+                MemoryHistoryEntry(
+                    revision=replacement.revision,
+                    evidence=replacement.evidence,
+                ),
+            )
         reviews.update((review.review_id, review) for review in write.reviews)
         captures[key] = result
         self._records = records
+        self._history = history
         self._reviews = reviews
         self._captures = captures
 
@@ -181,6 +321,8 @@ class InMemoryMemoryRepository:
         status: ReviewStatus,
         decided_at: datetime,
         memory: MemoryRecord | None = None,
+        duplicate_evidence: DuplicateEvidenceWrite | None = None,
+        replacement: ReplacementWrite | None = None,
     ) -> ReviewItem | None:
         review = self.get_review(principal, review_id)
         if review is None:
@@ -190,36 +332,167 @@ class InMemoryMemoryRepository:
         if review.status is not ReviewStatus.PENDING:
             return None
         if status is ReviewStatus.CONFIRMED:
-            if memory is None:
-                raise ValueError("confirmed review requires memory")
-            self._validate_record(principal, memory)
-            self._validate_review_memory(review, memory)
-            if memory.item.memory_id in self._records:
-                raise ValueError("memory_id must be unique")
-        elif status is ReviewStatus.REJECTED:
+            writes = tuple(
+                value
+                for value in (memory, duplicate_evidence, replacement)
+                if value is not None
+            )
+            if len(writes) != 1:
+                raise ValueError("confirmed review requires one memory write")
             if memory is not None:
+                self._validate_record(principal, memory)
+                self._validate_review_memory(review, memory)
+                if memory.item.memory_id in self._records:
+                    raise ValueError("memory_id must be unique")
+        elif status is ReviewStatus.REJECTED:
+            if any(
+                value is not None for value in (memory, duplicate_evidence, replacement)
+            ):
                 raise ValueError("rejected review cannot create memory")
         else:
             raise ValueError("review resolution must be confirmed or rejected")
 
+        resolved_memory_id = (
+            memory.item.memory_id
+            if memory is not None
+            else (
+                duplicate_evidence.memory_id
+                if duplicate_evidence is not None
+                else replacement.memory_id
+                if replacement is not None
+                else None
+            )
+        )
         resolved = replace(
             review,
             status=status,
             decided_at=decided_at,
             resolved_memory_id=(
-                memory.item.memory_id
-                if status is ReviewStatus.CONFIRMED and memory is not None
-                else None
+                resolved_memory_id if status is ReviewStatus.CONFIRMED else None
             ),
         )
         records = dict(self._records)
+        history = dict(self._history)
         reviews = dict(self._reviews)
         if memory is not None:
             records[memory.item.memory_id] = memory
+            history[memory.item.memory_id] = (
+                MemoryHistoryEntry(
+                    revision=memory.current_revision,
+                    evidence=memory.evidence,
+                ),
+            )
+        if duplicate_evidence is not None:
+            current = self._require_lifecycle_target(
+                records,
+                principal,
+                duplicate_evidence.memory_id,
+                duplicate_evidence.expected_revision_id,
+            )
+            self._validate_new_evidence(
+                principal,
+                current.current_revision,
+                duplicate_evidence.evidence,
+            )
+            updated = replace(
+                current,
+                evidence=(*current.evidence, duplicate_evidence.evidence),
+            )
+            records[duplicate_evidence.memory_id] = updated
+            history[duplicate_evidence.memory_id] = tuple(
+                replace(entry, evidence=updated.evidence)
+                if entry.revision.revision_id == duplicate_evidence.expected_revision_id
+                else entry
+                for entry in history[duplicate_evidence.memory_id]
+            )
+        if replacement is not None:
+            current = self._require_lifecycle_target(
+                records,
+                principal,
+                replacement.memory_id,
+                replacement.expected_revision_id,
+            )
+            self._validate_replacement(principal, current, replacement)
+            superseded = replace(
+                current.current_revision,
+                lifecycle_status=LifecycleStatus.SUPERSEDED,
+                is_current=False,
+            )
+            records[replacement.memory_id] = MemoryRecord(
+                item=current.item,
+                current_revision=replacement.revision,
+                evidence=replacement.evidence,
+            )
+            history[replacement.memory_id] = (
+                *(
+                    replace(entry, revision=superseded)
+                    if entry.revision.revision_id == replacement.expected_revision_id
+                    else entry
+                    for entry in history[replacement.memory_id]
+                ),
+                MemoryHistoryEntry(
+                    revision=replacement.revision,
+                    evidence=replacement.evidence,
+                ),
+            )
         reviews[review_id] = resolved
         self._records = records
+        self._history = history
         self._reviews = reviews
         return resolved
+
+    @staticmethod
+    def _require_lifecycle_target(
+        records: dict[UUID, MemoryRecord],
+        principal: PrincipalContext,
+        memory_id: UUID,
+        expected_revision_id: UUID,
+    ) -> MemoryRecord:
+        record = records.get(memory_id)
+        if (
+            record is None
+            or record.item.owner_id != principal.owner_id
+            or record.current_revision.revision_id != expected_revision_id
+            or record.current_revision.lifecycle_status is not LifecycleStatus.ACTIVE
+        ):
+            raise ValueError("lifecycle target is no longer current")
+        return record
+
+    @staticmethod
+    def _validate_new_evidence(
+        principal: PrincipalContext,
+        revision: MemoryRevision,
+        evidence: Evidence,
+    ) -> None:
+        if (
+            evidence.owner_id != principal.owner_id
+            or evidence.memory_id != revision.memory_id
+            or evidence.revision_id != revision.revision_id
+        ):
+            raise ValueError("duplicate evidence must match current revision")
+
+    @staticmethod
+    def _validate_replacement(
+        principal: PrincipalContext,
+        current: MemoryRecord,
+        replacement,
+    ) -> None:
+        revision = replacement.revision
+        if (
+            revision.owner_id != principal.owner_id
+            or revision.memory_id != current.item.memory_id
+            or revision.revision_number != current.current_revision.revision_number + 1
+            or not revision.is_current
+            or revision.lifecycle_status is not LifecycleStatus.ACTIVE
+            or not replacement.evidence
+        ):
+            raise ValueError("replacement revision is invalid")
+        for source in replacement.evidence:
+            InMemoryMemoryRepository._validate_new_evidence(
+                principal,
+                revision,
+                source,
+            )
 
     def _validate_record(
         self,

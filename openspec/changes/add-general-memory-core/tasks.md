@@ -38,27 +38,30 @@
 
 - [x] 4.1 建立 PostgreSQL 版本化 schema、显式 migration、连接池、健康检查和 secret-backed `database_url`
 - [x] 4.2 实现 PostgreSQL `MemoryRepository`，保持 owner、捕获幂等、pending resolution 和单一 current 的事务约束
-- [ ] 4.3 复用同一组 Repository contract cases 在真实 PostgreSQL 验证 owner、事务、review resolution、event/source-turn 幂等、重叠重试、migration checksum、连接池关闭和 MCP 重启；通过后删除 SQLite 正式运行路径、adapter、migration 和专项测试
-- [ ] 4.4 实现并注册正式 `GeneralWorkPolicy`，包含 preference、stable_context、ongoing_item 和 decision
-- [ ] 4.5 增加 duplicate Evidence、同一 MemoryItem 内 replacement revision、superseded history 和单一 current 所需的 migration、Repository port 与事务
-- [ ] 4.6 定义最小确定性文本规范化；实现同 scope duplicate、明确用户 replacement、其余冲突 pending 的分类，并由程序选择可信目标 memory/revision
-- [ ] 4.7 实现 owner-first 结构化 recall query port，在 Repository 边界先按 owner、active/current、scenario 和 subject 缩小候选，再按 task intent、阈值、数量和 token budget 过滤
-- [ ] 4.8 实现 `recall_memory` MCP 工具，返回结构化 revision/source 和安全 `rendered_context`
-- [ ] 4.9 完成 duplicate、replacement、pending/history 排除、空召回、当前指令优先、跨用户召回测试和三轮远程示例
+- [x] 4.3 复用同一组 Repository contract cases 在真实 PostgreSQL 验证 owner、事务、review resolution、event/source-turn 幂等、重叠重试、migration checksum、连接池关闭和 MCP 重启；通过后删除 SQLite 正式运行路径、adapter、migration 和专项测试
+- [x] 4.4 实现并注册正式 `GeneralWorkPolicy`，包含 preference、stable_context、ongoing_item 和 decision
+- [x] 4.5 增加 duplicate Evidence、同一 MemoryItem 内 replacement revision、superseded history 和单一 current 所需的 migration、Repository port 与事务
+- [x] 4.6 定义最小确定性文本规范化；实现同 scope duplicate、明确用户 replacement、其余冲突 pending 的分类，并由程序选择可信目标 memory/revision
+- [x] 4.7 实现 owner-first 结构化 recall query port，在 Repository 边界先按 owner、active/current、scenario 和 subject 缩小候选，再按 task intent、阈值、数量和 token budget 过滤
+- [x] 4.8 实现 `recall_memory` MCP 工具，返回结构化 revision/source 和安全 `rendered_context`
+- [x] 4.9 完成 duplicate、replacement、pending/history 排除、空召回、当前指令优先、跨用户召回测试和三轮远程示例
 
 ## 5. 阶段五——Hook SDK、Linux 部署与跨 Agent 接入（D16～D17）
 
-- [ ] 5.1 建立 `memory_hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
-- [ ] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
-- [ ] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
-- [ ] 5.4 接入两个平台无关的独立客户端；真实 Agent Host 可作为兼容性展示，无原生 Hook 的 Host 使用 Runner 兜底
+- [x] 5.1 建立 `memory_hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
+- [x] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
+- [x] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
+- [x] 5.4 接入一个真实 OpenAI-compatible 结构化模型 backend，在默认服务组合根按配置创建 `CandidateExtractor`，同时保留固定离线 backend、确定性夹具和安全启动失败
 - [x] 5.5 增加 `uv + systemd` Linux 部署单元、独立 migration 命令、私网直连/可选云负载均衡 HTTPS 和 ECS 发布/回滚说明，不引入 Docker 或 Nginx
-- [ ] 5.6 验证公网 HTTPS MCP、私网 PostgreSQL、应用端口不公开、secret 不落日志和进程参数
-- [ ] 5.7 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的端到端验收
+- [x] 5.6 接入两个平台无关的独立 Runner/客户端配置，真实 Agent Host 只作为兼容性 smoke path；生成阶段五整体设计、测试说明和端到端使用文档
+- [x] 5.7 使用真实 MCP HTTP、固定 backend 和 PostgreSQL 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的自动化端到端验收，并提供真实模型手工 smoke 步骤
+- [x] 5.8 强化 Hook 异步边界：BeforeRun 前台 await、AfterRun 默认 await receipt、不引入外部队列；实现有界 run cache、payload fingerprint 冲突、可复用 HTTP Client 生命周期、完整 capture summary/failure 返回和对应并发/关闭测试
+- [x] 5.9 将 `chat_models.py`、`model_extraction.py` 和模型专用 settings 收敛到 `extraction/` 包，删除未使用日志 settings/getter；让 `server`/adapter 包入口保持轻量，移出 PostgreSQL adapter 对 Server Settings 的反向 CLI 依赖，并整理测试 support/import
+- [x] 5.10 在不改变公开契约和事务边界的前提下拆分 CaptureService 的候选处理/Review 协调，以及 PostgreSQL Repository 的 row mapping/write validation；保留公开 facade，补依赖守卫并完成全量与真实 PostgreSQL 回归
 
 ## 6. 阶段六——真实抽取、演示与交付（D18～D20）
 
-- [ ] 6.1 接入一个真实结构化模型 backend，同时保留固定离线 backend、确定性夹具和 PostgreSQL 重置入口
+- [ ] 6.1 在部署环境验证公网 HTTPS MCP、私网 PostgreSQL、应用端口不公开、secret 不落日志和进程参数
 - [ ] 6.2 构造 10～15 个跨 Agent 脚本，覆盖四类准入、duplicate、replacement 和 empty recall
 - [ ] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界、数据库重启和失败恢复测试
 - [ ] 6.4 最终同步 README、需求、架构、配置和启动文档；核对实现基线、OpenSpec、云端验收结果和现场演示口径

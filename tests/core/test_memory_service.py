@@ -4,7 +4,6 @@ from uuid import UUID
 
 import pytest
 
-from core.fakes import TestScenarioPolicy, project_preference_command
 from memory_mcp.core import (
     InvalidMemoryTypeError,
     InvalidScenarioPolicyError,
@@ -17,11 +16,10 @@ from memory_mcp.core import (
     ScenarioRegistry,
     SensitiveContentBlockedError,
 )
-from memory_mcp.core.adapters import (
-    InMemoryMemoryRepository,
-    RegexSensitiveContentGuard,
-)
+from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
+from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.composition import create_memory_service
+from tests.support.fakes import TestScenarioPolicy, project_preference_command
 
 
 def _service():

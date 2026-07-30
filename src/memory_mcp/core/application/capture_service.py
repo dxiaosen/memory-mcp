@@ -1,34 +1,30 @@
-"""阶段二捕获、准入和待确认用例协调器。"""
+"""Capture orchestration and its compatibility facade for pending reviews."""
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
+from threading import Lock
 from uuid import UUID
 
-from memory_mcp.core.application.admission import (
-    AdmissionOutcome,
-    ConservativeAdmissionPolicy,
+from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
+from memory_mcp.core.application.candidate_processing import (
+    CandidateMaterializer,
+    CandidateProcessor,
 )
+from memory_mcp.core.application.review_service import ReviewService
 from memory_mcp.core.domain import (
     AdmissionDecision,
-    Candidate,
     CaptureOutcome,
     CaptureResult,
     CaptureStatus,
-    Evidence,
     ExtractionMetadata,
-    LifecycleStatus,
-    MemoryItem,
     MemoryRecord,
-    MemoryRevision,
-    MessageRole,
     PrincipalContext,
     ReviewItem,
-    ReviewStatus,
     TurnEnvelope,
-    TurnMessage,
 )
 from memory_mcp.core.exceptions import (
     CaptureNotConfiguredError,
@@ -36,7 +32,6 @@ from memory_mcp.core.exceptions import (
     InvalidMemoryTypeError,
     InvalidModelOutputError,
     InvalidScenarioProgressError,
-    ReviewNotFoundError,
 )
 from memory_mcp.core.ports import (
     CandidateExtractor,
@@ -53,7 +48,7 @@ _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")
 
 
 class CaptureService:
-    """协调结构化抽取、准入、幂等提交和 pending 用户操作。"""
+    """Coordinate extraction and commits while preserving the public facade."""
 
     def __init__(
         self,
@@ -70,20 +65,64 @@ class CaptureService:
         self._scenario_registry = scenario_registry
         self._candidate_extractor = candidate_extractor
         self._sensitive_guard = sensitive_guard
-        self._admission_policy = admission_policy
         self._id_factory = id_factory
         self._clock = clock
+        self._capture_locks = _KeyedLocks()
+        materializer = CandidateMaterializer(
+            id_factory=id_factory,
+            clock=clock,
+        )
+        self._candidate_processor = (
+            CandidateProcessor(
+                repository,
+                scenario_registry,
+                sensitive_guard,
+                admission_policy,
+                materializer,
+                id_factory=id_factory,
+                clock=clock,
+            )
+            if sensitive_guard is not None
+            else None
+        )
+        self._review_service = ReviewService(
+            repository,
+            scenario_registry,
+            materializer,
+            clock=clock,
+        )
 
     def capture_turn(
         self,
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
-        """同步捕获一轮会话，并原子提交四类互斥准入结果。"""
+        """Serialize same-process retries before entering model extraction."""
+
+        policy = self._scenario_registry.get(turn.scenario)
+        event_or_turn = turn.event_id or (
+            f"{turn.conversation_id}\x1f{turn.source_turn_id}"
+        )
+        key = (
+            principal.owner_id,
+            turn.scenario,
+            event_or_turn,
+            policy.policy_version,
+        )
+        with self._capture_locks.hold(key):
+            return self._capture_turn_locked(principal, turn)
+
+    def _capture_turn_locked(
+        self,
+        principal: PrincipalContext,
+        turn: TurnEnvelope,
+    ) -> CaptureResult:
+        """Capture one turn and atomically commit mutually exclusive outcomes."""
 
         extractor = self._candidate_extractor
         guard = self._sensitive_guard
-        if extractor is None or guard is None:
+        processor = self._candidate_processor
+        if extractor is None or guard is None or processor is None:
             raise CaptureNotConfiguredError(
                 "candidate extractor and sensitive guard are required"
             )
@@ -132,7 +171,7 @@ class CaptureService:
         try:
             inspection = guard.inspect(turn.content)
             subject_hint_inspection = guard.inspect(turn.subject_hint or "")
-            outcomes: list[CaptureOutcome] = [
+            initial_outcomes = tuple(
                 CaptureOutcome(
                     candidate_id=self._id_factory(),
                     decision=AdmissionDecision.BLOCKED,
@@ -141,9 +180,7 @@ class CaptureService:
                 for category in dict.fromkeys(
                     (*inspection.categories, *subject_hint_inspection.categories)
                 )
-            ]
-            memories: list[MemoryRecord] = []
-            reviews: list[ReviewItem] = []
+            )
             proposals = ()
             if _has_processable_content(inspection.redacted_text):
                 proposals = extractor.extract(
@@ -163,123 +200,13 @@ class CaptureService:
                         ),
                     )
                 )
-
-            for proposal in proposals:
-                candidate_id = self._id_factory()
-                if proposal.source_expression not in inspection.redacted_text:
-                    raise InvalidModelOutputError(
-                        "source_expression must occur in the redacted source turn"
-                    )
-                self._scenario_registry.validate_memory_type(
-                    turn.scenario,
-                    proposal.memory_type,
-                )
-                self._scenario_registry.validate_business_progress(
-                    turn.scenario,
-                    proposal.business_progress,
-                )
-                source_metadata = _source_metadata(
-                    turn,
-                    proposal.source_expression,
-                    guard,
-                )
-                if turn.messages and source_metadata["source_role"] is None:
-                    raise InvalidModelOutputError(
-                        "source_expression must occur in one submitted message"
-                    )
-                candidate_sensitive = guard.inspect(
-                    "\n".join(
-                        value
-                        for value in (
-                            proposal.subject,
-                            proposal.memory_type,
-                            proposal.content,
-                            proposal.source_expression,
-                            proposal.save_rationale,
-                            proposal.business_progress,
-                            proposal.original_time_expression,
-                            source_metadata["source_message_id"],
-                            source_metadata["source_tool_name"],
-                        )
-                        if isinstance(value, str)
-                    )
-                )
-                if candidate_sensitive.was_redacted:
-                    outcomes.append(
-                        CaptureOutcome(
-                            candidate_id=candidate_id,
-                            decision=AdmissionDecision.BLOCKED,
-                            reason_code="sensitive_candidate_text",
-                        )
-                    )
-                    continue
-                candidate = Candidate(
-                    candidate_id=candidate_id,
-                    owner_id=principal.owner_id,
-                    scenario=turn.scenario,
-                    subject=proposal.subject,
-                    memory_type=proposal.memory_type,
-                    content=proposal.content,
-                    assertion_kind=proposal.assertion_kind,
-                    conversation_id=turn.conversation_id,
-                    source_turn_id=turn.source_turn_id,
-                    source_expression=proposal.source_expression,
-                    save_rationale=proposal.save_rationale,
-                    confidence=proposal.confidence,
-                    durability=proposal.durability,
-                    expression_basis=proposal.expression_basis,
-                    observed_at=turn.observed_at,
-                    created_at=self._clock(),
-                    business_progress=proposal.business_progress,
-                    original_time_expression=proposal.original_time_expression,
-                    normalized_time=proposal.normalized_time,
-                    **source_metadata,
-                )
-                admission = self._admission_policy.decide(candidate)
-                if (
-                    admission.decision is AdmissionDecision.AUTO_SAVE
-                    and turn.messages
-                    and candidate.source_role is not MessageRole.USER
-                ):
-                    admission = AdmissionOutcome(
-                        AdmissionDecision.PENDING,
-                        "non_user_source",
-                    )
-                if admission.decision is AdmissionDecision.AUTO_SAVE:
-                    memory = self._record_from_candidate(candidate)
-                    memories.append(memory)
-                    outcomes.append(
-                        CaptureOutcome(
-                            candidate_id=candidate.candidate_id,
-                            decision=admission.decision,
-                            reason_code=admission.reason_code,
-                            memory_id=memory.item.memory_id,
-                        )
-                    )
-                elif admission.decision is AdmissionDecision.PENDING:
-                    review = ReviewItem(
-                        review_id=self._id_factory(),
-                        candidate=candidate,
-                        status=ReviewStatus.PENDING,
-                        created_at=self._clock(),
-                    )
-                    reviews.append(review)
-                    outcomes.append(
-                        CaptureOutcome(
-                            candidate_id=candidate.candidate_id,
-                            decision=admission.decision,
-                            reason_code=admission.reason_code,
-                            review_id=review.review_id,
-                        )
-                    )
-                else:
-                    outcomes.append(
-                        CaptureOutcome(
-                            candidate_id=candidate.candidate_id,
-                            decision=admission.decision,
-                            reason_code=admission.reason_code,
-                        )
-                    )
+            processed = processor.process(
+                principal,
+                turn,
+                proposals,
+                redacted_source=inspection.redacted_text,
+                initial_outcomes=initial_outcomes,
+            )
         except (
             InvalidMemoryTypeError,
             InvalidModelOutputError,
@@ -324,7 +251,7 @@ class CaptureService:
             source_turn_id=turn.source_turn_id,
             metadata=metadata,
             status=CaptureStatus.COMPLETED,
-            outcomes=tuple(outcomes),
+            outcomes=processed.outcomes,
             created_at=created_at,
             completed_at=self._clock(),
             was_reprocessed=was_reprocessed,
@@ -336,8 +263,10 @@ class CaptureService:
             principal,
             CaptureWrite(
                 result=result,
-                memories=tuple(memories),
-                reviews=tuple(reviews),
+                memories=processed.memories,
+                reviews=processed.reviews,
+                duplicate_evidence=processed.duplicate_evidence,
+                replacements=processed.replacements,
             ),
         )
         log_event(
@@ -345,18 +274,22 @@ class CaptureService:
             logging.INFO,
             "memory.capture.completed",
             auto_saved_count=sum(
-                outcome.decision is AdmissionDecision.AUTO_SAVE for outcome in outcomes
+                outcome.decision is AdmissionDecision.AUTO_SAVE
+                for outcome in processed.outcomes
             ),
             blocked_count=sum(
-                outcome.decision is AdmissionDecision.BLOCKED for outcome in outcomes
+                outcome.decision is AdmissionDecision.BLOCKED
+                for outcome in processed.outcomes
             ),
             capture_id=capture_id,
             discarded_count=sum(
-                outcome.decision is AdmissionDecision.DISCARD for outcome in outcomes
+                outcome.decision is AdmissionDecision.DISCARD
+                for outcome in processed.outcomes
             ),
             owner_ref=stable_reference(principal.owner_id),
             pending_count=sum(
-                outcome.decision is AdmissionDecision.PENDING for outcome in outcomes
+                outcome.decision is AdmissionDecision.PENDING
+                for outcome in processed.outcomes
             ),
         )
         return result
@@ -365,148 +298,30 @@ class CaptureService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
-        """列出当前用户尚未处理的候选，内容与活动记忆隔离。"""
+        """List unresolved candidates through the stable CaptureService facade."""
 
-        return self._repository.list_reviews(
-            principal,
-            status=ReviewStatus.PENDING,
-        )
+        return self._review_service.list_pending(principal)
 
     def get_review(
         self,
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
-        """读取当前用户拥有的候选确认项。"""
-
-        review = self._repository.get_review(principal, review_id)
-        if review is None:
-            raise ReviewNotFoundError("review is unavailable")
-        return review
+        return self._review_service.get(principal, review_id)
 
     def confirm_review(
         self,
         principal: PrincipalContext,
         review_id: UUID,
     ) -> MemoryRecord:
-        """确认 pending 候选，并与活动记忆写入原子提交。"""
-
-        review = self._repository.get_review(principal, review_id)
-        if review is None:
-            raise ReviewNotFoundError("review is unavailable")
-        if review.status is ReviewStatus.CONFIRMED:
-            if review.resolved_memory_id is None:
-                raise ReviewNotFoundError("review is unavailable")
-            memory = self._repository.get(principal, review.resolved_memory_id)
-            if memory is None:
-                raise ReviewNotFoundError("review is unavailable")
-            return memory
-        if review.status is not ReviewStatus.PENDING:
-            raise ReviewNotFoundError("review is unavailable")
-        self._scenario_registry.validate_memory_type(
-            review.candidate.scenario,
-            review.candidate.memory_type,
-        )
-        self._scenario_registry.validate_business_progress(
-            review.candidate.scenario,
-            review.candidate.business_progress,
-        )
-        memory = self._record_from_candidate(review.candidate)
-        resolved = self._repository.resolve_review(
-            principal,
-            review_id,
-            status=ReviewStatus.CONFIRMED,
-            decided_at=self._clock(),
-            memory=memory,
-        )
-        if resolved is None:
-            raise ReviewNotFoundError("review is unavailable")
-        log_event(
-            _LOGGER,
-            logging.INFO,
-            "memory.review.confirmed",
-            memory_id=memory.item.memory_id,
-            owner_ref=stable_reference(principal.owner_id),
-            review_id=review_id,
-        )
-        return memory
+        return self._review_service.confirm(principal, review_id)
 
     def reject_review(
         self,
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
-        """拒绝 pending 候选，且不创建活动记忆。"""
-
-        existing = self._repository.get_review(principal, review_id)
-        if existing is None:
-            raise ReviewNotFoundError("review is unavailable")
-        if existing.status is ReviewStatus.REJECTED:
-            return existing
-        if existing.status is not ReviewStatus.PENDING:
-            raise ReviewNotFoundError("review is unavailable")
-        resolved = self._repository.resolve_review(
-            principal,
-            review_id,
-            status=ReviewStatus.REJECTED,
-            decided_at=self._clock(),
-        )
-        if resolved is None:
-            raise ReviewNotFoundError("review is unavailable")
-        log_event(
-            _LOGGER,
-            logging.INFO,
-            "memory.review.rejected",
-            owner_ref=stable_reference(principal.owner_id),
-            review_id=review_id,
-        )
-        return resolved
-
-    def _record_from_candidate(self, candidate: Candidate) -> MemoryRecord:
-        memory_id = self._id_factory()
-        revision_id = self._id_factory()
-        created_at = self._clock()
-        return MemoryRecord(
-            item=MemoryItem(
-                memory_id=memory_id,
-                owner_id=candidate.owner_id,
-                scenario=candidate.scenario,
-                subject=candidate.subject,
-                memory_type=candidate.memory_type,
-                created_at=created_at,
-            ),
-            current_revision=MemoryRevision(
-                revision_id=revision_id,
-                memory_id=memory_id,
-                owner_id=candidate.owner_id,
-                revision_number=1,
-                content=candidate.content,
-                assertion_kind=candidate.assertion_kind,
-                lifecycle_status=LifecycleStatus.ACTIVE,
-                business_progress=candidate.business_progress,
-                save_rationale=candidate.save_rationale,
-                observed_at=candidate.observed_at,
-                created_at=created_at,
-                original_time_expression=candidate.original_time_expression,
-                normalized_time=candidate.normalized_time,
-            ),
-            evidence=(
-                Evidence(
-                    evidence_id=self._id_factory(),
-                    memory_id=memory_id,
-                    revision_id=revision_id,
-                    owner_id=candidate.owner_id,
-                    conversation_id=candidate.conversation_id,
-                    source_turn_id=candidate.source_turn_id,
-                    source_expression=candidate.source_expression,
-                    observed_at=candidate.observed_at,
-                    created_at=created_at,
-                    source_role=candidate.source_role,
-                    source_message_id=candidate.source_message_id,
-                    source_tool_name=candidate.source_tool_name,
-                ),
-            ),
-        )
+        return self._review_service.reject(principal, review_id)
 
     def _commit_capture_failure(
         self,
@@ -558,30 +373,26 @@ def _has_processable_content(value: str) -> bool:
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
 
 
-def _source_metadata(
-    turn: TurnEnvelope,
-    source_expression: str,
-    guard: SensitiveContentGuard,
-) -> dict[str, MessageRole | str | None]:
-    """Derive source identity from trusted message blocks, never model fields."""
+class _KeyedLocks:
+    """Reference-counted locks for overlapping captures in one process."""
 
-    matching: list[TurnMessage] = []
-    for message in turn.messages:
-        redacted = guard.inspect(message.content).redacted_text
-        if source_expression in redacted:
-            matching.append(message)
-    if not matching:
-        return {
-            "source_role": None,
-            "source_message_id": None,
-            "source_tool_name": None,
-        }
-    selected = next(
-        (message for message in matching if message.role is MessageRole.USER),
-        matching[0],
-    )
-    return {
-        "source_role": selected.role,
-        "source_message_id": selected.message_id,
-        "source_tool_name": selected.tool_name,
-    }
+    def __init__(self) -> None:
+        self._guard = Lock()
+        self._entries: dict[tuple[str, ...], tuple[Lock, int]] = {}
+
+    @contextmanager
+    def hold(self, key: tuple[str, ...]) -> Iterator[None]:
+        with self._guard:
+            lock, references = self._entries.get(key, (Lock(), 0))
+            self._entries[key] = (lock, references + 1)
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+            with self._guard:
+                current_lock, references = self._entries[key]
+                if references == 1:
+                    del self._entries[key]
+                else:
+                    self._entries[key] = (current_lock, references - 1)

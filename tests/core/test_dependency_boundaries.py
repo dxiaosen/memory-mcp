@@ -11,10 +11,9 @@ _FORBIDDEN_MODULE_PARTS = {"investment", "research_question"}
 _FORBIDDEN_CORE_DEPENDENCIES = {
     "httpx",
     "mcp",
-    "sqlite3",
     "starlette",
     "uvicorn",
-    "memory_mcp.chat_models",
+    "memory_mcp.extraction",
     "memory_mcp.server",
 }
 _FORBIDDEN_CORE_TYPE_CONSTANTS = {
@@ -74,4 +73,21 @@ def test_domain_application_and_ports_do_not_depend_on_transport_or_infrastructu
         module == forbidden or module.startswith(f"{forbidden}.")
         for module in imported_modules
         for forbidden in _FORBIDDEN_CORE_DEPENDENCIES
+    )
+
+
+def test_infrastructure_adapters_do_not_import_server_composition() -> None:
+    imported_modules: set[str] = set()
+    adapters_root = _MEMORY_ROOT / "adapters"
+    for path in adapters_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.add(node.module)
+
+    assert not any(
+        module == "memory_mcp.server" or module.startswith("memory_mcp.server.")
+        for module in imported_modules
     )

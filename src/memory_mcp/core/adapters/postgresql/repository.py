@@ -13,28 +13,37 @@ from uuid import UUID
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from memory_mcp.core.adapters.postgresql.runtime import validate_schema
+from memory_mcp.core.adapters.postgresql.mapping import (
+    as_uuid,
+    load_evidence,
+    to_capture_result,
+    to_record,
+    to_review,
+    to_revision,
+)
+from memory_mcp.core.adapters.postgresql.schema import validate_schema
+from memory_mcp.core.adapters.postgresql.validation import (
+    validate_capture_write,
+    validate_review_memory,
+)
 from memory_mcp.core.domain import (
-    AdmissionDecision,
-    AssertionKind,
-    Candidate,
-    CandidateDurability,
-    CaptureOutcome,
     CaptureResult,
     CaptureStatus,
     Evidence,
-    ExpressionBasis,
-    ExtractionMetadata,
-    LifecycleStatus,
-    MemoryItem,
+    MemoryHistoryEntry,
     MemoryRecord,
     MemoryRevision,
-    MessageRole,
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
+    normalize_memory_text,
 )
-from memory_mcp.core.ports import CaptureWrite, ScenarioPolicy
+from memory_mcp.core.ports import (
+    CaptureWrite,
+    DuplicateEvidenceWrite,
+    ReplacementWrite,
+    ScenarioPolicy,
+)
 from memory_mcp.logging import log_event, stable_reference
 
 PostgreSQLPool = ConnectionPool[Mapping[str, Any]]
@@ -93,7 +102,8 @@ class PostgreSQLMemoryRepository:
                 """,
                 (policy.scenario_id,),
             )
-            connection.executemany(
+            _executemany(
+                connection,
                 """
                 INSERT INTO memory_scenario_types (scenario_id, memory_type)
                 VALUES (%s, %s)
@@ -116,7 +126,8 @@ class PostgreSQLMemoryRepository:
                 ).fetchall()
             }
             removed_types = registered_types - policy.memory_types
-            connection.executemany(
+            _executemany(
+                connection,
                 """
                 DELETE FROM memory_scenario_types
                 WHERE scenario_id = %s AND memory_type = %s
@@ -165,7 +176,7 @@ class PostgreSQLMemoryRepository:
             ).fetchone()
             if row is None:
                 return None
-            return self._to_record(connection, row, principal.owner_id)
+            return to_record(connection, row, principal.owner_id)
 
     def list(
         self,
@@ -183,8 +194,76 @@ class PostgreSQLMemoryRepository:
         )
         with self._pool.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
+            return tuple(to_record(connection, row, principal.owner_id) for row in rows)
+
+    def find_current(
+        self,
+        principal: PrincipalContext,
+        *,
+        scenario: str,
+        subject: str | None = None,
+        memory_type: str | None = None,
+    ) -> Sequence[MemoryRecord]:
+        conditions = [
+            "i.owner_id = %s",
+            "i.scenario = %s",
+            "r.lifecycle_status = 'active'",
+        ]
+        parameters: list[object] = [principal.owner_id, scenario]
+        if memory_type is not None:
+            conditions.append("i.memory_type = %s")
+            parameters.append(memory_type)
+        query = (
+            f"{_SELECT_CURRENT_RECORD} WHERE {' AND '.join(conditions)} "
+            "ORDER BY i.created_at, i.memory_id"
+        )
+        subject_key = normalize_memory_text(subject) if subject is not None else None
+        with self._pool.connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+            records = tuple(
+                to_record(connection, row, principal.owner_id) for row in rows
+            )
+        if subject_key is None:
+            return records
+        return tuple(
+            record
+            for record in records
+            if normalize_memory_text(record.item.subject) == subject_key
+        )
+
+    def get_history(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> Sequence[MemoryHistoryEntry]:
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.revision_id, r.memory_id, r.owner_id,
+                       r.revision_number, r.content, r.assertion_kind,
+                       r.lifecycle_status, r.business_progress,
+                       r.save_rationale, r.observed_at, r.created_at,
+                       r.is_current, r.original_time_expression,
+                       r.normalized_time
+                FROM memory_items AS i
+                JOIN memory_revisions AS r
+                  ON r.memory_id = i.memory_id
+                 AND r.owner_id = i.owner_id
+                WHERE i.owner_id = %s AND i.memory_id = %s
+                ORDER BY r.revision_number DESC
+                """,
+                (principal.owner_id, memory_id),
+            ).fetchall()
             return tuple(
-                self._to_record(connection, row, principal.owner_id) for row in rows
+                MemoryHistoryEntry(
+                    revision=to_revision(row),
+                    evidence=load_evidence(
+                        connection,
+                        principal.owner_id,
+                        as_uuid(row["revision_id"]),
+                    ),
+                )
+                for row in rows
             )
 
     def get_capture(
@@ -240,14 +319,14 @@ class PostgreSQLMemoryRepository:
             ).fetchone()
             if row is None:
                 return None
-            return self._to_capture_result(connection, row)
+            return to_capture_result(connection, row)
 
     def commit_capture(
         self,
         principal: PrincipalContext,
         write: CaptureWrite,
     ) -> None:
-        self._validate_capture_write(principal, write)
+        validate_capture_write(principal, write)
         result = write.result
         with self._pool.connection() as connection:
             event_or_turn = result.event_id or (
@@ -304,7 +383,7 @@ class PostgreSQLMemoryRepository:
             else:
                 if existing["status"] != CaptureStatus.REPROCESS_REQUIRED.value:
                     raise ValueError("completed capture cannot be replaced")
-                if _as_uuid(existing["capture_id"]) != result.capture_id:
+                if as_uuid(existing["capture_id"]) != result.capture_id:
                     raise ValueError("reprocessed capture must preserve capture_id")
                 connection.execute(
                     """
@@ -337,9 +416,55 @@ class PostgreSQLMemoryRepository:
                 )
             for record in write.memories:
                 self._insert_record(connection, record)
+            for duplicate in write.duplicate_evidence:
+                target = connection.execute(
+                    """
+                    SELECT 1
+                    FROM memory_revisions
+                    WHERE owner_id = %s
+                      AND memory_id = %s
+                      AND revision_id = %s
+                      AND is_current
+                      AND lifecycle_status = 'active'
+                    FOR UPDATE
+                    """,
+                    (
+                        principal.owner_id,
+                        duplicate.memory_id,
+                        duplicate.expected_revision_id,
+                    ),
+                ).fetchone()
+                if target is None:
+                    raise RuntimeError("duplicate target is no longer current")
+                self._insert_evidence(connection, (duplicate.evidence,))
+            for replacement in write.replacements:
+                cursor = connection.execute(
+                    """
+                    UPDATE memory_revisions
+                    SET is_current = FALSE, lifecycle_status = 'superseded'
+                    WHERE owner_id = %s
+                      AND memory_id = %s
+                      AND revision_id = %s
+                      AND is_current
+                      AND lifecycle_status = 'active'
+                    """,
+                    (
+                        principal.owner_id,
+                        replacement.memory_id,
+                        replacement.expected_revision_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("replacement target is no longer current")
+                self._insert_revision(
+                    connection,
+                    replacement.revision,
+                    replacement.evidence,
+                )
             for review in write.reviews:
                 self._insert_review(connection, result.capture_id, review)
-            connection.executemany(
+            _executemany(
+                connection,
                 """
                 INSERT INTO memory_capture_outcomes (
                     capture_id, candidate_id, owner_id, outcome_order,
@@ -384,7 +509,7 @@ class PostgreSQLMemoryRepository:
                 "ORDER BY created_at, review_id",
                 (principal.owner_id, status.value),
             ).fetchall()
-        return tuple(self._to_review(row) for row in rows)
+        return tuple(to_review(row) for row in rows)
 
     def get_review(
         self,
@@ -398,7 +523,7 @@ class PostgreSQLMemoryRepository:
             ).fetchone()
         if row is None:
             return None
-        return self._to_review(row)
+        return to_review(row)
 
     def resolve_review(
         self,
@@ -408,6 +533,8 @@ class PostgreSQLMemoryRepository:
         status: ReviewStatus,
         decided_at: datetime,
         memory: MemoryRecord | None = None,
+        duplicate_evidence: DuplicateEvidenceWrite | None = None,
+        replacement: ReplacementWrite | None = None,
     ) -> ReviewItem | None:
         if status not in {ReviewStatus.CONFIRMED, ReviewStatus.REJECTED}:
             raise ValueError("review resolution must be confirmed or rejected")
@@ -418,18 +545,86 @@ class PostgreSQLMemoryRepository:
             ).fetchone()
             if row is None:
                 return None
-            review = self._to_review(row)
+            review = to_review(row)
             if review.status is status:
                 return review
             if review.status is not ReviewStatus.PENDING:
                 return None
             if status is ReviewStatus.CONFIRMED:
-                if memory is None:
-                    raise ValueError("confirmed review requires memory")
-                self._validate_review_memory(review, memory)
-                self._insert_record(connection, memory)
-            elif memory is not None:
+                writes = tuple(
+                    value
+                    for value in (memory, duplicate_evidence, replacement)
+                    if value is not None
+                )
+                if len(writes) != 1:
+                    raise ValueError("confirmed review requires one memory write")
+                if memory is not None:
+                    validate_review_memory(review, memory)
+                    self._insert_record(connection, memory)
+                elif duplicate_evidence is not None:
+                    target = connection.execute(
+                        """
+                        SELECT 1
+                        FROM memory_revisions
+                        WHERE owner_id = %s
+                          AND memory_id = %s
+                          AND revision_id = %s
+                          AND is_current
+                          AND lifecycle_status = 'active'
+                        FOR UPDATE
+                        """,
+                        (
+                            principal.owner_id,
+                            duplicate_evidence.memory_id,
+                            duplicate_evidence.expected_revision_id,
+                        ),
+                    ).fetchone()
+                    if target is None:
+                        raise RuntimeError("duplicate target is no longer current")
+                    self._insert_evidence(
+                        connection,
+                        (duplicate_evidence.evidence,),
+                    )
+                elif replacement is not None:
+                    cursor = connection.execute(
+                        """
+                        UPDATE memory_revisions
+                        SET is_current = FALSE,
+                            lifecycle_status = 'superseded'
+                        WHERE owner_id = %s
+                          AND memory_id = %s
+                          AND revision_id = %s
+                          AND is_current
+                          AND lifecycle_status = 'active'
+                        """,
+                        (
+                            principal.owner_id,
+                            replacement.memory_id,
+                            replacement.expected_revision_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("replacement target is no longer current")
+                    self._insert_revision(
+                        connection,
+                        replacement.revision,
+                        replacement.evidence,
+                    )
+            elif any(
+                value is not None for value in (memory, duplicate_evidence, replacement)
+            ):
                 raise ValueError("rejected review cannot create memory")
+            resolved_memory_id = (
+                memory.item.memory_id
+                if memory is not None
+                else (
+                    duplicate_evidence.memory_id
+                    if duplicate_evidence is not None
+                    else replacement.memory_id
+                    if replacement is not None
+                    else None
+                )
+            )
             cursor = connection.execute(
                 """
                 UPDATE memory_review_items
@@ -441,11 +636,7 @@ class PostgreSQLMemoryRepository:
                 (
                     status.value,
                     decided_at,
-                    (
-                        memory.item.memory_id
-                        if status is ReviewStatus.CONFIRMED and memory is not None
-                        else None
-                    ),
+                    (resolved_memory_id if status is ReviewStatus.CONFIRMED else None),
                     principal.owner_id,
                     review_id,
                 ),
@@ -457,9 +648,7 @@ class PostgreSQLMemoryRepository:
             status=status,
             decided_at=decided_at,
             resolved_memory_id=(
-                memory.item.memory_id
-                if status is ReviewStatus.CONFIRMED and memory is not None
-                else None
+                resolved_memory_id if status is ReviewStatus.CONFIRMED else None
             ),
         )
 
@@ -502,8 +691,8 @@ class PostgreSQLMemoryRepository:
             ),
         )
 
-    @staticmethod
-    def _insert_record(connection, record: MemoryRecord) -> None:
+    @classmethod
+    def _insert_record(cls, connection, record: MemoryRecord) -> None:
         item = record.item
         revision = record.current_revision
         connection.execute(
@@ -522,6 +711,15 @@ class PostgreSQLMemoryRepository:
                 item.created_at,
             ),
         )
+        cls._insert_revision(connection, revision, record.evidence)
+
+    @classmethod
+    def _insert_revision(
+        cls,
+        connection,
+        revision: MemoryRevision,
+        evidence: tuple[Evidence, ...],
+    ) -> None:
         connection.execute(
             """
             INSERT INTO memory_revisions (
@@ -548,12 +746,20 @@ class PostgreSQLMemoryRepository:
                 revision.observed_at,
                 revision.created_at,
                 revision.is_current,
-                record.evidence[0].evidence_id,
+                evidence[0].evidence_id,
                 revision.original_time_expression,
                 revision.normalized_time,
             ),
         )
-        connection.executemany(
+        cls._insert_evidence(connection, evidence)
+
+    @staticmethod
+    def _insert_evidence(
+        connection,
+        evidence: tuple[Evidence, ...],
+    ) -> None:
+        _executemany(
+            connection,
             """
             INSERT INTO memory_evidence (
                 evidence_id, memory_id, revision_id, owner_id,
@@ -585,7 +791,7 @@ class PostgreSQLMemoryRepository:
                     source.source_message_id,
                     source.source_tool_name,
                 )
-                for source in record.evidence
+                for source in evidence
             ],
         )
 
@@ -649,239 +855,14 @@ class PostgreSQLMemoryRepository:
             ),
         )
 
-    @staticmethod
-    def _to_capture_result(connection, row: Mapping[str, Any]) -> CaptureResult:
-        outcomes = tuple(
-            CaptureOutcome(
-                candidate_id=_as_uuid(outcome["candidate_id"]),
-                decision=AdmissionDecision(outcome["decision"]),
-                reason_code=outcome["reason_code"],
-                memory_id=_optional_uuid(outcome["memory_id"]),
-                review_id=_optional_uuid(outcome["review_id"]),
-            )
-            for outcome in connection.execute(
-                """
-                SELECT candidate_id, decision, reason_code, memory_id, review_id
-                FROM memory_capture_outcomes
-                WHERE capture_id = %s AND owner_id = %s
-                ORDER BY outcome_order
-                """,
-                (row["capture_id"], row["owner_id"]),
-            ).fetchall()
-        )
-        return CaptureResult(
-            capture_id=_as_uuid(row["capture_id"]),
-            owner_id=row["owner_id"],
-            scenario=row["scenario"],
-            conversation_id=row["conversation_id"],
-            source_turn_id=row["source_turn_id"],
-            metadata=ExtractionMetadata(
-                model_id=row["model_id"],
-                prompt_version=row["prompt_version"],
-                schema_version=row["schema_version"],
-                policy_version=row["policy_version"],
-            ),
-            status=CaptureStatus(row["status"]),
-            outcomes=outcomes,
-            failure_code=row["failure_code"],
-            created_at=_as_datetime(row["created_at"]),
-            completed_at=_as_datetime(row["completed_at"]),
-            event_id=row["event_id"],
-            contract_version=row["contract_version"],
-            payload_fingerprint=row["payload_fingerprint"],
-        )
 
-    @staticmethod
-    def _to_review(row: Mapping[str, Any]) -> ReviewItem:
-        candidate = Candidate(
-            candidate_id=_as_uuid(row["candidate_id"]),
-            owner_id=row["owner_id"],
-            scenario=row["scenario"],
-            subject=row["subject"],
-            memory_type=row["memory_type"],
-            content=row["content"],
-            assertion_kind=AssertionKind(row["assertion_kind"]),
-            conversation_id=row["conversation_id"],
-            source_turn_id=row["source_turn_id"],
-            source_expression=row["source_expression"],
-            save_rationale=row["save_rationale"],
-            confidence=row["confidence"],
-            durability=CandidateDurability(row["durability"]),
-            expression_basis=ExpressionBasis(row["expression_basis"]),
-            observed_at=_as_datetime(row["observed_at"]),
-            created_at=_as_datetime(row["candidate_created_at"]),
-            business_progress=row["business_progress"],
-            original_time_expression=row["original_time_expression"],
-            normalized_time=_optional_datetime(row["normalized_time"]),
-            source_role=(
-                MessageRole(row["source_role"])
-                if row["source_role"] is not None
-                else None
-            ),
-            source_message_id=row["source_message_id"],
-            source_tool_name=row["source_tool_name"],
-        )
-        return ReviewItem(
-            review_id=_as_uuid(row["review_id"]),
-            candidate=candidate,
-            status=ReviewStatus(row["status"]),
-            created_at=_as_datetime(row["created_at"]),
-            decided_at=_optional_datetime(row["decided_at"]),
-            resolved_memory_id=_optional_uuid(row["resolved_memory_id"]),
-        )
-
-    @staticmethod
-    def _validate_capture_write(
-        principal: PrincipalContext,
-        write: CaptureWrite,
-    ) -> None:
-        result = write.result
-        if result.owner_id != principal.owner_id:
-            raise ValueError("capture owner must match trusted principal")
-        if result.status is not CaptureStatus.COMPLETED and (
-            write.memories or write.reviews
-        ):
-            raise ValueError("failed capture cannot persist candidate content")
-        memory_ids = {record.item.memory_id for record in write.memories}
-        review_ids = {review.review_id for review in write.reviews}
-        if len(memory_ids) != len(write.memories):
-            raise ValueError("capture contains duplicate memory ids")
-        if len(review_ids) != len(write.reviews):
-            raise ValueError("capture contains duplicate review ids")
-        for record in write.memories:
-            if record.item.owner_id != principal.owner_id:
-                raise ValueError("record owner must match trusted principal")
-        for review in write.reviews:
-            if review.owner_id != principal.owner_id:
-                raise ValueError("review owner must match trusted principal")
-            if review.status is not ReviewStatus.PENDING:
-                raise ValueError("new review must be pending")
-        for outcome in result.outcomes:
-            if outcome.memory_id is not None and outcome.memory_id not in memory_ids:
-                raise ValueError("capture outcome references unknown memory")
-            if outcome.review_id is not None and outcome.review_id not in review_ids:
-                raise ValueError("capture outcome references unknown review")
-
-    @staticmethod
-    def _validate_review_memory(
-        review: ReviewItem,
-        memory: MemoryRecord,
-    ) -> None:
-        candidate = review.candidate
-        item = memory.item
-        revision = memory.current_revision
-        if (
-            item.owner_id != candidate.owner_id
-            or item.scenario != candidate.scenario
-            or item.subject != candidate.subject
-            or item.memory_type != candidate.memory_type
-            or revision.content != candidate.content
-            or revision.assertion_kind is not candidate.assertion_kind
-            or revision.business_progress != candidate.business_progress
-            or revision.save_rationale != candidate.save_rationale
-            or revision.observed_at != candidate.observed_at
-            or revision.original_time_expression != candidate.original_time_expression
-            or revision.normalized_time != candidate.normalized_time
-        ):
-            raise ValueError("confirmed memory must match pending candidate")
-        if len(memory.evidence) != 1:
-            raise ValueError("confirmed memory requires one source evidence")
-        source = memory.evidence[0]
-        if (
-            source.owner_id != candidate.owner_id
-            or source.conversation_id != candidate.conversation_id
-            or source.source_turn_id != candidate.source_turn_id
-            or source.source_expression != candidate.source_expression
-            or source.observed_at != candidate.observed_at
-            or source.source_role is not candidate.source_role
-            or source.source_message_id != candidate.source_message_id
-            or source.source_tool_name != candidate.source_tool_name
-        ):
-            raise ValueError("confirmed memory source must match pending candidate")
-
-    @staticmethod
-    def _to_record(
-        connection,
-        row: Mapping[str, Any],
-        owner_id: str,
-    ) -> MemoryRecord:
-        item = MemoryItem(
-            memory_id=_as_uuid(row["memory_id"]),
-            owner_id=row["owner_id"],
-            scenario=row["scenario"],
-            subject=row["subject"],
-            memory_type=row["memory_type"],
-            created_at=_as_datetime(row["item_created_at"]),
-        )
-        revision = MemoryRevision(
-            revision_id=_as_uuid(row["revision_id"]),
-            memory_id=item.memory_id,
-            owner_id=item.owner_id,
-            revision_number=row["revision_number"],
-            content=row["content"],
-            assertion_kind=AssertionKind(row["assertion_kind"]),
-            lifecycle_status=LifecycleStatus(row["lifecycle_status"]),
-            business_progress=row["business_progress"],
-            save_rationale=row["save_rationale"],
-            observed_at=_as_datetime(row["revision_observed_at"]),
-            created_at=_as_datetime(row["revision_created_at"]),
-            is_current=row["is_current"],
-            original_time_expression=row["original_time_expression"],
-            normalized_time=_optional_datetime(row["normalized_time"]),
-        )
-        evidence = tuple(
-            Evidence(
-                evidence_id=_as_uuid(source["evidence_id"]),
-                memory_id=_as_uuid(source["memory_id"]),
-                revision_id=_as_uuid(source["revision_id"]),
-                owner_id=source["owner_id"],
-                conversation_id=source["conversation_id"],
-                source_turn_id=source["source_turn_id"],
-                source_expression=source["source_expression"],
-                observed_at=_as_datetime(source["observed_at"]),
-                created_at=_as_datetime(source["created_at"]),
-                source_role=(
-                    MessageRole(source["source_role"])
-                    if source["source_role"] is not None
-                    else None
-                ),
-                source_message_id=source["source_message_id"],
-                source_tool_name=source["source_tool_name"],
-            )
-            for source in connection.execute(
-                """
-                SELECT evidence_id, memory_id, revision_id, owner_id,
-                       conversation_id, source_turn_id, source_expression,
-                       observed_at, created_at, source_role,
-                       source_message_id, source_tool_name
-                FROM memory_evidence
-                WHERE owner_id = %s AND revision_id = %s
-                ORDER BY created_at, evidence_id
-                """,
-                (owner_id, revision.revision_id),
-            ).fetchall()
-        )
-        return MemoryRecord(
-            item=item,
-            current_revision=revision,
-            evidence=evidence,
-        )
-
-
-def _as_uuid(value: UUID | str) -> UUID:
-    return value if isinstance(value, UUID) else UUID(value)
-
-
-def _optional_uuid(value: UUID | str | None) -> UUID | None:
-    return None if value is None else _as_uuid(value)
-
-
-def _as_datetime(value: datetime | str) -> datetime:
-    return value if isinstance(value, datetime) else datetime.fromisoformat(value)
-
-
-def _optional_datetime(value: datetime | str | None) -> datetime | None:
-    return None if value is None else _as_datetime(value)
+def _executemany(
+    connection, query: str, parameters: Sequence[Sequence[object]]
+) -> None:
+    if not parameters:
+        return
+    with connection.cursor() as cursor:
+        cursor.executemany(query, parameters)
 
 
 _SELECT_CURRENT_RECORD = """

@@ -1,0 +1,35 @@
+"""PostgreSQL maintenance commands for the deployed Memory MCP service."""
+
+import argparse
+
+from memory_mcp.core.adapters.postgresql.schema import (
+    apply_migrations,
+    check_health,
+)
+from memory_mcp.logging import configure_logging_from_settings
+from memory_mcp.server.settings import MemoryServerSettings
+
+
+def main() -> None:
+    """Run database maintenance using deployment-layer configuration."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("migrate", "health"))
+    args = parser.parse_args()
+
+    settings = MemoryServerSettings.from_environment()
+    configure_logging_from_settings(settings)
+    database_url = settings.require_postgresql_url()
+    if args.command == "health":
+        check_health(database_url)
+        print("Memory PostgreSQL is healthy")
+        return
+    applied = apply_migrations(database_url)
+    if applied:
+        print("Applied PostgreSQL migrations: " + ", ".join(applied))
+    else:
+        print("PostgreSQL schema is up to date")
+
+
+if __name__ == "__main__":
+    main()

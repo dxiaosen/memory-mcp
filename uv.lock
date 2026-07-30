@@ -3,45 +3,6 @@ revision = 3
 requires-python = ">=3.14"
 
 [[package]]
-name = "memory-mcp"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "langchain-core" },
-    { name = "langchain-deepseek" },
-    { name = "langchain-openai" },
-    { name = "mcp" },
-    { name = "psycopg", extra = ["binary", "pool"] },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "langchain-core", specifier = ">=1.5.1" },
-    { name = "langchain-deepseek", specifier = ">=1.1.0" },
-    { name = "langchain-openai", specifier = ">=1.4.1" },
-    { name = "mcp", specifier = "==1.29.0" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.4,<4" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.14.2" },
-    { name = "python-dotenv", specifier = ">=1.2.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.16.0" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -509,6 +470,47 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz", hash = "sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36", size = 643148, upload-time = "2026-07-28T13:41:41.939Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/c8/248b201f6d753d69fd5d6506011abbb35a946d9142b2ae311a948fd0be3d/mcp-1.29.0-py3-none-any.whl", hash = "sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7", size = 223436, upload-time = "2026-07-28T13:41:40.337Z" },
+]
+
+[[package]]
+name = "memory-mcp"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "langchain-deepseek" },
+    { name = "langchain-openai" },
+    { name = "mcp" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain-core", specifier = ">=1.5.1" },
+    { name = "langchain-deepseek", specifier = ">=1.1.0" },
+    { name = "langchain-openai", specifier = ">=1.4.1" },
+    { name = "mcp", specifier = "==1.29.0" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.4,<4" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.16.0" },
 ]
 
 [[package]]

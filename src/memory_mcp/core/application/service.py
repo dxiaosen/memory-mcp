@@ -9,13 +9,17 @@ from uuid import UUID, uuid4
 from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
 from memory_mcp.core.application.capture_service import CaptureService
 from memory_mcp.core.application.commands import CreateMemoryCommand
+from memory_mcp.core.application.recall_service import RecallService
 from memory_mcp.core.domain import (
     CaptureResult,
     Evidence,
+    MemoryHistoryEntry,
     MemoryItem,
     MemoryRecord,
     MemoryRevision,
     PrincipalContext,
+    RecallQuery,
+    RecallResult,
     ReviewItem,
     TurnEnvelope,
 )
@@ -63,6 +67,7 @@ class MemoryService:
             id_factory=id_factory,
             clock=self._clock,
         )
+        self._recall_service = RecallService(repository, scenario_registry)
 
     def register_scenario(self, policy: ScenarioPolicy) -> None:
         """同时登记运行时策略和持久化约束。"""
@@ -209,6 +214,17 @@ class MemoryService:
         )
         return record
 
+    def get_memory_history(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> Sequence[MemoryHistoryEntry]:
+        """显式返回一项记忆的 current 与 superseded revision。"""
+
+        if self._repository.get(principal, memory_id) is None:
+            raise MemoryNotFoundError("memory is unavailable")
+        return self._repository.get_history(principal, memory_id)
+
     def list_memories(
         self,
         principal: PrincipalContext,
@@ -237,6 +253,27 @@ class MemoryService:
         turn: TurnEnvelope,
     ) -> CaptureResult:
         return self._capture_service.capture_turn(principal, turn)
+
+    def recall_memory(
+        self,
+        principal: PrincipalContext,
+        query: RecallQuery,
+    ) -> RecallResult:
+        """只从当前 owner 的 active/current 集合生成召回上下文。"""
+
+        started_at = perf_counter()
+        result = self._recall_service.recall(principal, query)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.recall.completed",
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+            owner_ref=stable_reference(principal.owner_id),
+            result_count=len(result.items),
+            scenario=query.scenario,
+            truncated=result.truncated,
+        )
+        return result
 
     def list_pending_reviews(
         self,

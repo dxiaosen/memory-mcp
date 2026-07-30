@@ -5,6 +5,7 @@ from memory_mcp.core.application.admission import (
     ConservativeAdmissionPolicy,
 )
 from memory_mcp.core.application.commands import CreateMemoryCommand
+from memory_mcp.core.application.recall_service import RecallService
 from memory_mcp.core.application.service import MemoryService
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "ConservativeAdmissionPolicy",
     "CreateMemoryCommand",
     "MemoryService",
+    "RecallService",
 ]

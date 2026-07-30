@@ -39,10 +39,11 @@ Agent Host B ── MCP Client / Runner ─────┤
 memory_mcp.server ────────> core.application ───────> core.domain / ports
         │                          ▲                         ▲
         │                          │                         │
-        └── Auth / MCP DTO         └──── PostgreSQL adapter ─┘
+        ├── Auth / MCP DTO         ├──── PostgreSQL adapter ─┘
+        └── extraction factory ────┘
 
 memory_hooks ─────> remote MCP only
-Agent adapters ───> memory_hooks
+Agent runners ─────> memory_hooks
 ScenarioPolicy ───> core ports
 ```
 
@@ -52,6 +53,9 @@ ScenarioPolicy ───> core ports
   PostgreSQL 驱动或配置模块；
 - `memory_mcp.server` 只通过应用服务和公开端口使用 Memory Core；
 - `memory_hooks` 只访问远程 MCP，不导入 Repository；
+- `server` 和 adapter package 初始化不做完整 app/driver 的便利 re-export；
+- 数据库维护入口位于顶层 `database_cli.py`，Core adapter 不反向读取 Server
+  Settings；
 - Agent Client 不直接访问 PostgreSQL；
 - `owner_id` 不属于 MCP 工具入参，只能由服务端认证上下文构造；
 - 场景策略实现依赖 `ScenarioPolicy`，Core 不反向导入正式场景；
@@ -65,11 +69,13 @@ PostgreSQL 是部署环境唯一权威存储，负责：
 - capture event 幂等与无正文 outcome；
 - pending review 及原子确认/拒绝；
 - registered scenario/type、单一 current revision 和跨表 owner 约束；
-- 后续 duplicate、同一 MemoryItem 的 replacement revision 和 history 事务。
+- duplicate Evidence、同一 MemoryItem 的 replacement revision 和 history 事务；
+- owner-first active/current recall 候选查询。
 
-阶段一至三的 SQLite adapter 是已验证原型。迁移期间保留它作为行为基线；实际
-PostgreSQL Repository、migration 和 MCP 重启测试通过后删除，不长期维护两套
-生产持久化实现。`InMemoryMemoryRepository` 保留为快速单元测试替身。
+阶段一至三曾用 SQLite 原型验证行为。真实 PostgreSQL Repository、migration
+和 MCP 重启测试通过后，该 adapter、migration 与专项测试已经删除；运行时只有
+PostgreSQL 一个权威 Repository。`InMemoryMemoryRepository` 仅保留为快速单元
+测试替身。
 
 本期不实现 Embedding、向量数据库或独立搜索引擎。如果未来增加二级检索索引，
 它只能提出候选；返回 Agent 前必须回 PostgreSQL 重新验证 owner、current
@@ -99,8 +105,8 @@ scopes ───────────────────> read / write /
 | MCP transport | host、port、`/mcp` | 否 |
 | PostgreSQL | database URL、pool、connect timeout | 是 |
 | 原型认证 | Token → Principal 映射 | 是 |
-| 场景策略 | scenario、类型、policy version | 否 |
-| 结构化模型 | provider、model、API key | API key 是 |
+| 场景策略 | 代码注册的 `GeneralWorkPolicy` | 否 |
+| 候选抽取 | fixed JSON 或 provider、model、API key | JSON/API key 是 |
 | Hook Client | MCP URL、Token、fail-open | Token 是 |
 
 数据库 migration 是独立发布步骤。ECS 默认保持
@@ -126,11 +132,14 @@ scopes ───────────────────> read / write /
 1. 通用契约、来源、owner 隔离和 SQLite 原型（已完成）；
 2. 捕获、四类准入、敏感边界和 pending（已完成）；
 3. 远程 MCP、可信认证、管理工具和跨 Agent 隔离（已完成）；
-4. PostgreSQL 正式后端、最小生命周期和主动召回；
-5. Hook SDK、平台无关的两个 Agent Client 和 Linux ECS 部署；
-6. 真实结构化模型、云端验收、脚本、录屏和交付。
+4. PostgreSQL 正式后端、最小生命周期和主动召回（已完成）；
+5. Hook SDK、两个 Agent profile、真实/固定结构化抽取和本地 PostgreSQL
+   闭环（已完成）；
+6. 公网 HTTPS、真实远端网络、压测、现场脚本、录屏和交付。
 
 完整设计和任务状态以
 [`add-general-memory-core`](../openspec/changes/add-general-memory-core/design.md)
 为事实源。部署步骤见
 [阿里云 ECS 远程 MCP 部署](deployment/aliyun-ecs.md)。
+阶段五整体说明见[整体设计](design.md)、[测试说明](testing.md)和
+[端到端使用](usage.md)。

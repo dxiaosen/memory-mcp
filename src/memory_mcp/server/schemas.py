@@ -18,8 +18,10 @@ from pydantic import (
 from memory_mcp.core import (
     AdmissionDecision,
     CaptureResult,
+    MemoryHistoryEntry,
     MemoryRecord,
     MessageRole,
+    RecallResult,
     ReviewItem,
     TurnEnvelope,
     TurnMessage,
@@ -241,7 +243,114 @@ class MemoryDetailReceipt(StrictDto):
     request_id: str
     item: MemoryView
     history_included: bool = False
-    history: tuple[MemoryView, ...] = ()
+    history: tuple[MemoryRevisionView, ...] = ()
+
+
+class MemoryRevisionView(StrictDto):
+    revision_id: UUID
+    revision_number: int
+    content: str
+    assertion_kind: str
+    lifecycle_status: str
+    is_current: bool
+    business_progress: str | None
+    save_rationale: str
+    observed_at: datetime
+    created_at: datetime
+    evidence: tuple[EvidenceView, ...]
+
+    @classmethod
+    def from_entry(cls, entry: MemoryHistoryEntry) -> Self:
+        revision = entry.revision
+        return cls(
+            revision_id=revision.revision_id,
+            revision_number=revision.revision_number,
+            content=revision.content,
+            assertion_kind=revision.assertion_kind.value,
+            lifecycle_status=revision.lifecycle_status.value,
+            is_current=revision.is_current,
+            business_progress=revision.business_progress,
+            save_rationale=revision.save_rationale,
+            observed_at=revision.observed_at,
+            created_at=revision.created_at,
+            evidence=tuple(
+                EvidenceView(
+                    conversation_id=source.conversation_id,
+                    source_turn_id=source.source_turn_id,
+                    source_expression=source.source_expression,
+                    observed_at=source.observed_at,
+                    source_role=source.source_role,
+                    source_message_id=source.source_message_id,
+                    source_tool_name=source.source_tool_name,
+                )
+                for source in entry.evidence
+            ),
+        )
+
+
+class RecallSourceView(StrictDto):
+    conversation_id: str
+    source_turn_id: str
+    source_expression: str
+    observed_at: datetime
+    source_role: MessageRole | None
+
+
+class RecalledMemoryView(StrictDto):
+    memory_id: UUID
+    revision_id: UUID
+    scenario: str
+    subject: str
+    memory_type: str
+    content: str
+    assertion_kind: str
+    observed_at: datetime
+    sources: tuple[RecallSourceView, ...]
+    relevance_score: float
+
+
+class RecallReceipt(StrictDto):
+    ok: Literal[True] = True
+    request_id: str
+    items: tuple[RecalledMemoryView, ...]
+    rendered_context: str
+    estimated_tokens: int
+    token_budget: int
+    truncated: bool
+
+    @classmethod
+    def from_result(cls, request_id: str, result: RecallResult) -> Self:
+        return cls(
+            request_id=request_id,
+            items=tuple(
+                RecalledMemoryView(
+                    memory_id=item.memory_id,
+                    revision_id=item.revision_id,
+                    scenario=item.scenario,
+                    subject=item.subject,
+                    memory_type=item.memory_type,
+                    content=item.content,
+                    assertion_kind=item.assertion_kind.value,
+                    observed_at=item.observed_at,
+                    sources=tuple(
+                        RecallSourceView(
+                            conversation_id=source.conversation_id,
+                            source_turn_id=source.source_turn_id,
+                            source_expression=source.source_expression,
+                            observed_at=source.observed_at,
+                            source_role=source.source_role,
+                        )
+                        for source in item.sources
+                    ),
+                    relevance_score=item.relevance_score,
+                )
+                for item in result.items
+            ),
+            rendered_context=result.rendered_context,
+            estimated_tokens=result.estimated_tokens,
+            token_budget=result.token_budget,
+            truncated=result.truncated,
+        )
 
 
 class PendingReviewView(StrictDto):

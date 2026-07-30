@@ -7,7 +7,7 @@ context: |
   authenticated transport/composition boundary lives under memory_mcp.server.
   Architecture: domain/application/ports do not depend on MCP, HTTP, database
   drivers, Agent SDKs, or runtime settings. PostgreSQL is the deployed authority;
-  SQLite is a temporary behavioral baseline until PostgreSQL contract acceptance.
+  PostgreSQL is authoritative; the SQLite prototype was removed after contract acceptance.
   Security: owner scope is derived only from authenticated server context.
   Conversation, candidate, memory, evidence, token, and secret text must not enter
   operational logs. Public tools never accept owner selectors.

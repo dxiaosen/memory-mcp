@@ -230,11 +230,29 @@ Bridge/Runner 适配，而不是改变服务端协议。
 - Hook SDK 作为 MCP Client 程序化调用工具；
 - Agent 模型可以看到召回后的记忆上下文，但不能决定 owner；
 - 自动捕获只在一轮任务产生最终结果后触发；
+- “一轮任务”指一个顶层用户请求到最终 Agent 回答，不是整个 conversation 的
+  关闭事件；工具调用、子 Agent 和内部重试不分别触发默认 Hook；
 - 取消、异常或未完成轮次默认不自动保存；
 - 没有生命周期 Hook 的 Host 可以使用外层 Runner/CLI wrapper 模拟相同边界。
 
 MCP Server 仍可把工具暴露给 Codex 等通用 MCP Host 进行手动查看和管理，但这不
 替代自动 Hook。
+
+Hook 的“异步”指 Python coroutine 和非阻塞网络 I/O，不表示必须增加消息队列：
+
+- BeforeRun 必须 await 召回结果，因为 Agent 模型需要使用该上下文；
+- AfterRun 也是 async；默认 Runner await capture receipt，以便调用方得到四类
+  准入汇总、replay 和失败状态；
+- Host 可以先向用户发出 final response，再在同一事件循环调度 AfterRun，但
+  进程退出会丢失尚未提交的任务，因此不能把它描述为可靠队列；
+- 本期单实例、单次捕获事务和稳定 event id 不需要 Redis/Kafka 等外部队列。
+  只有出现跨进程削峰、离线重放、服务重启后继续投递或高吞吐需求时，才设计
+  durable outbox/queue。
+
+Hook Bridge 对每个顶层 run key 保存 payload fingerprint 和执行状态。相同 key、
+相同 payload 复用结果；相同 key、不同 payload 在客户端边界失败。缓存必须有界，
+不能随长生命周期 Agent 的 turn 数无限增长。MCP Client 复用 HTTP 连接池，但每次
+工具调用仍建立符合 SDK 契约的 MCP session。
 
 ### 4. 所有者身份与调用 Agent 身份分离
 
@@ -619,6 +637,10 @@ task_intent?
 - 重试必须使用相同 event id；
 - 本期不实现消息队列，失败由调用方显式重试。
 
+BeforeRun 和 AfterRun 都绑定顶层用户 run。一个长期 conversation 可以包含多个
+run，每个 run 分别召回一次并在成功结束后捕获一次；Host adapter 必须过滤工具
+run、child run 和流式 chunk，避免把内部步骤误当成新的用户轮次。
+
 #### 第一批 adapter
 
 1. 当前 LangChain `create_agent`：
@@ -818,6 +840,12 @@ MCP Server 内部使用一个结构化模型适配器完成候选发现。模型
 - 固定 backend 用于自动化测试和录屏兜底；
 - 两者遵守同一 CandidateExtractor port。
 
+该能力前移为阶段五 Hook 闭环的退出条件。服务端通过配置显式选择
+`openai-compatible` 或 `fixed` extractor：真实 backend 负责自然语言结构化抽取，
+固定 backend 负责自动化测试、离线演示和恢复路径。选择 backend 不得改变
+owner、来源覆盖、敏感边界、准入、生命周期或 PostgreSQL 事务。真实 backend
+配置不完整时启动失败，不在运行中静默切换；需要兜底时由操作者显式选择 fixed。
+
 ### 13. 存储与进程模型
 
 阶段一至三使用 SQLite 验证领域约束、捕获事务和 MCP 重启幂等。最终部署目标已经
@@ -889,7 +917,7 @@ MemoryServerSettings
 ├── demo token principal mapping
 └── logging
 
-ChatModelSettings
+ExtractionSettings
 ├── provider / model / credentials
 ├── timeout / retries
 └── structured-output parameters
@@ -969,26 +997,30 @@ src/memory_mcp/
 │   ├── adapters/
 │   │   └── postgresql/       # 正式持久化 adapter 与 migration
 │   └── composition.py
+├── extraction/
+│   ├── settings.py           # 真实模型配置
+│   ├── chat_models.py        # provider factory
+│   ├── backends.py           # fixed / real structured backend
+│   └── factory.py            # CandidateExtractor composition
 ├── server/
 │   ├── app.py                # MCP Server composition root
-│   ├── tools.py              # 工具注册和 DTO 映射
+│   ├── tools/                # 按 capture/memory/review/recall 注册
 │   ├── schemas.py            # MCP 输入输出 DTO
 │   ├── auth.py               # token -> RequestPrincipal
 │   └── errors.py             # 业务错误映射
 ├── memory_hooks/
 │   ├── client.py             # 唯一通用 MCP Client
-│   ├── bridge.py             # Before/After Hook 语义和 Runner
+│   ├── bridge.py             # Before/After Hook、去重和冲突语义
 │   ├── context.py            # Hook 上下文
-│   └── adapters/
-│       └── langchain.py      # 薄 Agent adapter
-├── chat_models.py            # 服务端结构化抽取复用的模型工厂
+│   └── runner.py             # 无原生 Hook Host 的外层 Runner
 ├── logging.py                # 隐私安全的结构化运行日志
+├── database_cli.py           # DB 命令组合入口，不放入 Core adapter
 └── scenarios/
     └── general_work.py       # 唯一正式演示场景
 
 examples/
-├── memory_mcp_client_a.py
-├── memory_mcp_client_b.py
+├── memory_agent_a.py
+├── memory_agent_b.py
 └── memory_hook_runner.py
 
 deploy/
@@ -1001,6 +1033,12 @@ deploy/
 MCP 边界内的小模块，不增加 `api/transport/mcp` 等重复层级。阶段四加入
 recall/history 后，如果工具注册继续增长，只把 `tools.py` 拆成
 `server/tools/{capture,memory,review,recall}.py`，其余模块仍留在 `server` 根下。
+
+`server/__init__.py` 和 adapter package `__init__.py` 不得为便利 re-export 而
+加载完整 app、模型或 PostgreSQL 驱动；内部代码使用具体模块导入。PostgreSQL
+公开 Repository 保持单一 facade 和事务边界，但 row mapping/write validation
+可以放到私有协作模块。CaptureService 同样保持公开用例入口，把候选处理和 Review
+协调提取为内部服务，不按每个函数建立目录。
 
 依赖守卫必须保证：
 
@@ -1042,8 +1080,8 @@ recall/history 后，如果工具注册继续增长，只把 `tools.py` 拆成
 | D5～D8（已完成） | 结构化捕获、四类准入、敏感边界、pending | 阶段二测试与验收记录 |
 | D9～D12 | Streamable HTTP MCP、可信 principal、管理工具、清理旧 RAG 入口 | 远程捕获可重放、跨用户不可见、Inspector 契约通过 |
 | D13～D15 | PostgreSQL 正式后端、duplicate/replacement/recall | 数据库重启幂等、旧版本排除、owner-first 召回 |
-| D16～D17 | Hook Client/Bridge、两个平台无关客户端、ECS 直部署 | A 写 B 读、用户 B 空结果、公网 HTTPS 可接入 |
-| D18～D19 | 真实抽取、固定 backend、脚本与延迟/恢复测试 | 10～15 个确定性案例和数据库恢复路径可重复 |
+| D16～D17 | Hook Client/Bridge、真实/固定 extractor、两个平台无关 Runner、ECS 直部署 | 本地真实 PostgreSQL 下 A 写 B 读、用户 B 空结果，真实模型 smoke path 可手工执行 |
+| D18～D19 | 公网/私网部署边界验收、脚本与延迟/恢复测试 | HTTPS 与安全组证据、10～15 个确定性案例和数据库恢复路径可重复 |
 | D20 | 文档收敛、录屏、环境冻结和演练 | 从空 PostgreSQL 启动并完成 5～7 分钟演示 |
 
 D9～D12 清理旧 RAG 产品线时不能删除 Memory Core、结构化抽取或通用模型工厂；
@@ -1180,10 +1218,13 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
 8. 将 MCP composition root 切换到 PostgreSQL，完成重启幂等和健康检查后删除
    SQLite 正式运行路径。
 9. 增加最小 duplicate/replacement/recall。
-10. 增加单一 Hook Client、Hook Bridge 和两个平台无关 Agent 接入。
+10. 增加真实/固定 CandidateExtractor 配置、单一 Hook Client、Hook Bridge 和
+    两个平台无关 Runner 接入。
 11. 增加 systemd unit、私网直连/可选云负载均衡说明和 ECS 发布/回滚说明。
 12. 将阶段一/二重复文档合并为实现基线；更新 README、需求和架构，使 OpenSpec
    成为当前方案与验收的唯一事实源。
+13. 阶段六前完成 Hook 有界状态/连接复用、`extraction/` 收敛、轻量包入口和
+    Capture/PostgreSQL 大文件职责拆分；不改变 MCP、Core port 或数据库事务契约。
 
 回滚策略：
 

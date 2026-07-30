@@ -1,11 +1,57 @@
-from memory_mcp.core.adapters.postgresql import PostgreSQLMemoryRepository
-from memory_mcp.core.adapters.postgresql.runtime import load_migrations
+import os
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from threading import Event
+
+import psycopg
+import pytest
+
+from memory_mcp.core import MemoryNotFoundError, PrincipalContext
+from memory_mcp.core.adapters.postgresql import (
+    PostgreSQLMemoryRepository,
+    create_pool,
+)
+from memory_mcp.core.adapters.postgresql.schema import (
+    apply_migrations,
+    load_migrations,
+    validate_schema,
+)
+from memory_mcp.core.composition import create_memory_service
+from tests.support.fakes import (
+    FakeCandidateExtractor,
+    TestScenarioPolicy,
+    project_preference_command,
+)
+
+_TEST_DATABASE_ENV = "MEMORY_MCP_TEST_DATABASE_URL"
+
+
+def _connect_safely(database_url: str):
+    try:
+        return psycopg.connect(database_url)
+    except psycopg.Error:
+        raise RuntimeError("PostgreSQL test connection failed") from None
+
+
+@dataclass(frozen=True, slots=True)
+class PostgreSQLTestDatabase:
+    """Keep credentials out of pytest fixture representations."""
+
+    url: str
+
+    def __repr__(self) -> str:
+        return "PostgreSQLTestDatabase(url=<redacted>)"
 
 
 def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     migrations = load_migrations()
 
-    assert [migration.version for migration in migrations] == ["0001_memory_core.sql"]
+    assert [migration.version for migration in migrations] == [
+        "0001_memory_core.sql",
+        "0002_lifecycle_recall.sql",
+    ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
     sql = migrations[0].sql
@@ -27,6 +73,8 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "add",
         "get",
         "list",
+        "find_current",
+        "get_history",
         "get_capture",
         "commit_capture",
         "list_reviews",
@@ -35,3 +83,251 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
     }
 
     assert required_methods.issubset(dir(PostgreSQLMemoryRepository))
+
+
+@pytest.fixture
+def postgresql_test_database() -> Iterator[PostgreSQLTestDatabase]:
+    database_url = os.environ.get(_TEST_DATABASE_ENV)
+    if not database_url:
+        pytest.skip(f"{_TEST_DATABASE_ENV} is not configured")
+    with _connect_safely(database_url) as connection:
+        database_name = connection.info.dbname
+        if "test" not in database_name.casefold():
+            pytest.fail(
+                f"{_TEST_DATABASE_ENV} must select a disposable database "
+                "whose name contains 'test'"
+            )
+    apply_migrations(database_url)
+    _truncate_memory_tables(database_url)
+    try:
+        yield PostgreSQLTestDatabase(database_url)
+    finally:
+        _truncate_memory_tables(database_url)
+
+
+def test_real_postgresql_migration_checksum_and_pool_close(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    database_url = postgresql_test_database.url
+    assert apply_migrations(database_url) == ()
+    expected = {
+        migration.version: migration.checksum for migration in load_migrations()
+    }
+    with _connect_safely(database_url) as connection:
+        validate_schema(connection)
+        applied = dict(
+            connection.execute(
+                """
+                SELECT version, checksum
+                FROM memory_schema_migrations
+                ORDER BY version
+                """
+            ).fetchall()
+        )
+    assert {version: applied[version] for version in expected} == expected
+
+    pool = create_pool(database_url, min_size=1, max_size=2)
+    repository = PostgreSQLMemoryRepository(pool)
+    repository.check_health()
+    repository.close()
+    assert pool.closed is True
+
+
+def test_real_postgresql_owner_transaction_and_restart_contract(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    database_url = postgresql_test_database.url
+    pool = create_pool(database_url, min_size=1, max_size=3)
+    repository = PostgreSQLMemoryRepository(pool)
+    service = create_memory_service(repository, [TestScenarioPolicy()])
+    owner_a = PrincipalContext("owner-a")
+    owner_b = PrincipalContext("owner-b")
+    created = service.create_memory(owner_a, project_preference_command())
+
+    assert service.get_memory(owner_a, created.item.memory_id) == created
+    assert service.list_memories(owner_b) == ()
+    with pytest.raises(MemoryNotFoundError):
+        service.get_memory(owner_b, created.item.memory_id)
+    repository.close()
+
+    reopened_pool = create_pool(
+        database_url,
+        min_size=1,
+        max_size=3,
+    )
+    reopened = PostgreSQLMemoryRepository(reopened_pool)
+    try:
+        reopened_service = create_memory_service(
+            reopened,
+            [TestScenarioPolicy()],
+        )
+        assert reopened_service.get_memory(owner_a, created.item.memory_id) == created
+    finally:
+        reopened.close()
+
+
+def test_real_postgresql_source_turn_idempotency_and_review_resolution(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    from memory_mcp.core import (
+        AssertionKind,
+        ExpressionBasis,
+        MessageRole,
+        ReviewStatus,
+        TurnEnvelope,
+        TurnMessage,
+    )
+    from tests.support.fakes import candidate_proposal
+
+    text = "我可能更喜欢周报要点"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                text,
+                content="用户可能偏好要点",
+                assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+                expression_basis=ExpressionBasis.INFERRED,
+            ),
+        )
+    )
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=4)
+    repository = PostgreSQLMemoryRepository(pool)
+    try:
+        service = create_memory_service(
+            repository,
+            [TestScenarioPolicy()],
+            candidate_extractor=extractor,
+        )
+        principal = PrincipalContext("owner-a")
+        turn = TurnEnvelope(
+            scenario="project-work",
+            conversation_id="conversation-1",
+            source_turn_id="turn-1",
+            content=text,
+            observed_at=datetime(2026, 7, 30, 10, tzinfo=UTC),
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=text,
+                    message_id="message-1",
+                ),
+            ),
+        )
+        first = service.capture_turn(principal, turn)
+        replay = service.capture_turn(principal, turn)
+        assert replay.capture_id == first.capture_id
+        assert replay.replayed is True
+        assert len(extractor.requests) == 1
+
+        review_id = first.outcomes[0].review_id
+        assert review_id is not None
+        confirmed = service.confirm_review(principal, review_id)
+        assert service.confirm_review(principal, review_id) == confirmed
+        assert service.list_pending_reviews(principal) == ()
+    finally:
+        repository.close()
+
+    reopened_pool = create_pool(
+        postgresql_test_database.url,
+        min_size=1,
+        max_size=2,
+    )
+    reopened_repository = PostgreSQLMemoryRepository(reopened_pool)
+    try:
+        reopened_service = create_memory_service(
+            reopened_repository,
+            [TestScenarioPolicy()],
+        )
+        assert reopened_service.get_review(principal, review_id).status is (
+            ReviewStatus.CONFIRMED
+        )
+        assert (
+            reopened_service.get_memory(principal, confirmed.item.memory_id)
+            == confirmed
+        )
+    finally:
+        reopened_repository.close()
+
+
+def test_real_postgresql_overlapping_event_retry_and_service_restart(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    from memory_mcp.core import MessageRole, TurnEnvelope, TurnMessage
+    from tests.support.fakes import candidate_proposal
+
+    text = "以后周报默认用表格"
+
+    class BlockingExtractor(FakeCandidateExtractor):
+        def __init__(self) -> None:
+            super().__init__((candidate_proposal(text),))
+            self.entered = Event()
+            self.release = Event()
+
+        def extract(self, request):
+            self.entered.set()
+            assert self.release.wait(timeout=10)
+            return super().extract(request)
+
+    extractor = BlockingExtractor()
+    database_url = postgresql_test_database.url
+    pool = create_pool(database_url, min_size=1, max_size=4)
+    repository = PostgreSQLMemoryRepository(pool)
+    service = create_memory_service(
+        repository,
+        [TestScenarioPolicy()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("owner-a")
+    turn = TurnEnvelope(
+        scenario="project-work",
+        conversation_id="conversation-event",
+        source_turn_id="turn-event",
+        content=text,
+        observed_at=datetime(2026, 7, 30, 10, tzinfo=UTC),
+        event_id="event-1",
+        contract_version="1",
+        payload_fingerprint="stable-fingerprint",
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=text,
+                message_id="message-event",
+            ),
+        ),
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(service.capture_turn, principal, turn)
+            assert extractor.entered.wait(timeout=10)
+            second = executor.submit(service.capture_turn, principal, turn)
+            extractor.release.set()
+            results = (first.result(timeout=10), second.result(timeout=10))
+        assert len(extractor.requests) == 1
+        assert results[0].capture_id == results[1].capture_id
+        assert {result.replayed for result in results} == {False, True}
+    finally:
+        repository.close()
+
+    reopened_pool = create_pool(
+        database_url,
+        min_size=1,
+        max_size=2,
+    )
+    reopened_repository = PostgreSQLMemoryRepository(reopened_pool)
+    replay_extractor = FakeCandidateExtractor()
+    try:
+        reopened_service = create_memory_service(
+            reopened_repository,
+            [TestScenarioPolicy()],
+            candidate_extractor=replay_extractor,
+        )
+        replay = reopened_service.capture_turn(principal, turn)
+        assert replay.replayed is True
+        assert replay_extractor.requests == []
+    finally:
+        reopened_repository.close()
+
+
+def _truncate_memory_tables(database_url: str) -> None:
+    with _connect_safely(database_url) as connection:
+        connection.execute("TRUNCATE TABLE memory_scenarios CASCADE")

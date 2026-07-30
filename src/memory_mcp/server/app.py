@@ -2,8 +2,7 @@
 
 import asyncio
 import logging
-import sqlite3
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -19,25 +18,51 @@ from memory_mcp.core.adapters.postgresql import (
     PostgreSQLMemoryRepository,
     create_pool,
 )
-from memory_mcp.core.adapters.postgresql.runtime import (
+from memory_mcp.core.adapters.postgresql.schema import (
     apply_migrations as apply_postgresql_migrations,
 )
-from memory_mcp.core.adapters.sqlite import (
-    SQLiteMemoryRepository,
-    connection_factory,
-)
-from memory_mcp.core.adapters.sqlite.runtime import (
-    apply_migrations,
-    check_health,
-)
 from memory_mcp.core.composition import create_memory_service
+from memory_mcp.extraction.factory import create_configured_candidate_extractor
 from memory_mcp.logging import configure_logging_from_settings, log_event
+from memory_mcp.scenarios import GeneralWorkPolicy
 from memory_mcp.server.auth import DemoTokenVerifier
-from memory_mcp.server.policy import ConfiguredScenarioPolicy
 from memory_mcp.server.settings import MemoryServerSettings
 from memory_mcp.server.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class MemoryMcpServer(FastMCP[Any]):
+    """FastMCP server whose process-scoped storage follows ASGI lifespan."""
+
+    def __init__(
+        self,
+        *args: Any,
+        close_storage: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._close_storage = close_storage
+        self._streamable_app = None
+        super().__init__(*args, **kwargs)
+
+    def streamable_http_app(self):
+        if self._streamable_app is not None:
+            return self._streamable_app
+        app = super().streamable_http_app()
+        if self._close_storage is not None:
+            session_manager_lifespan = app.router.lifespan_context
+
+            @asynccontextmanager
+            async def lifespan(starlette_app):
+                async with session_manager_lifespan(starlette_app) as state:
+                    try:
+                        yield state
+                    finally:
+                        await asyncio.to_thread(self._close_storage)
+
+            app.router.lifespan_context = lifespan
+        self._streamable_app = app
+        return app
 
 
 def create_memory_mcp_server(
@@ -46,57 +71,41 @@ def create_memory_mcp_server(
     memory_service: MemoryService | None = None,
     candidate_extractor: CandidateExtractor | None = None,
     policies: Iterable[ScenarioPolicy] | None = None,
-) -> FastMCP[Any]:
+) -> MemoryMcpServer:
     """Create a fully authenticated Memory MCP server."""
 
     principals = settings.require_demo_principals()
     close_storage: Callable[[], None] | None = None
     if memory_service is None:
-        if settings.storage_backend == "postgresql":
-            database_url = settings.require_postgresql_url()
-            if settings.database_migrate_on_startup:
-                apply_postgresql_migrations(database_url)
-            repository = PostgreSQLMemoryRepository(
-                create_pool(
-                    database_url,
-                    min_size=settings.database_pool_min_size,
-                    max_size=settings.database_pool_max_size,
-                    timeout=settings.database_connect_timeout_seconds,
-                )
+        configured_extractor = candidate_extractor
+        if configured_extractor is None:
+            configured_extractor = create_configured_candidate_extractor(settings)
+        database_url = settings.require_postgresql_url()
+        if settings.database_migrate_on_startup:
+            apply_postgresql_migrations(database_url)
+        repository = PostgreSQLMemoryRepository(
+            create_pool(
+                database_url,
+                min_size=settings.database_pool_min_size,
+                max_size=settings.database_pool_max_size,
+                timeout=settings.database_connect_timeout_seconds,
             )
-            health_check = repository.check_health
-            close_storage = repository.close
-        else:
-            apply_migrations(settings.database_path)
-            repository = SQLiteMemoryRepository(
-                connection_factory(settings.database_path)
-            )
-
-            def health_check() -> None:
-                check_health(settings.database_path)
-
-        configured_policies = tuple(
-            policies or (ConfiguredScenarioPolicy.from_settings(settings),)
         )
+        health_check = repository.check_health
+        close_storage = repository.close
+
+        configured_policies = tuple(policies or (GeneralWorkPolicy(),))
         memory_service = create_memory_service(
             repository,
             configured_policies,
-            candidate_extractor=candidate_extractor,
+            candidate_extractor=configured_extractor,
         )
     else:
 
         def health_check() -> None:
             return None
 
-    @asynccontextmanager
-    async def lifespan(_: FastMCP[Any]) -> AsyncIterator[None]:
-        try:
-            yield None
-        finally:
-            if close_storage is not None:
-                await asyncio.to_thread(close_storage)
-
-    server: FastMCP[Any] = FastMCP(
+    server = MemoryMcpServer(
         name="Memory MCP",
         instructions=(
             "Owner-scoped long-term memory service. "
@@ -107,7 +116,7 @@ def create_memory_mcp_server(
         streamable_http_path=settings.mcp_path,
         json_response=True,
         stateless_http=settings.stateless_http,
-        lifespan=lifespan,
+        close_storage=close_storage,
         token_verifier=DemoTokenVerifier(principals),
         auth=AuthSettings(
             issuer_url=settings.auth_issuer_url,
@@ -124,7 +133,6 @@ def create_memory_mcp_server(
         except (
             OSError,
             RuntimeError,
-            sqlite3.Error,
             PostgreSQLError,
             PoolTimeout,
         ):
@@ -138,7 +146,7 @@ def create_memory_mcp_server(
                 "service": "memory-mcp",
                 "transport": "streamable-http",
                 "mcp_path": settings.mcp_path,
-                "storage": settings.storage_backend,
+                "storage": "postgresql",
             }
         )
 
@@ -165,7 +173,7 @@ def main() -> None:
         host=settings.host,
         mcp_path=settings.mcp_path,
         port=settings.port,
-        storage=settings.storage_backend,
+        storage="postgresql",
     )
     server.run(transport="streamable-http")
 

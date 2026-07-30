@@ -77,7 +77,6 @@ sudo -u memory-mcp uv sync --frozen --no-dev
 的值。示例：
 
 ```dotenv
-MEMORY_MCP_STORAGE_BACKEND=postgresql
 MEMORY_MCP_DATABASE_URL='postgresql://memory_app:URL_ENCODED_PASSWORD@RDS_PRIVATE_HOST:5432/memory_mcp?sslmode=require'
 MEMORY_MCP_DATABASE_POOL_MIN_SIZE=1
 MEMORY_MCP_DATABASE_POOL_MAX_SIZE=5
@@ -218,6 +217,6 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 
 - 当前 Bearer Token 映射用于原型身份验证，不是生产 OAuth；
 - 当前默认单实例，不声称完成多 worker 或自动伸缩；
-- SQLite 仅保留到 PostgreSQL 真实契约测试完成，不进入 ECS 正式部署；
-- PostgreSQL migration 和 Repository 已实现，但首次接入实际 RDS 后仍必须运行
-  集成验收，未运行前不能宣称云数据库迁移已经验收完成。
+- PostgreSQL 是唯一运行时存储，不提供 SQLite 降级路径；
+- PostgreSQL migration、Repository 和真实 RDS 集成验收已经完成；部署到新的
+  RDS 实例时仍需先在隔离测试库执行同一验收套件。
