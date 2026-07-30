@@ -23,13 +23,14 @@ logical memory and attach the later source evidence.
 
 ### Requirement: Apply explicit replacement consistently
 An explicit user statement that an old memory is no longer current and names a
-replacement MUST make the new content current and preserve the old content as
-superseded history. The old and new states MUST be committed atomically.
+replacement MUST append a new revision to the same logical MemoryItem, make that
+revision current and active, and preserve the former revision as non-current
+superseded history. The old and new revision states MUST be committed atomically.
 
 #### Scenario: User explicitly changes a durable preference
 - **WHEN** the user says the former report format should no longer be used and gives a new default
-- **THEN** the new preference becomes active
-- **AND** the former preference becomes superseded history
+- **THEN** the existing logical memory receives one new active current revision
+- **AND** the former revision becomes non-current superseded history
 
 #### Scenario: Replacement transaction fails
 - **WHEN** persistence fails while applying an explicit replacement
@@ -68,7 +69,7 @@ idempotency, or lifecycle semantics. A scenario that does not use progress or re
 MUST be able to declare empty values without removing those extension points.
 
 #### Scenario: General-work policy is registered
-- **WHEN** the service registers preference, stable-context, ongoing-item, and decision types
+- **WHEN** the service registers `preference`, `stable_context`, `ongoing_item`, and `decision` types
 - **THEN** the common capture and recall flow accepts those types
 - **AND** the Memory Core does not hard-code Agent-specific behavior
 

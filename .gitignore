@@ -17,8 +17,8 @@ pytest-cache-files-*/
 # Local secrets
 .env
 
-# Local knowledge indexes
-.agent-lab/
+# Local runtime state
+.memory-mcp/
 
 # Agent
 .codex

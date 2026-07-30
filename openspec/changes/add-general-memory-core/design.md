@@ -48,7 +48,7 @@ Memory MCP Server。各 Agent 通过自己的生命周期 Hook 在任务开始�
 
 ```text
 当前
-Agent Lab Chat ── 与 Memory Core 完全分离
+旧 Chat/RAG ── 与 Memory Core 完全分离
 测试/示例 ─────── Python 方法调用 MemoryService
 身份 ─────────── 调用方直接构造 PrincipalContext
 TurnEnvelope ─── 一段无角色的 content
@@ -118,7 +118,7 @@ MCP 服务、最小生命周期、Hook 接入和现场演示。
 
 - 不把 Memory Core 继续作为现有 Knowledge Agent 的进程内插件交付。
 - 不把阿里云百炼、Codex、LangChain 或任何单一 Agent Host 作为服务端运行依赖。
-- 不要求 Docker、Kubernetes、Nginx 或某一种云网关；它们只是可选部署组件。
+- 不引入 Docker、Kubernetes 或 Nginx；云负载均衡只用于可选公网 HTTPS。
 - 不实现 Agent 编排、Agent 间消息总线或共享任务调度。
 - 不承诺所有 Agent Host 都具有相同 Hook API；本项目提供通用 Hook 语义和至少
   两个接入示例。
@@ -203,9 +203,9 @@ POST/GET https://<host>/mcp
 MCP SDK 版本必须显式锁定，并用实际演示客户端执行契约测试。项目不依赖实验性
 MCP Tasks、MCP Apps 或 server-side sampling；捕获和召回使用普通工具调用。
 
-公网正式入口必须使用 HTTPS。TLS 可以由同机 Nginx、云负载均衡或等价网关终止，
-MCP 服务只关心代理后的标准 HTTP 请求与认证头。Nginx 和 Docker 均不是 MCP
-协议要求；默认 Linux 部署不使用 Docker，避免把镜像构建加入 20 天关键路径。
+可信 VPC/VPN 内的 Agent 可以直接访问 MCP 的 ECS 私网地址。公网正式入口必须
+使用 HTTPS，由云负载均衡或等价云网关终止 TLS，再转发到受安全组限制的私网
+端口。本项目不引入 Nginx 或 Docker。
 
 服务不得要求客户端先接入某一家 Agent 平台。每个兼容 Host 直接配置 MCP URL 和
 认证信息即可发现工具；如果 Host 只支持 stdio 或没有生命周期 Hook，则由本地
@@ -718,7 +718,7 @@ decision         用户明确形成的当前决策
 | --- | --- | --- |
 | new | 同 scope 无等价当前记忆 | 创建 active memory |
 | duplicate | 同用户、场景、对象、类型和规范化内容等价 | 保留一个 memory，增加 Evidence |
-| replacement | 用户明确表示旧内容不再有效并给出新内容 | 新内容 active，旧内容 superseded |
+| replacement | 用户明确表示同一对象的旧内容不再有效并给出新内容 | 同一 MemoryItem 追加 active current revision，旧 revision 变为 non-current superseded |
 
 以下进入 pending，不自动改变当前状态：
 
@@ -738,9 +738,15 @@ decision         用户明确形成的当前决策
 为了支持 replacement，需要在阶段一数据模型上增加：
 
 - revision/current 状态的一致性事务；
-- old memory → new memory 的最小 successor 引用或替代事件；
+- 同一 `MemoryItem` 的 revision 追加与历史读取；
 - 历史查询；
 - duplicate 的 Evidence 追加。
+
+P0 不创建 old-memory → new-memory successor graph。只有 subject 或 memory type
+改变、因而形成不同逻辑对象时才创建新的 MemoryItem；这种情况不属于同一记忆的
+replacement。duplicate 的最小规范化采用确定性 Unicode 规范化、大小写折叠、
+首尾清理和连续空白折叠，不使用模型或 Embedding 判定“近似相同”。程序必须在
+可信 owner scope 内选择 replacement 目标，不能直接采用模型提供的 memory id。
 
 旧内容不得在普通 `recall_memory` 中出现。
 
@@ -824,6 +830,10 @@ MCP Server 内部使用一个结构化模型适配器完成候选发现。模型
 - capture、review resolution 和 replacement 各自在一个数据库事务内完成；
 - owner 条件必须进入每条用户数据查询，而不只在应用层事后过滤；
 - 数据库使用 UUID、带时区时间、布尔值、约束和部分唯一索引表达领域语义；
+- 健康检查同时验证连接、必需表、已应用 migration 版本和 checksum，不以单表
+  存在代替 schema current；
+- MCP handler 在事件循环中完成认证和 DTO 映射，把同步 Core、模型与 Repository
+  调用放入 worker thread；不得用 async 外观直接阻塞事件循环；
 - 托管备份、恢复和可用性由数据库服务提供，但恢复演练仍属于项目验收。
 
 SQLite 不再作为部署回退或第二套生产实现。迁移期间保留现有 SQLite adapter，
@@ -839,13 +849,12 @@ SQLite 不再作为部署回退或第二套生产实现。迁移期间保留现�
 
 ```text
 Agent Host / Hook / Runner
-          │
-          │ HTTPS + Authorization
-          ▼
-TLS termination（Nginx、云负载均衡或等价组件）
-          │
-          │ 127.0.0.1:<port> 或受限私网端口
-          ▼
+          │ 私网 HTTP + Authorization
+          ├─────────────────────────────┐
+          │                             │
+公网 Agent ── HTTPS ── 云负载均衡 ── 私网 HTTP
+                                        │
+                                        ▼
 Memory MCP（systemd 管理的单实例 Python 服务）
           │
           │ VPC 私网 + TLS（数据库支持时）
@@ -853,13 +862,13 @@ Memory MCP（systemd 管理的单实例 Python 服务）
 托管 PostgreSQL
 ```
 
-MCP 协议不要求 Nginx、Docker 或特定云平台。20 天实现默认不引入 Docker：
+MCP 协议不要求反向代理、Docker 或特定云平台：
 
 - Python 环境和依赖由 `uv` 安装；
 - `systemd` 负责启动、重启和退出状态；
-- TLS 可由 Nginx、云负载均衡或其他反向代理终止；
-- 如果 TLS 终止层与服务同机，MCP 默认只监听 `127.0.0.1`；
-- 如果使用云负载均衡，MCP 只监听受安全组限制的私网地址；
+- 同一 VPC/VPN 内的 Agent 直接访问 ECS 私网地址和 MCP 端口；
+- 公网接入由云负载均衡提供 HTTPS；
+- MCP 只监听受安全组限制的地址，端口来源限于可信 Agent 网段或负载均衡器；
 - PostgreSQL 端口不得暴露公网。
 
 阿里云百炼或其他托管 Agent 平台可以作为兼容性客户端接入，但不进入服务端依赖、
@@ -867,7 +876,7 @@ MCP 协议不要求 Nginx、Docker 或特定云平台。20 天实现默认不引
 
 ### 14. 配置边界
 
-新增两类配置：
+配置按运行边界拆分：
 
 ```text
 MemoryServerSettings
@@ -875,12 +884,15 @@ MemoryServerSettings
 ├── database_pool_min_size / database_pool_max_size
 ├── database_connect_timeout
 ├── host / port / mcp_path
-├── model provider / model / credentials
-├── request timeout
 ├── capture limits
 ├── recall limits
 ├── demo token principal mapping
 └── logging
+
+ChatModelSettings
+├── provider / model / credentials
+├── timeout / retries
+└── structured-output parameters
 
 MemoryHookSettings
 ├── mcp_server_url
@@ -903,7 +915,7 @@ URL、Bearer token 和模型密钥不得写入仓库、systemd unit、命令行�
 
 - request id；
 - capture id / event id 的稳定摘要；
-- owner、client、agent 的不可逆引用；
+- owner、client、agent 的稳定假名引用；
 - MCP tool name；
 - scenario 和 policy version；
 - status、数量、耗时和错误码。
@@ -917,6 +929,7 @@ URL、Bearer token 和模型密钥不得写入仓库、systemd unit、命令行�
 - source expression；
 - 被拦截敏感正文；
 - 模型 API Key。
+- backend 异常消息；只记录错误类型和稳定错误码。
 
 核心演示指标：
 
@@ -945,19 +958,19 @@ URL、Bearer token 和模型密钥不得写入仓库、systemd unit、命令行�
 
 ### 17. 目录边界
 
-目标目录：
+阶段四前统一项目命名，目标目录：
 
 ```text
-src/agent_lab/
-├── memory/
+src/memory_mcp/
+├── core/
 │   ├── domain/
 │   ├── application/
 │   ├── ports/
 │   ├── adapters/
 │   │   └── postgresql/       # 正式持久化 adapter 与 migration
 │   └── composition.py
-├── memory_mcp/
-│   ├── server.py             # MCP Server composition root
+├── server/
+│   ├── app.py                # MCP Server composition root
 │   ├── tools.py              # 工具注册和 DTO 映射
 │   ├── schemas.py            # MCP 输入输出 DTO
 │   ├── auth.py               # token -> RequestPrincipal
@@ -968,8 +981,8 @@ src/agent_lab/
 │   ├── context.py            # Hook 上下文
 │   └── adapters/
 │       └── langchain.py      # 薄 Agent adapter
-├── integrations/
-│   └── chat_models.py        # 服务端结构化抽取复用的模型工厂
+├── chat_models.py            # 服务端结构化抽取复用的模型工厂
+├── logging.py                # 隐私安全的结构化运行日志
 └── scenarios/
     └── general_work.py       # 唯一正式演示场景
 
@@ -979,16 +992,20 @@ examples/
 └── memory_hook_runner.py
 
 deploy/
-├── systemd/
-│   └── agent-lab-memory.service
-└── nginx/
-    └── agent-lab-memory.conf.example
+└── systemd/
+    ├── memory-mcp.service
+    └── memory-mcp-migrate.service
 ```
+
+`server` 当前保持扁平：`app`、`auth`、`settings`、`policy` 和 `errors` 都是单一
+MCP 边界内的小模块，不增加 `api/transport/mcp` 等重复层级。阶段四加入
+recall/history 后，如果工具注册继续增长，只把 `tools.py` 拆成
+`server/tools/{capture,memory,review,recall}.py`，其余模块仍留在 `server` 根下。
 
 依赖守卫必须保证：
 
-- `memory` 不导入 `memory_mcp`、`memory_hooks` 或具体 Agent；
-- `memory_mcp` 只调用 application/public port；
+- `core` 不导入 `server`、`memory_hooks` 或具体 Agent；
+- `server` 只调用 application/public port；
 - `memory_hooks` 不导入 Memory Core 内部 Repository；
 - `general_work` 只实现 ScenarioPolicy；
 - Agent client 不能直接访问 PostgreSQL 或任何 Repository。
@@ -997,20 +1014,21 @@ deploy/
 
 | 现有区域 | 决策 | 理由/前置条件 |
 | --- | --- | --- |
-| `memory/domain`、`application`、`ports` | 保留并演进 | 已实现的领域、隔离和准入基础 |
+| `core/domain`、`application`、`ports` | 保留并演进 | 已实现的领域、隔离和准入基础 |
 | SQLite adapter、migration 和专项测试 | PostgreSQL 契约通过后删除 | 不长期维护两套正式持久化语义 |
 | PostgreSQL adapter、migration 和连接池 | 本期新增并作为正式后端 | 支撑独立服务、私网 RDS、备份恢复和未来扩容 |
 | 敏感检测、结构化 extractor、通用 chat model factory | 保留或提取 | MCP Server 的捕获仍依赖 |
 | `ScenarioPolicy` 完整字段 | 保留 | 多场景和关系/排序扩展边界 |
 | `InMemoryMemoryRepository` | 保留为快速单元测试替身；不作为产品 adapter 宣传 | PostgreSQL 集成测试单独验证数据库约束 |
-| 顶层 `agent_lab.memory` 大量 re-export | 收窄 | 外部正式 API 已转为 MCP；只保留必要内部兼容入口 |
+| 顶层 `memory_mcp.core` re-export | 收窄 | 外部正式 API 已转为 MCP；只保留必要内部入口 |
 | `agents/`、`knowledge/`、旧 `cli/`、`bootstrap.py` | MCP 入口替代后删除 | 属于旧 RAG 产品线，不承载 Memory Core 领域语义 |
 | Embedding、Chroma、文档切分/PDF 集成与依赖 | 删除 | P0 不使用向量知识库；避免安装、配置和叙事噪声 |
 | 阶段一/二 Python 示例 | MCP 示例覆盖同等行为后删除或归档 | 避免同时维护进程内和远程两套正式入口 |
-| 阶段一/二重复设计与验收文档 | 合并为一份实现基线 | OpenSpec 继续作为当前目标和验收事实源 |
+| 阶段一至三重复设计与验收文档 | 合并为一份实现基线 | OpenSpec 继续作为当前目标和验收事实源 |
 
 删除旧产品线必须满足三个前置条件：需要复用的 chat model 能力已提取；新的
-`memory_mcp` 启动入口和至少一个客户端示例可运行；Memory 与 MCP 全量测试通过。
+`memory_mcp.server` 启动入口和至少一个客户端示例可运行；Core 与 MCP 全量测试
+通过。
 因此清理是受测试保护的产品迁移，不是按目录一次性删除。
 
 ### 18. 20 个工作日实施顺序
@@ -1133,8 +1151,9 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
   排序；将失败案例作为是否增加语义检索的依据。
 - **[PostgreSQL adapter 与已验证 SQLite 行为漂移]** → 用同一组 Repository
   contract cases 验证 owner、事务、幂等和当前版本约束；通过后再删除 SQLite。
-- **[公网 MCP 暴露扩大攻击面]** → 强制 HTTPS 与认证，MCP 应用端口不直接暴露，
-  PostgreSQL 仅允许私网访问，secret 不进入 URL、日志或仓库。
+- **[公网 MCP 暴露扩大攻击面]** → 公网强制 HTTPS 与认证，ECS 应用端口仅允许
+  可信私网 Agent 网段或云负载均衡访问，PostgreSQL 仅允许私网访问，secret
+  不进入 URL、日志或仓库。
 - **[不同 Agent Host 只支持部分 transport 或没有 Hook]** → 服务端坚持标准
   Streamable HTTP；分别验收“能连接工具”和“能自动运行 Hook”，无 Hook 时使用
   外层 Runner，不为单个平台修改核心协议。
@@ -1162,7 +1181,7 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
    SQLite 正式运行路径。
 9. 增加最小 duplicate/replacement/recall。
 10. 增加单一 Hook Client、Hook Bridge 和两个平台无关 Agent 接入。
-11. 增加 systemd unit、可选反向代理样例和 ECS 发布/回滚说明。
+11. 增加 systemd unit、私网直连/可选云负载均衡说明和 ECS 发布/回滚说明。
 12. 将阶段一/二重复文档合并为实现基线；更新 README、需求和架构，使 OpenSpec
    成为当前方案与验收的唯一事实源。
 
@@ -1183,10 +1202,10 @@ P2 是运行能力延期清单，不是字段删除清单。`expired/revoked`、
 - 第二客户端以独立 `MemoryHookBridge` Runner 作为确定性验收对象；任一真实
   Agent Host 直接连接 MCP tools 作为兼容性展示，只有 Host 暴露稳定生命周期
   Hook 时才声称自动 Before/After 接入。百炼、Codex 或其他平台都不是必选项。
-- Server 默认只监听 `127.0.0.1`，适用于同机 TLS 终止；使用云负载均衡时必须
-  显式配置受安全组限制的私网监听地址，不为了“远程”演示直接暴露应用端口。
-- 默认部署使用 `uv + systemd`，不引入 Docker。Nginx 只是一个可替换的 HTTPS
-  样例；如果云负载均衡或网关负责 TLS，服务器上无需安装 Nginx。
+- Server 代码默认监听 `127.0.0.1` 供本机开发；ECS 远程接入显式配置
+  `0.0.0.0`，并由安全组把 `8765` 来源限制为可信 Agent 私网网段或云负载均衡。
+- 默认部署使用 `uv + systemd`，不引入 Docker 或 Nginx；公网入口由云负载
+  均衡器提供 HTTPS。
 - 演示 token 按“用户 × client”配置，以便同时证明 owner 共享和 actor 区分。
 - `general-work` 四类记忆足够作为本期唯一正式场景；新增类型必须由失败案例驱动。
 - P1 展示优先级为历史详情，其次 revoke，再次 usage report。

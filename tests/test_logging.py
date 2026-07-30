@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from uuid import uuid4
 
-from agent_lab.observability import (
+from memory_mcp.logging import (
     configure_logging,
     log_event,
     stable_reference,
@@ -10,7 +10,7 @@ from agent_lab.observability import (
 
 
 def test_logging_writes_structured_event_and_redacts_sensitive_fields() -> None:
-    log_directory = Path(".agent-lab/test-logs")
+    log_directory = Path(".memory-mcp/test-logs")
     log_directory.mkdir(parents=True, exist_ok=True)
     log_path = log_directory / f"{uuid4().hex}.log"
     root_logger = logging.getLogger()
@@ -20,7 +20,7 @@ def test_logging_writes_structured_event_and_redacts_sensitive_fields() -> None:
     try:
         configure_logging(level="DEBUG", log_file=log_path)
         log_event(
-            logging.getLogger("agent_lab.test"),
+            logging.getLogger("memory_mcp.test"),
             logging.INFO,
             "test.completed",
             count=2,
@@ -38,7 +38,7 @@ def test_logging_writes_structured_event_and_redacts_sensitive_fields() -> None:
 
 
 def test_logging_configuration_is_idempotent() -> None:
-    log_directory = Path(".agent-lab/test-logs")
+    log_directory = Path(".memory-mcp/test-logs")
     log_directory.mkdir(parents=True, exist_ok=True)
     log_path = log_directory / f"{uuid4().hex}.log"
     root_logger = logging.getLogger()
@@ -49,7 +49,7 @@ def test_logging_configuration_is_idempotent() -> None:
         configure_logging(level="INFO", log_file=log_path)
         configure_logging(level="INFO", log_file=log_path)
         log_event(
-            logging.getLogger("agent_lab.test"),
+            logging.getLogger("memory_mcp.test"),
             logging.INFO,
             "single.event",
         )

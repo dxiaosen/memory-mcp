@@ -88,9 +88,11 @@ event provenance, and the capture payload MUST NOT contain an owner selector.
 
 ### Requirement: Block prohibited content before persistence
 The system MUST redact configured prohibited content before candidate extraction and
-MUST inspect candidate content again before persistence. Blocked raw content MUST NOT
-be stored in memory content, evidence, review items, semantic representations, tool
-results, or logs.
+MUST inspect every free-text candidate field that can be persisted, including subject,
+content, source expression, save rationale, business progress, and original time
+expression, source message identifier, and source tool name. Blocked raw content MUST
+NOT be stored in memory content, evidence, review items, semantic representations, tool
+results, exception messages, or logs.
 
 #### Scenario: Completed turn includes a fictional credential
 - **WHEN** a submitted turn contains a credential together with otherwise durable context
@@ -102,6 +104,11 @@ results, or logs.
 - **THEN** the candidate is blocked before persistence
 - **AND** no prohibited raw text appears in the MCP response
 
+#### Scenario: Extractor hides prohibited content outside the content field
+- **WHEN** structured model output places prohibited text in a subject, rationale, or time-expression field
+- **THEN** the whole candidate is blocked before persistence
+- **AND** neither storage nor operational logs contain the prohibited text
+
 ### Requirement: Process completed-turn events idempotently
 Reprocessing the same owner, scenario, event identifier, and policy version with the
 same payload MUST return the original logical result without creating duplicate
@@ -112,6 +119,11 @@ payload MUST fail with `idempotency_conflict`.
 - **WHEN** an AfterRun Hook retries the same completed event after an uncertain response
 - **THEN** the system returns an equivalent capture receipt marked as replayed
 - **AND** no duplicate state is created
+
+#### Scenario: Two retries overlap in time
+- **WHEN** two requests for the same owner, scenario, event, policy version, and payload overlap
+- **THEN** at most one request performs candidate extraction and commits the logical result
+- **AND** both callers observe the committed result rather than a database-constraint error
 
 #### Scenario: Event identifier is reused for different content
 - **WHEN** a client submits different message content under an already completed event identifier

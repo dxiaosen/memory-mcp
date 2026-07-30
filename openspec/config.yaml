@@ -1,20 +1,26 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Product: platform-independent, owner-scoped long-term memory MCP service.
+  Stack: Python 3.14, uv, MCP Python SDK, Pydantic, psycopg, PostgreSQL.
+  Package: memory_mcp; Memory Core lives under memory_mcp.core and the
+  authenticated transport/composition boundary lives under memory_mcp.server.
+  Architecture: domain/application/ports do not depend on MCP, HTTP, database
+  drivers, Agent SDKs, or runtime settings. PostgreSQL is the deployed authority;
+  SQLite is a temporary behavioral baseline until PostgreSQL contract acceptance.
+  Security: owner scope is derived only from authenticated server context.
+  Conversation, candidate, memory, evidence, token, and secret text must not enter
+  operational logs. Public tools never accept owner selectors.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Keep product scope, non-goals, and migration impact explicit.
+  design:
+    - Record dependency direction, transaction boundaries, and rejected alternatives.
+    - Distinguish implemented behavior from planned behavior.
+  specs:
+    - Use exact external identifiers and stable error codes in backticks.
+    - Include owner-isolation and sensitive-data negative scenarios.
+  tasks:
+    - Keep completion state evidence-based.
+    - Put validation and rollback evidence in the same phase as implementation.

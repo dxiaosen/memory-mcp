@@ -1,4 +1,4 @@
-# Agent Lab 主动记忆 MCP 服务需求
+# 主动记忆 MCP 服务需求
 
 ## 1. 项目定位
 
@@ -173,7 +173,8 @@ pending 确认前不得进入普通召回。
 
 - `new`：创建新的 active memory；
 - `duplicate`：保留一个当前 memory，增加新的 Evidence；
-- `replacement`：明确替代时新内容 active，旧内容 superseded。
+- `replacement`：明确替代时在同一 MemoryItem 追加 active current revision，
+  旧 revision 变为 non-current superseded。
 
 完整领域枚举继续保留 `active / superseded / expired / revoked`。本期不自动产生
 expired/revoked，但读取路径必须安全排除这些状态。
@@ -305,7 +306,7 @@ Host 没有原生 Hook 时，Runner 必须提供等价顺序。
 - 单一 current revision 部分唯一索引；
 - capture event 部分唯一索引；
 - deferred primary Evidence 约束；
-- capture、review 和 replacement 原子事务；
+- capture、review 和同一 MemoryItem 的 replacement revision 原子事务；
 - 版本化 migration 和 checksum。
 
 SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试通过后删除，不
@@ -316,17 +317,19 @@ SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试
 目标环境：
 
 ```text
-公网 Agent
-  → HTTPS MCP
-  → Linux ECS 上的 systemd 服务
+可信私网 Agent ── HTTP ───────────────┐
+公网 Agent ── HTTPS ── ALB/CLB ──────┤
+                                      ▼
+                         Linux ECS systemd 服务
   → VPC 私网
   → RDS PostgreSQL
 ```
 
 - 默认使用 `uv + systemd`，不引入 Docker；
-- MCP 默认监听 `127.0.0.1:8765`；
-- TLS 可由 Nginx、ALB/CLB 或等价代理终止；
-- 使用云负载均衡时，MCP 只监听受安全组限制的私网地址；
+- MCP 本地开发默认监听 `127.0.0.1:8765`；
+- ECS 远程接入设置为 `0.0.0.0:8765`，由安全组限制来源；
+- TLS 由 ALB/CLB 或等价云入口终止；
+- 可信 VPC/VPN Agent 可以直接访问 ECS 私网服务地址；
 - PostgreSQL 不开放公网；
 - migration 是独立发布步骤；
 - secret 使用受限 EnvironmentFile 或等价密钥机制；
@@ -373,9 +376,9 @@ SQLite 是阶段一至三的原型证据。PostgreSQL 契约与实际 RDS 测试
 ### NFR-03 可观测
 
 - 关键操作有 request id、状态、数量和耗时；
-- 健康检查区分进程在线和数据库 schema 可用；
+- 健康检查验证数据库连接、必需表、migration 版本和 checksum；
 - 错误返回稳定业务码；
-- 日志不包含正文与 secret。
+- 日志不包含正文、secret 或 backend 异常消息。
 
 ### NFR-04 可维护
 

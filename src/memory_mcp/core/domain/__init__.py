@@ -1,0 +1,51 @@
+"""通用记忆领域模型。"""
+
+from memory_mcp.core.domain.capture import (
+    AdmissionDecision,
+    Candidate,
+    CandidateDurability,
+    CandidateProposal,
+    CaptureOutcome,
+    CaptureResult,
+    CaptureStatus,
+    ExpressionBasis,
+    ExtractionMetadata,
+    ReviewItem,
+    ReviewStatus,
+    TurnEnvelope,
+    TurnMessage,
+)
+from memory_mcp.core.domain.models import (
+    AssertionKind,
+    Evidence,
+    LifecycleStatus,
+    MemoryItem,
+    MemoryRecord,
+    MemoryRevision,
+    MessageRole,
+    PrincipalContext,
+)
+
+__all__ = [
+    "AdmissionDecision",
+    "AssertionKind",
+    "Candidate",
+    "CandidateDurability",
+    "CandidateProposal",
+    "CaptureOutcome",
+    "CaptureResult",
+    "CaptureStatus",
+    "Evidence",
+    "ExpressionBasis",
+    "ExtractionMetadata",
+    "LifecycleStatus",
+    "MemoryItem",
+    "MemoryRecord",
+    "MemoryRevision",
+    "MessageRole",
+    "PrincipalContext",
+    "ReviewItem",
+    "ReviewStatus",
+    "TurnEnvelope",
+    "TurnMessage",
+]

@@ -1,8 +1,8 @@
-# Agent Lab Memory MCP 架构概览
+# Memory MCP 架构概览
 
 ## 1. 产品边界
 
-Agent Lab 是一个独立、可公网接入的长期记忆 MCP 服务，不是某个 Agent 进程内
+Memory MCP 是一个独立、可公网接入的长期记忆服务，不是某个 Agent 进程内
 的插件。Codex、LangChain、自研 Agent 或其他兼容 Host 可以直接连接同一个
 Streamable HTTP MCP 端点。
 
@@ -14,10 +14,7 @@ Streamable HTTP MCP 端点。
 ```text
 Agent Host A ── BeforeRun/AfterRun Hook ─┐
 Agent Host B ── MCP Client / Runner ─────┤
-                                        │ HTTPS + Bearer Token
-                                        ▼
-                          TLS termination / reverse proxy
-                                        │
+                                        │ 私网 HTTP 或公网 HTTPS
                                         ▼
                               Memory MCP Server
                        Transport / Auth / Tool / DTO
@@ -32,27 +29,28 @@ Agent Host B ── MCP Client / Runner ─────┤
                          RDS PostgreSQL（VPC 私网）
 ```
 
-默认 Linux 部署使用 `uv + systemd`，不要求 Docker。HTTPS 可以由同机 Nginx、
-云负载均衡或其他可信代理终止；如果已有 ALB/CLB，ECS 不需要安装 Nginx。
+默认 Linux 部署使用 `uv + systemd`，不要求 Docker 或反向代理。同一可信私网
+内直接访问服务地址；公网接入时由云负载均衡器终止 HTTPS，并只允许其访问 ECS
+私网监听端口。
 
 ## 3. 模块和依赖方向
 
 ```text
-memory_mcp ───────────────> memory.application ─────> memory.domain / ports
-      │                            ▲                         ▲
-      │                            │                         │
-      └── Auth / MCP DTO           └──── PostgreSQL adapter ─┘
+memory_mcp.server ────────> core.application ───────> core.domain / ports
+        │                          ▲                         ▲
+        │                          │                         │
+        └── Auth / MCP DTO         └──── PostgreSQL adapter ─┘
 
 memory_hooks ─────> remote MCP only
 Agent adapters ───> memory_hooks
-ScenarioPolicy ───> memory ports
+ScenarioPolicy ───> core ports
 ```
 
 必须保持的边界：
 
-- `memory.domain`、`application` 和 `ports` 不依赖 MCP、HTTP、Agent SDK、
+- `memory_mcp.core.domain`、`application` 和 `ports` 不依赖 MCP、HTTP、Agent SDK、
   PostgreSQL 驱动或配置模块；
-- `memory_mcp` 只通过应用服务和公开端口使用 Memory Core；
+- `memory_mcp.server` 只通过应用服务和公开端口使用 Memory Core；
 - `memory_hooks` 只访问远程 MCP，不导入 Repository；
 - Agent Client 不直接访问 PostgreSQL；
 - `owner_id` 不属于 MCP 工具入参，只能由服务端认证上下文构造；
@@ -67,7 +65,7 @@ PostgreSQL 是部署环境唯一权威存储，负责：
 - capture event 幂等与无正文 outcome；
 - pending review 及原子确认/拒绝；
 - registered scenario/type、单一 current revision 和跨表 owner 约束；
-- 后续 duplicate、replacement 和 history 事务。
+- 后续 duplicate、同一 MemoryItem 的 replacement revision 和 history 事务。
 
 阶段一至三的 SQLite adapter 是已验证原型。迁移期间保留它作为行为基线；实际
 PostgreSQL Repository、migration 和 MCP 重启测试通过后删除，不长期维护两套
@@ -98,7 +96,7 @@ scopes ───────────────────> read / write /
 
 | 配置组 | 内容 | secret |
 | --- | --- | --- |
-| MCP transport | host、port、`/mcp`、timeout | 否 |
+| MCP transport | host、port、`/mcp` | 否 |
 | PostgreSQL | database URL、pool、connect timeout | 是 |
 | 原型认证 | Token → Principal 映射 | 是 |
 | 场景策略 | scenario、类型、policy version | 否 |
@@ -115,9 +113,12 @@ scopes ───────────────────> read / write /
 
 - Bearer Token、数据库 URL 或模型 API Key；
 - 用户输入、Agent 输出、记忆正文或来源原文；
+- backend 异常消息；
 - 被敏感规则拦截的原始内容。
 
-`/health` 验证当前存储连接和 schema，只返回非敏感运行元数据。完整日志规则见
+同步 Core、模型和 Repository 调用在 worker thread 执行，不直接阻塞 MCP 事件
+循环。`/health` 验证连接、必需表、migration 和 checksum，只返回非敏感运行
+元数据。完整日志规则见
 [项目执行日志设计](logging.md)。
 
 ## 8. 实施顺序

@@ -19,9 +19,9 @@
 - 将服务定义为平台无关的公网 MCP Resource Server。Codex、LangChain、自研
   Agent 或其他兼容客户端可直接通过 URL 和认证信息接入；阿里云百炼等平台只
   是可选客户端，不构成运行依赖。
-- 本期正式部署目标为 Linux 云服务器上的单实例 MCP 服务，通过独立 HTTPS
-  终止层暴露 `/mcp`，并通过私网连接托管 PostgreSQL。Docker、Nginx 和特定云
-  网关都不是协议依赖，部署时按环境选择。
+- 本期正式部署目标为 Linux 云服务器上的单实例 MCP 服务：可信私网内直接访问
+  `/mcp`，公网接入时由云负载均衡器提供 HTTPS；服务通过私网连接托管
+  PostgreSQL，不引入 Docker 或 Nginx。
 - 提供面向 Hook 的 MCP 工具，覆盖完成轮次捕获、任务前召回、当前记忆查看、
   待确认项查看、确认和拒绝。
 - 定义运行前 Recall Hook 与运行后 Capture Hook。Hook 以程序方式调用 MCP
@@ -64,9 +64,12 @@
 
 ## Impact
 
-- `agent_lab.memory.domain`、`application` 和 `ports` 继续作为 MCP 服务内部
+- `memory_mcp.core.domain`、`application` 和 `ports` 继续作为 MCP 服务内部
   核心，前两阶段领域实现不推翻；SQLite Repository 作为已完成阶段的原型实现，
   在 PostgreSQL 契约与迁移测试通过后退出正式运行路径。
+- 项目与 Python 包统一使用 `memory-mcp` / `memory_mcp`，核心位于 `core`，
+  认证后的 MCP transport 与组合根位于 `server`，避免继续保留已经退出产品边界
+  的 `agent-lab` 总称和 `memory_mcp.memory_mcp` 式重复命名。
 - 新增 MCP Server 入口、MCP 协议 DTO、认证上下文适配器和远程 Hook Client；
   演示客户端只保留验证跨 Agent 接入所需的最小代码。
 - 旧 Knowledge Agent、知识库索引、Chroma/Embedding、RAG CLI 和对应依赖不再是
@@ -75,8 +78,8 @@
 - `PrincipalContext` 的构造边界从本地调用方移动到服务端认证适配器；内部
   `owner_id` 继续作为存储隔离键，但不得直接信任 MCP 入参。
 - 项目增加官方 MCP Python SDK、PostgreSQL 驱动和连接池依赖。Linux 云服务器
-  直接通过 Python 环境与 systemd 运行，不要求 Docker；公网 HTTPS 可由 Nginx、
-  云负载均衡或其他反向代理终止。
+  直接通过 Python 环境与 systemd 运行，不要求 Docker 或 Nginx；公网 HTTPS
+  由云负载均衡器终止。
 - PostgreSQL 是部署环境的唯一权威存储；Embedding、向量数据库和搜索引擎仍不
   属于本期。任何未来二级检索索引都不得成为身份授权或生命周期状态的事实源。
 - 自动化测试和现场演示改为围绕“Agent A 捕获、Agent B 召回、Agent C/另一用户

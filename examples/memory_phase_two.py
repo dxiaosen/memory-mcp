@@ -7,21 +7,21 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_lab.config import get_logging_settings
-from agent_lab.memory import (
+from memory_mcp.config import get_logging_settings
+from memory_mcp.core import (
     AdmissionDecision,
     ExtractionRequest,
     PrincipalContext,
     TurnEnvelope,
 )
-from agent_lab.memory.adapters import StructuredCandidateExtractor
-from agent_lab.memory.adapters.sqlite import (
+from memory_mcp.core.adapters import StructuredCandidateExtractor
+from memory_mcp.core.adapters.sqlite import (
     SQLiteMemoryRepository,
     connection_factory,
 )
-from agent_lab.memory.adapters.sqlite.runtime import apply_migrations, check_health
-from agent_lab.memory.composition import create_memory_service
-from agent_lab.observability import configure_logging_from_settings
+from memory_mcp.core.adapters.sqlite.runtime import apply_migrations, check_health
+from memory_mcp.core.composition import create_memory_service
+from memory_mcp.logging import configure_logging_from_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +100,7 @@ def main() -> None:
     """运行不调用外部模型的阶段二完整流程。"""
 
     configure_logging_from_settings(get_logging_settings())
-    demo_directory = Path(".agent-lab/demo-memory")
+    demo_directory = Path(".memory-mcp/demo-memory")
     demo_directory.mkdir(parents=True, exist_ok=True)
     database_path = demo_directory / f"{uuid4().hex}.db"
     try:

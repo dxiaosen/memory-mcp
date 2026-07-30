@@ -102,7 +102,8 @@ authorization, OAuth deployment, or compliance certification.
 ### Requirement: Produce non-content operational audit metadata
 The server SHALL log stable request, event, client, owner-reference, tool, status, count,
 and duration fields for significant MCP operations. It MUST NOT log bearer tokens,
-message content, memory content, source expressions, or prohibited raw text.
+message content, memory content, source expressions, prohibited raw text, or exception
+messages originating from model and storage backends.
 
 #### Scenario: Cross-Agent capture succeeds
 - **WHEN** Agent A captures memory for an authenticated owner
@@ -134,8 +135,10 @@ separately.
 ### Requirement: Protect the public deployment boundary
 The deployed MCP endpoint MUST use HTTPS, require authentication on every memory
 operation, and keep PostgreSQL unreachable from the public Internet. Secrets MUST be
-loaded from runtime configuration and MUST NOT be stored in source code, service unit
-files, URLs, or logs.
+loaded from protected runtime configuration and MUST NOT be stored in source code,
+service unit files, public MCP request URLs, command arguments, or logs. A PostgreSQL
+DSN containing credentials MAY exist only as a protected runtime secret and MUST be
+redacted as a whole outside the connection boundary.
 
 #### Scenario: Agent calls the public service
 - **WHEN** an Agent sends an authenticated request to the public MCP URL
