@@ -10,7 +10,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel, ConfigDict
 
-from memory_mcp.memory_hooks.settings import MemoryHookSettings
+from memory_mcp.hooks.settings import MemoryHookSettings
 
 
 class _Receipt(BaseModel):

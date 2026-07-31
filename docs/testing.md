@@ -2,7 +2,7 @@
 
 本文区分“纯自动化替身”“真实 MCP/Core”“真实 PostgreSQL”“真实模型”，避免把
 局部 mock 结果描述成端到端。配置字段和测试专用值见
-[配置参考](configuration.md)。
+[配置参考](config.md)。
 
 ## 1. 测试分层
 
@@ -21,7 +21,7 @@
 
 - InMemory 与 Fake 只验证业务和协议，不验证 migration、SQL、连接池和真实模型；
 - `fixed` 只替换候选生成，MCP、鉴权、Core、PostgreSQL 和 Hook 都可保持真实；
-- `examples/memory_hook_runner.py` 的 `_demo_agent` 只是接线 callable，不是业务
+- `examples/hook_runner.py` 的 `_demo_agent` 只是接线 callable，不是业务
   Agent 大模型；真实模型在服务端负责记忆候选抽取；
 - real-model E2E 才验证 provider 请求和严格 schema，但模型措辞具有概率性。
 
@@ -230,4 +230,4 @@ named `tool_choice`。该行为有单元测试，且本轮已用真实 API 验�
 - 多进程并发、模型限流、数据库连接池和恢复压测；
 - 10–15 条现场脚本、录屏和最终交付验收。
 
-部署步骤见[阿里云 ECS 指南](deployment/aliyun-ecs.md)。
+部署步骤见[部署指南](deploy.md)。

@@ -1,3 +1,5 @@
+"""Candidate extraction backend and composition tests."""
+
 import json
 from datetime import UTC, datetime
 

@@ -21,7 +21,7 @@ dependencies = [
 
 [project.scripts]
 memory-mcp = "memory_mcp.server.app:main"
-memory-mcp-db = "memory_mcp.database_cli:main"
+memory-mcp-db = "memory_mcp.db:main"
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]

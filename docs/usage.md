@@ -1,7 +1,7 @@
 # Memory MCP 端到端使用
 
 本文从空环境开始跑通数据库、服务、fixed/真实模型和跨 Agent Hook。全部默认值、
-Secret 分类和 fixed/test 边界见[配置参考](configuration.md)。
+Secret 分类和 fixed/test 边界见[配置参考](config.md)。
 
 ## 1. 前置条件
 
@@ -76,7 +76,7 @@ MCP:    http://127.0.0.1:8765/mcp
 
 ```bash
 curl --fail http://127.0.0.1:8765/health
-.venv/bin/python examples/memory_mcp_client.py --profile agent-a tools
+.venv/bin/python examples/client.py --profile agent-a tools
 ```
 
 源码移动、console script 变更或切换分支后，若入口报已删除模块的 import error，
@@ -97,7 +97,7 @@ fixed 候选只有在输入逐字包含配置的 `source_expression` 时才返�
 ### 4.1 Agent A 写入
 
 ```bash
-.venv/bin/python examples/memory_agent_a.py \
+.venv/bin/python examples/agent_a.py \
   --conversation-id demo-agent-a \
   --turn-id demo-agent-a-1 \
   --subject weekly-report \
@@ -117,7 +117,7 @@ fixed 候选只有在输入逐字包含配置的 `source_expression` 时才返�
 ### 4.2 同用户 Agent B 召回
 
 ```bash
-.venv/bin/python examples/memory_agent_b.py \
+.venv/bin/python examples/agent_b.py \
   --conversation-id demo-agent-b \
   --turn-id demo-agent-b-1 \
   --subject weekly-report \
@@ -130,7 +130,7 @@ fixed 候选只有在输入逐字包含配置的 `source_expression` 时才返�
 ### 4.3 不同用户隔离
 
 ```bash
-.venv/bin/python examples/memory_hook_runner.py \
+.venv/bin/python examples/hook_runner.py \
   --profile user-b-agent-b \
   --conversation-id demo-user-b \
   --turn-id demo-user-b-1 \
@@ -182,7 +182,7 @@ DeepSeek V4 默认 thinking 与 LangChain 的强制 schema tool choice 不兼容
 Agent A 输入一条明确、长期、原文可定位的陈述：
 
 ```bash
-.venv/bin/python examples/memory_agent_a.py \
+.venv/bin/python examples/agent_a.py \
   --conversation-id real-model-a \
   --turn-id real-model-a-1 \
   --input '在Atlas项目中，架构决策记录默认使用中文，并长期保持。'
@@ -192,7 +192,7 @@ Agent A 输入一条明确、长期、原文可定位的陈述：
 随后同 owner Agent B 通过项目名和文档关键词查询：
 
 ```bash
-.venv/bin/python examples/memory_agent_b.py \
+.venv/bin/python examples/agent_b.py \
   --conversation-id real-model-b \
   --turn-id real-model-b-1 \
   --task-intent '查询项目文档约定' \
@@ -298,16 +298,16 @@ capture 边界。
 ## 9. 只读检查与治理
 
 ```bash
-.venv/bin/python examples/memory_mcp_client.py --profile agent-a tools
-.venv/bin/python examples/memory_mcp_client.py --profile agent-a memories
-.venv/bin/python examples/memory_mcp_client.py --profile agent-a pending
-.venv/bin/python examples/memory_mcp_client.py \
+.venv/bin/python examples/client.py --profile agent-a tools
+.venv/bin/python examples/client.py --profile agent-a memories
+.venv/bin/python examples/client.py --profile agent-a pending
+.venv/bin/python examples/client.py \
   --profile agent-b recall \
   --scenario general-work \
   --query '项目周报偏好'
 ```
 
-`memory_mcp_client.py` 只演示只读操作。pending confirm/reject 和完整 DTO 可通过
+`client.py` 只演示只读操作。pending confirm/reject 和完整 DTO 可通过
 任意 MCP Inspector/Client 调用七个注册工具；Token 始终由 profile 环境读取。
 
 ## 10. 部署方式
@@ -321,7 +321,7 @@ http://<ecs-private-ip>:8765/mcp
 不需要 Nginx。ECS 监听 `0.0.0.0` 时必须用安全组限制来源。公网场景使用
 ALB/CLB 终止 HTTPS，再转发到 ECS 私网端口；不要直接暴露明文 HTTP 和演示 Token。
 systemd、migration unit、发布和回滚见
-[阿里云 ECS 部署](deployment/aliyun-ecs.md)。
+[部署指南](deploy.md)。
 
 ## 11. 常见问题
 

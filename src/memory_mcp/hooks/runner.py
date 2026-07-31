@@ -3,12 +3,12 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from memory_mcp.memory_hooks.bridge import (
+from memory_mcp.hooks.bridge import (
     AfterRunResult,
     BeforeRunResult,
     MemoryHookBridge,
 )
-from memory_mcp.memory_hooks.context import HookContext
+from memory_mcp.hooks.context import HookContext
 
 AgentCallable = Callable[[str, str | None], Awaitable[str]]
 

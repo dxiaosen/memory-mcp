@@ -59,7 +59,8 @@ if present in existing or future data.
 Recall SHALL consider scenario, subject, task intent, memory type priority, validity,
 and text relevance. The server MUST enforce a relevance threshold, maximum item count,
 and token budget. It MUST return an empty set rather than fill the result with unrelated
-memory.
+memory. When supplied, subject MUST narrow the owner/scenario candidate set before
+ranking; when omitted, recall MUST NOT invent a subject filter.
 
 #### Scenario: Relevant current memories exist
 - **WHEN** a task names a known subject with several directly relevant active memories
@@ -69,6 +70,11 @@ memory.
 - **WHEN** all scoped active memories are unrelated to the task
 - **THEN** the system returns no memory items
 - **AND** the Agent proceeds without long-term memory context
+
+#### Scenario: Caller does not have a canonical subject
+- **WHEN** an Agent submits a relevant query without a subject
+- **THEN** the system searches eligible current memory across that owner and scenario
+- **AND** ranks results using query, task intent, type priority, and text relevance
 
 ### Requirement: Preserve epistemic labels and source summaries
 Every recalled item MUST include its exact revision identifier, memory type, subject,

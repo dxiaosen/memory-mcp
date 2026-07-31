@@ -197,8 +197,8 @@ code when applicable. Discarded and blocked outcomes MUST NOT expose candidate c
 ### Requirement: Commit capture in the authoritative database
 The deployed service MUST commit the capture run, decision outcomes, active memories,
 evidence, and pending items in one PostgreSQL transaction. A process restart or network
-retry MUST NOT weaken event idempotency. SQLite MAY remain only as historical prototype
-evidence while PostgreSQL is the deployed authority.
+retry MUST NOT weaken event idempotency. SQLite MAY exist only in version history as
+prototype evidence and MUST NOT be a deployed or fallback runtime backend.
 
 #### Scenario: Server restarts after a completed capture
 - **WHEN** the MCP process restarts after PostgreSQL committed a completed event

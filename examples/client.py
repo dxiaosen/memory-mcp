@@ -9,7 +9,7 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from memory_mcp.memory_hooks import MemoryHookSettings
+from memory_mcp.hooks import MemoryHookSettings
 
 
 def _parser() -> argparse.ArgumentParser:

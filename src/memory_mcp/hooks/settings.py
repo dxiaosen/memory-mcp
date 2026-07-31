@@ -1,4 +1,4 @@
-"""Environment-backed configuration for a Memory Hook client."""
+"""Environment-backed settings for a Memory Hook client."""
 
 import re
 from typing import Self

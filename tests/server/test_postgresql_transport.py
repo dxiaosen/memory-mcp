@@ -264,7 +264,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
             pytest.fail(f"{_DATABASE_ENV} must select a disposable test database")
 
     from memory_mcp.core.adapters.postgresql.schema import apply_migrations
-    from memory_mcp.memory_hooks import (
+    from memory_mcp.hooks import (
         HookContext,
         HookedAgentRunner,
         MemoryHookBridge,

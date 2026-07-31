@@ -1,6 +1,6 @@
 """Independent Agent A hook profile."""
 
-from memory_hook_runner import main
+from hook_runner import main
 
 if __name__ == "__main__":
     main("agent-a")

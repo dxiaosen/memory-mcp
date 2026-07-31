@@ -1,4 +1,4 @@
-"""PostgreSQL maintenance commands for the deployed Memory MCP service."""
+"""PostgreSQL maintenance entry point for the Memory MCP service."""
 
 import argparse
 

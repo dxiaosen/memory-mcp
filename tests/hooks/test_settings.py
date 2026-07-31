@@ -1,6 +1,6 @@
 import pytest
 
-from memory_mcp.memory_hooks import MemoryHookSettings, MemoryMcpClient
+from memory_mcp.hooks import MemoryHookSettings, MemoryMcpClient
 
 
 def test_profile_settings_are_independent_and_hide_tokens(

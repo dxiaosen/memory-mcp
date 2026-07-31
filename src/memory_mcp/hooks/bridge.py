@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
-from memory_mcp.memory_hooks.client import (
+from memory_mcp.hooks.client import (
     CaptureSummary,
     MemoryHookClient,
     MemoryHookClientError,
 )
-from memory_mcp.memory_hooks.context import HookContext
-from memory_mcp.memory_hooks.settings import MemoryHookSettings
+from memory_mcp.hooks.context import HookContext
+from memory_mcp.hooks.settings import MemoryHookSettings
 
 
 @dataclass(frozen=True, slots=True)

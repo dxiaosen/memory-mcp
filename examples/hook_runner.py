@@ -5,7 +5,7 @@ import asyncio
 import json
 from uuid import uuid4
 
-from memory_mcp.memory_hooks import (
+from memory_mcp.hooks import (
     HookContext,
     HookedAgentRunner,
     MemoryHookBridge,

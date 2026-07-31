@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import anyio
 import pytest
 
-from memory_mcp.memory_hooks import (
+from memory_mcp.hooks import (
     CaptureResponse,
     HookContext,
     HookedAgentRunner,
@@ -14,7 +14,7 @@ from memory_mcp.memory_hooks import (
     MemoryHookSettings,
     RecallResponse,
 )
-from memory_mcp.memory_hooks.client import CaptureSummary, RecalledItem
+from memory_mcp.hooks.client import CaptureSummary, RecalledItem
 
 
 def _settings(**overrides: object) -> MemoryHookSettings:

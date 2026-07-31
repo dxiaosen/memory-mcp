@@ -1,4 +1,4 @@
-# 阿里云 ECS 远程 MCP 部署
+# Memory MCP 部署
 
 本文描述本项目的 P0 部署形态：Memory MCP 直接运行在 Linux ECS 上。同一
 VPC/VPN 内的 Agent 直接访问 ECS 私网服务地址；公网 Agent 通过可选的阿里云

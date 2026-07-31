@@ -1,4 +1,4 @@
-"""Stable top-level Agent run identity passed to both hooks."""
+"""Stable top-level Agent run identity shared by both hooks."""
 
 from pydantic import BaseModel, ConfigDict, Field
 

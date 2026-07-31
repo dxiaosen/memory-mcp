@@ -1,20 +1,20 @@
 """Framework-neutral hooks for adding Memory MCP to an Agent runner."""
 
-from memory_mcp.memory_hooks.bridge import (
+from memory_mcp.hooks.bridge import (
     AfterRunResult,
     BeforeRunResult,
     MemoryHookBridge,
     MemoryHookRunConflictError,
 )
-from memory_mcp.memory_hooks.client import (
+from memory_mcp.hooks.client import (
     CaptureResponse,
     MemoryHookClientError,
     MemoryMcpClient,
     RecallResponse,
 )
-from memory_mcp.memory_hooks.context import HookContext
-from memory_mcp.memory_hooks.runner import HookedAgentRunner, RunnerResult
-from memory_mcp.memory_hooks.settings import MemoryHookSettings
+from memory_mcp.hooks.context import HookContext
+from memory_mcp.hooks.runner import HookedAgentRunner, RunnerResult
+from memory_mcp.hooks.settings import MemoryHookSettings
 
 __all__ = [
     "AfterRunResult",

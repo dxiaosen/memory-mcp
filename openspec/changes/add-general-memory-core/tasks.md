@@ -48,7 +48,7 @@
 
 ## 5. 阶段五——Hook SDK、Linux 部署与跨 Agent 接入（D16～D17）
 
-- [x] 5.1 建立 `memory_hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
+- [x] 5.1 建立 `hooks` 包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge
 - [x] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
 - [x] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
 - [x] 5.4 接入一个真实 OpenAI-compatible 结构化模型 backend，在默认服务组合根按配置创建 `CandidateExtractor`，同时保留固定离线 backend、确定性夹具和安全启动失败
@@ -64,7 +64,7 @@
 - [ ] 6.1 在部署环境验证公网 HTTPS MCP、私网 PostgreSQL、应用端口不公开、secret 不落日志和进程参数
 - [ ] 6.2 构造 10～15 个跨 Agent 脚本，覆盖四类准入、duplicate、replacement 和 empty recall
 - [x] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界、数据库重启和失败恢复测试
-- [ ] 6.4 最终同步 README、需求、架构、配置和启动文档；核对实现基线、OpenSpec、云端验收结果和现场演示口径
+- [ ] 6.4 最终同步 README、文档导航、详细总设计、配置、测试、使用和部署文档；核对 OpenSpec、云端验收结果和现场演示口径
 - [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、模型切换、云服务检查和离线 extractor 兜底
 - [ ] 6.6 运行格式、静态检查、全量测试、PostgreSQL/MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
 
