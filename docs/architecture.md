@@ -141,5 +141,5 @@ scopes ───────────────────> read / write /
 [`add-general-memory-core`](../openspec/changes/add-general-memory-core/design.md)
 为事实源。部署步骤见
 [阿里云 ECS 远程 MCP 部署](deployment/aliyun-ecs.md)。
-阶段五整体说明见[整体设计](design.md)、[测试说明](testing.md)和
-[端到端使用](usage.md)。
+阶段五整体说明见[整体设计](design.md)、[配置参考](configuration.md)、
+[测试说明](testing.md)和[端到端使用](usage.md)。

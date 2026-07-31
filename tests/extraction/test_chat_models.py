@@ -20,4 +20,5 @@ def test_chat_model_factory_uses_configured_provider() -> None:
     openai_model = create_chat_model(_settings(chat_model_provider="openai"))
 
     assert isinstance(deepseek_model, ChatDeepSeek)
+    assert deepseek_model.extra_body == {"thinking": {"type": "disabled"}}
     assert isinstance(openai_model, ChatOpenAI)

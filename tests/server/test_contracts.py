@@ -6,7 +6,7 @@ from pydantic import SecretStr, ValidationError
 
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.server.app import create_memory_mcp_server
+from memory_mcp.server.app import _run_server, create_memory_mcp_server
 from memory_mcp.server.schemas import CompletedTurnEventV1
 from memory_mcp.server.settings import MemoryServerSettings
 from tests.support.fakes import FakeCandidateExtractor, TestScenarioPolicy
@@ -161,3 +161,12 @@ def test_database_pool_bounds_are_consistent() -> None:
             database_pool_max_size=4,
             _env_file=None,
         )
+
+
+def test_interactive_shutdown_does_not_expose_keyboard_interrupt() -> None:
+    class InterruptingServer:
+        def run(self, *, transport: str) -> None:
+            assert transport == "streamable-http"
+            raise KeyboardInterrupt
+
+    _run_server(InterruptingServer())

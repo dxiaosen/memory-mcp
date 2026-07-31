@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Protocol
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
@@ -30,6 +30,10 @@ from memory_mcp.server.settings import MemoryServerSettings
 from memory_mcp.server.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _RunnableServer(Protocol):
+    def run(self, *, transport: str) -> None: ...
 
 
 class MemoryMcpServer(FastMCP[Any]):
@@ -160,6 +164,20 @@ def create_app(settings: MemoryServerSettings | None = None):
     return create_memory_mcp_server(resolved).streamable_http_app()
 
 
+def _run_server(server: _RunnableServer) -> None:
+    """Run until shutdown without exposing a Ctrl+C traceback to operators."""
+
+    try:
+        server.run(transport="streamable-http")
+    except KeyboardInterrupt:
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.mcp.server.stopped",
+            reason="keyboard_interrupt",
+        )
+
+
 def main() -> None:
     """Run the prototype remote service with Streamable HTTP."""
 
@@ -175,7 +193,7 @@ def main() -> None:
         port=settings.port,
         storage="postgresql",
     )
-    server.run(transport="streamable-http")
+    _run_server(server)
 
 
 if __name__ == "__main__":

@@ -97,7 +97,8 @@ uv run python examples/memory_mcp_client.py \
 `MEMORY_MCP_EXTRACTOR_BACKEND=openai-compatible` 后使用 `CHAT_MODEL_*`
 配置真实结构化模型。配置缺失会在启动时安全失败，不会以
 `capture_not_configured` 半配置运行。完整的三身份手工闭环见
-[端到端使用文档](docs/usage.md)。
+[端到端使用文档](docs/usage.md)，所有默认值和 fixed/test/production 边界见
+[配置参考](docs/configuration.md)。
 
 ## PostgreSQL 与 ECS 部署
 
@@ -158,6 +159,7 @@ openspec-cn validate add-general-memory-core --strict
 阶段五文档：
 
 - [整体设计](docs/design.md)
+- [配置参考](docs/configuration.md)
 - [测试说明](docs/testing.md)
 - [端到端使用](docs/usage.md)
 

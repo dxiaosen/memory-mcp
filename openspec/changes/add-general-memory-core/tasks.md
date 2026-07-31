@@ -63,7 +63,7 @@
 
 - [ ] 6.1 在部署环境验证公网 HTTPS MCP、私网 PostgreSQL、应用端口不公开、secret 不落日志和进程参数
 - [ ] 6.2 构造 10～15 个跨 Agent 脚本，覆盖四类准入、duplicate、replacement 和 empty recall
-- [ ] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界、数据库重启和失败恢复测试
+- [x] 6.3 测量 capture/recall 延迟，完成 schema、认证隔离、幂等、敏感边界、数据库重启和失败恢复测试
 - [ ] 6.4 最终同步 README、需求、架构、配置和启动文档；核对实现基线、OpenSpec、云端验收结果和现场演示口径
 - [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、模型切换、云服务检查和离线 extractor 兜底
 - [ ] 6.6 运行格式、静态检查、全量测试、PostgreSQL/MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
