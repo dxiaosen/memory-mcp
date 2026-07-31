@@ -1,10 +1,10 @@
-"""Stable top-level Agent run identity shared by both hooks."""
+"""两个 Hook 共享的稳定顶层 Agent 任务标识。"""
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class HookContext(BaseModel):
-    """Context for exactly one top-level user task, not an internal model step."""
+    """恰好一个顶层用户任务的上下文，不代表内部模型步骤。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

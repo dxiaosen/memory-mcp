@@ -1,4 +1,4 @@
-"""Domain-write validation at the PostgreSQL persistence boundary."""
+"""PostgreSQL 持久化边界的领域写入校验。"""
 
 from memory_mcp.core.domain import (
     CaptureStatus,

@@ -1,7 +1,8 @@
-"""Pending-review use-case coordinator."""
+"""待确认记忆用例协调器。"""
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from datetime import datetime
 from uuid import UUID
 
@@ -20,13 +21,13 @@ from memory_mcp.core.ports import (
     ReplacementWrite,
     ScenarioRegistry,
 )
-from memory_mcp.logging import log_event, stable_reference
+from memory_mcp.logging import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class ReviewService:
-    """List and resolve pending candidates while preserving repository atomics."""
+    """在保持 Repository 原子性的前提下列出并处理待确认候选。"""
 
     def __init__(
         self,
@@ -45,10 +46,15 @@ class ReviewService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
-        return self._repository.list_reviews(
+        reviews = self._repository.list_reviews(
             principal,
             status=ReviewStatus.PENDING,
         )
+        log_content_event(
+            "memory.review.list",
+            reviews=tuple(asdict(review) for review in reviews),
+        )
+        return reviews
 
     def get(
         self,
@@ -58,6 +64,10 @@ class ReviewService:
         review = self._repository.get_review(principal, review_id)
         if review is None:
             raise ReviewNotFoundError("review is unavailable")
+        log_content_event(
+            "memory.review.get",
+            review=asdict(review),
+        )
         return review
 
     def confirm(
@@ -137,6 +147,11 @@ class ReviewService:
             owner_ref=stable_reference(principal.owner_id),
             review_id=review_id,
         )
+        log_content_event(
+            "memory.review.confirmed",
+            memory=asdict(committed),
+            review=asdict(resolved),
+        )
         return committed
 
     def reject(
@@ -165,5 +180,9 @@ class ReviewService:
             "memory.review.rejected",
             owner_ref=stable_reference(principal.owner_id),
             review_id=review_id,
+        )
+        log_content_event(
+            "memory.review.rejected",
+            review=asdict(resolved),
         )
         return resolved

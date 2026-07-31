@@ -24,45 +24,41 @@ from tests.support.fakes import (
 )
 
 _OBSERVED_AT = "2026-07-30T10:00:00+08:00"
+_TOKEN_A_AGENT_A = "analyst-a-agent-a-token-00000000001"
+_TOKEN_A_AGENT_B = "analyst-a-agent-b-token-00000000002"
+_TOKEN_A_READ = "analyst-a-read-only-token-0000000003"
+_TOKEN_B_AGENT_B = "analyst-b-agent-b-token-00000000004"
 
 
 def _token_payload() -> str:
     return json.dumps(
         {
-            "token-a-agent-a": {
-                "owner_key": "analyst-a",
-                "tenant_id": "demo",
+            _TOKEN_A_AGENT_A: {
+                "tenant_id": "default",
                 "subject_id": "analyst-a",
-                "client_id": "agent-a",
                 "scopes": [
                     "memory:read",
                     "memory:write",
                     "memory:review",
                 ],
             },
-            "token-a-agent-b": {
-                "owner_key": "analyst-a",
-                "tenant_id": "demo",
+            _TOKEN_A_AGENT_B: {
+                "tenant_id": "default",
                 "subject_id": "analyst-a",
-                "client_id": "agent-b",
                 "scopes": [
                     "memory:read",
                     "memory:write",
                     "memory:review",
                 ],
             },
-            "token-a-read": {
-                "owner_key": "analyst-a",
-                "tenant_id": "demo",
+            _TOKEN_A_READ: {
+                "tenant_id": "default",
                 "subject_id": "analyst-a",
-                "client_id": "read-only-client",
                 "scopes": ["memory:read"],
             },
-            "token-b-agent-b": {
-                "owner_key": "analyst-b",
-                "tenant_id": "demo",
+            _TOKEN_B_AGENT_B: {
+                "tenant_id": "default",
                 "subject_id": "analyst-b",
-                "client_id": "agent-b",
                 "scopes": [
                     "memory:read",
                     "memory:write",
@@ -77,7 +73,7 @@ def _settings(port: int) -> MemoryServerSettings:
     return MemoryServerSettings(
         host="127.0.0.1",
         port=port,
-        demo_tokens_json=SecretStr(_token_payload()),
+        auth_tokens=SecretStr(_token_payload()),
         log_file=None,
     )
 
@@ -342,7 +338,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
             memory_id, review_id = anyio.run(
                 _with_session,
                 url,
-                "token-a-agent-a",
+                _TOKEN_A_AGENT_A,
                 first_run,
             )
 
@@ -394,7 +390,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
             anyio.run(
                 _with_session,
                 url,
-                "token-a-agent-b",
+                _TOKEN_A_AGENT_B,
                 second_agent,
             )
 
@@ -431,7 +427,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
             anyio.run(
                 _with_session,
                 url,
-                "token-b-agent-b",
+                _TOKEN_B_AGENT_B,
                 other_user,
             )
 
@@ -447,7 +443,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
             anyio.run(
                 _with_session,
                 url,
-                "token-a-read",
+                _TOKEN_A_READ,
                 read_only,
             )
 

@@ -1,4 +1,4 @@
-"""Reference runner showing where the two hooks belong."""
+"""展示两个 Hook 接入位置的参考 Runner。"""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -21,7 +21,7 @@ class RunnerResult:
 
 
 class HookedAgentRunner:
-    """Wrap one top-level Agent call without observing its internal steps."""
+    """包装一次顶层 Agent 调用，不观察其内部步骤。"""
 
     def __init__(
         self,

@@ -61,23 +61,24 @@ ScenarioPolicy and MUST NOT require the user to say “remember this”.
 
 ### Requirement: Provide configured structured extraction
 The runnable MCP Server SHALL construct a CandidateExtractor from protected runtime
-configuration. It MUST support one real OpenAI-compatible structured model backend and
-one deterministic fixed backend implementing the same CandidateExtractor contract.
-Backend selection MUST NOT change trusted identity, provenance, admission, lifecycle,
-or persistence rules.
+configuration using one real OpenAI-compatible structured model backend. Automated
+tests MAY inject a deterministic fixed adapter implementing the same CandidateExtractor
+contract, but runtime configuration MUST NOT expose a fixed-backend selector or
+candidate payload. Adapter selection MUST NOT change trusted identity, provenance,
+admission, lifecycle, or persistence rules.
 
 #### Scenario: Real structured extraction is configured
 - **WHEN** the server starts with a supported model provider, model, endpoint, and credential
 - **THEN** completed turns are submitted to the real structured backend after redaction
 - **AND** validated candidates continue through the common admission pipeline
 
-#### Scenario: Fixed extraction is selected
-- **WHEN** tests, offline demonstration, or recovery configuration selects the fixed backend
-- **THEN** the server produces deterministic configured candidates without external network access
+#### Scenario: A test injects deterministic extraction
+- **WHEN** an automated test injects the fixed adapter through the application composition boundary
+- **THEN** the server produces deterministic test-owned candidates without external network access
 - **AND** the MCP and Hook contracts remain identical to the real-backend path
 
 #### Scenario: Model configuration is incomplete
-- **WHEN** the selected real backend lacks required model credentials or settings
+- **WHEN** the real backend lacks required model credentials or settings
 - **THEN** server startup fails with a non-content configuration error
 - **AND** it does not silently change identity, owner scope, or storage behavior
 

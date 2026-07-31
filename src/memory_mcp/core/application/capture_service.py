@@ -1,10 +1,10 @@
-"""Capture orchestration and its compatibility facade for pending reviews."""
+"""捕获流程编排及其待确认兼容门面。"""
 
 import logging
 import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from threading import Lock
 from uuid import UUID
@@ -41,14 +41,14 @@ from memory_mcp.core.ports import (
     ScenarioRegistry,
     SensitiveContentGuard,
 )
-from memory_mcp.logging import log_event, stable_reference
+from memory_mcp.logging import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")
 
 
 class CaptureService:
-    """Coordinate extraction and commits while preserving the public facade."""
+    """在保持公开门面的同时协调抽取与提交。"""
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class CaptureService:
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
-        """Serialize same-process retries before entering model extraction."""
+        """进入模型抽取前串行化同一进程内的重试。"""
 
         policy = self._scenario_registry.get(turn.scenario)
         event_or_turn = turn.event_id or (
@@ -117,7 +117,7 @@ class CaptureService:
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
-        """Capture one turn and atomically commit mutually exclusive outcomes."""
+        """捕获一个轮次并原子提交互斥结果。"""
 
         extractor = self._candidate_extractor
         guard = self._sensitive_guard
@@ -171,6 +171,27 @@ class CaptureService:
         try:
             inspection = guard.inspect(turn.content)
             subject_hint_inspection = guard.inspect(turn.subject_hint or "")
+            log_content_event(
+                "memory.capture.input",
+                capture_id=capture_id,
+                content=inspection.redacted_text,
+                conversation_id=turn.conversation_id,
+                event_id=turn.event_id,
+                messages=tuple(
+                    {
+                        "role": message.role.value,
+                        "content": guard.inspect(message.content).redacted_text,
+                    }
+                    for message in turn.messages
+                ),
+                scenario=turn.scenario,
+                source_turn_id=turn.source_turn_id,
+                subject_hint=(
+                    subject_hint_inspection.redacted_text
+                    if turn.subject_hint is not None
+                    else None
+                ),
+            )
             initial_outcomes = tuple(
                 CaptureOutcome(
                     candidate_id=self._id_factory(),
@@ -206,6 +227,18 @@ class CaptureService:
                 proposals,
                 redacted_source=inspection.redacted_text,
                 initial_outcomes=initial_outcomes,
+            )
+            log_content_event(
+                "memory.capture.candidates",
+                capture_id=capture_id,
+                candidates=tuple(
+                    asdict(candidate) for candidate in processed.candidates
+                ),
+            )
+            log_content_event(
+                "memory.capture.admission",
+                capture_id=capture_id,
+                outcomes=tuple(asdict(outcome) for outcome in processed.outcomes),
             )
         except (
             InvalidMemoryTypeError,
@@ -269,6 +302,16 @@ class CaptureService:
                 replacements=processed.replacements,
             ),
         )
+        log_content_event(
+            "memory.capture.persisted",
+            capture=asdict(result),
+            duplicate_evidence=tuple(
+                asdict(write) for write in processed.duplicate_evidence
+            ),
+            memories=tuple(asdict(memory) for memory in processed.memories),
+            replacements=tuple(asdict(write) for write in processed.replacements),
+            reviews=tuple(asdict(review) for review in processed.reviews),
+        )
         log_event(
             _LOGGER,
             logging.INFO,
@@ -298,7 +341,7 @@ class CaptureService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
-        """List unresolved candidates through the stable CaptureService facade."""
+        """通过稳定的 CaptureService 门面列出未处理候选。"""
 
         return self._review_service.list_pending(principal)
 
@@ -374,7 +417,7 @@ def _has_processable_content(value: str) -> bool:
 
 
 class _KeyedLocks:
-    """Reference-counted locks for overlapping captures in one process."""
+    """用于单进程重叠捕获的引用计数锁。"""
 
     def __init__(self) -> None:
         self._guard = Lock()

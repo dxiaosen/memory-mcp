@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from datetime import UTC, datetime
 from time import perf_counter
 from uuid import UUID, uuid4
@@ -34,7 +35,7 @@ from memory_mcp.core.ports import (
     ScenarioRegistry,
     SensitiveContentGuard,
 )
-from memory_mcp.logging import log_event, stable_reference
+from memory_mcp.logging import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,7 +68,11 @@ class MemoryService:
             id_factory=id_factory,
             clock=self._clock,
         )
-        self._recall_service = RecallService(repository, scenario_registry)
+        self._recall_service = RecallService(
+            repository,
+            scenario_registry,
+            sensitive_guard,
+        )
 
     def register_scenario(self, policy: ScenarioPolicy) -> None:
         """同时登记运行时策略和持久化约束。"""
@@ -131,6 +136,10 @@ class MemoryService:
                 scenario=command.scenario,
             )
             raise SensitiveContentBlockedError("memory content is prohibited")
+        log_content_event(
+            "memory.create.input",
+            command=asdict(command),
+        )
 
         created_at = self._clock()
         memory_id = self._id_factory()
@@ -174,6 +183,10 @@ class MemoryService:
             ),
         )
         self._repository.add(principal, record)
+        log_content_event(
+            "memory.create.persisted",
+            memory=asdict(record),
+        )
         log_event(
             _LOGGER,
             logging.INFO,
@@ -212,6 +225,10 @@ class MemoryService:
             memory_id=memory_id,
             owner_ref=stable_reference(principal.owner_id),
         )
+        log_content_event(
+            "memory.read.get",
+            memory=asdict(record),
+        )
         return record
 
     def get_memory_history(
@@ -223,7 +240,13 @@ class MemoryService:
 
         if self._repository.get(principal, memory_id) is None:
             raise MemoryNotFoundError("memory is unavailable")
-        return self._repository.get_history(principal, memory_id)
+        history = self._repository.get_history(principal, memory_id)
+        log_content_event(
+            "memory.read.history",
+            history=tuple(asdict(entry) for entry in history),
+            memory_id=memory_id,
+        )
+        return history
 
     def list_memories(
         self,
@@ -244,6 +267,10 @@ class MemoryService:
             include_inactive=include_inactive,
             owner_ref=stable_reference(principal.owner_id),
             result_count=len(records),
+        )
+        log_content_event(
+            "memory.read.list",
+            memories=tuple(asdict(record) for record in records),
         )
         return records
 

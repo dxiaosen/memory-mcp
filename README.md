@@ -11,8 +11,8 @@ PostgreSQL 持久化由服务端统一负责。
 - duplicate Evidence、replacement revision 和 history；
 - 七个带认证和 scope 的 MCP 工具；
 - owner-first recall 和安全 rendered context；
-- BeforeRun/AfterRun Hook、Runner 和独立 Agent profiles；
-- fixed 与真实 OpenAI-compatible/DeepSeek 结构化抽取；
+- BeforeRun/AfterRun Hook、Runner 和每个 Agent 独立的运行配置；
+- 真实 OpenAI-compatible/DeepSeek 结构化抽取，以及测试注入的确定性候选；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。完整进度只
@@ -28,12 +28,22 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-编辑 `.env`，至少替换：
+编辑服务端 `.env`，至少替换：
 
-- PostgreSQL 测试/开发库 DSN；
-- `MEMORY_MCP_DEMO_TOKENS_JSON` 中的三枚占位 Token；
-- 三个 Hook profile 对应的 Bearer Token；
-- 使用真实模型时的 `CHAT_MODEL_*`。
+- PostgreSQL 数据库 DSN；
+- `MEMORY_MCP_AUTH_TOKENS` 中长度不少于 32 字符的随机 Token；
+- `MEMORY_MCP_MODEL_*` 模型名称、API Key 和可选 Base URL。
+
+再为一个 Agent Host 建立独立配置：
+
+```bash
+cp examples/.env.example examples/agent.env
+chmod 600 examples/agent.env
+```
+
+`examples/agent.env` 中的 `MEMORY_HOOK_BEARER_TOKEN` 必须与服务端 Token 映射中的
+一枚 Token 完全相同。生产部署应通过 Secret Manager、systemd
+`EnvironmentFile` 或编排平台注入，而不是长期保留在项目目录。
 
 然后：
 
@@ -53,23 +63,29 @@ Health: http://127.0.0.1:8765/health
 另一个终端：
 
 ```bash
-.venv/bin/python examples/client.py --profile agent-a tools
+.venv/bin/python examples/client.py \
+  --env-file examples/agent.env \
+  tools
 
-.venv/bin/python examples/agent_a.py \
-  --conversation-id demo-a \
-  --turn-id demo-a-1 \
+.venv/bin/python examples/hook_runner.py \
+  --env-file examples/agent.env \
+  --conversation-id run-a \
+  --turn-id run-a-1 \
   --subject weekly-report \
   --input '以后项目周报默认用表格'
 
-.venv/bin/python examples/agent_b.py \
-  --conversation-id demo-b \
-  --turn-id demo-b-1 \
+.venv/bin/python examples/hook_runner.py \
+  --env-file examples/agent.env \
+  --conversation-id run-b \
+  --turn-id run-b-1 \
   --subject weekly-report \
   --input '项目周报 表格'
 ```
 
-默认 `fixed` extractor 不访问模型网络，但 MCP、鉴权、Core、PostgreSQL 和 Hook
-仍是真实链路。切换真实模型和三身份隔离步骤见使用文档。
+生产进程始终使用真实模型抽取，不提供 fixed 运行时开关。无需模型网络的确定性
+验证由 PostgreSQL MCP 端到端测试在代码中注入固定候选；MCP、鉴权、Core、
+PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身份隔离步骤见使用
+文档。
 
 ## MCP 工具
 
@@ -117,5 +133,6 @@ openspec-cn validate add-general-memory-core --strict
 `MEMORY_MCP_TEST_DATABASE_URL`，并且数据库名必须包含 `test`；测试会清空其中的
 Memory 表。详细安全步骤见[测试文档](docs/testing.md)。
 
-日志不记录对话、候选、记忆、Evidence、Bearer Token、DSN 或模型 API Key，只
-记录稳定引用、状态、数量、错误码和耗时。
+日志默认只记录稳定引用、状态、数量、错误码和耗时。手工联调时可显式开启内容
+日志观察捕获与召回正文；Bearer Token、DSN、模型 API Key 和敏感规则拦截的原文
+在任何模式下都不会进入日志。详见[日志规范](docs/logging.md)。

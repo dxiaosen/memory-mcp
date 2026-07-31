@@ -26,12 +26,27 @@
   待确认项查看、确认和拒绝。
 - 定义运行前 Recall Hook 与运行后 Capture Hook。Hook 以程序方式调用 MCP
   工具，不依赖模型自行决定是否读取或保存记忆。
-- 阶段五交付可直接运行的服务端候选抽取配置：支持一个真实
-  OpenAI-compatible 结构化模型 backend，并保留固定离线 backend 作为自动化
-  测试、无网络演示和故障兜底；Hook 闭环不再以 `capture_not_configured` 为正常
-  结束状态。
-- owner 不再由 MCP 工具参数、模型输出或普通请求正文指定；服务端必须从可信
-  认证上下文得到当前用户范围，并同时记录调用方 Agent 身份。
+- 阶段五交付可直接运行的服务端候选抽取配置：生产运行时只使用真实
+  OpenAI-compatible 结构化模型；确定性 fixed adapter 仅由自动化测试通过依赖
+  注入使用，不再暴露运行时切换和候选 JSON 配置；Hook 闭环不再以
+  `capture_not_configured` 为正常结束状态。
+- 将环境配置、静态 Token 映射和 Principal 类型收敛为中性运行时命名，不在正式
+  配置字段中使用 `demo` 或 `test`；同时明确静态 Token 认证仍是可替换的原型
+  边界，不等同于生产 OAuth/OIDC。
+- 将 Memory MCP Server 与 Agent Host 视为独立部署单元：服务端模板只包含数据库、
+  HTTP、认证、抽取和日志配置；Agent Host 使用自己的 `MEMORY_HOOK_*` 配置，
+  多身份验收配置和 fixed candidate 夹具不得混入生产模板。
+- 将候选抽取所使用的模型配置统一到面向运维的 `MEMORY_MCP_MODEL_*` 命名空间；
+  静态 Token 映射入口统一为 `MEMORY_MCP_AUTH_TOKENS`；生产进程始终要求真实
+  模型配置，fixed candidate 只存在于测试代码。
+- 增加显式内容日志模式，供受控环境手工观察完成轮次、模型候选、准入决定、
+  持久化结果和召回上下文；默认关闭，启用时允许日志包含应用正文。
+- owner 不再由 MCP 工具参数、模型输出、Token 配置或普通请求正文指定；服务端
+  必须从可信 tenant/subject 身份确定性派生 owner。真实 OAuth/OIDC 适配器记录
+  已验证的 client_id；当前静态 Token 适配器只记录凭据摘要形成的匿名 client
+  引用，不再维护含义重复的 agent_id。
+- 统一源码开发者注释和 docstring 的中文表达；外部协议字段、MCP 工具说明、
+  模型提示、错误码和第三方标识继续保留其稳定英文形式。
 - 复用已经完成的通用记忆卡片、来源、场景策略、四类准入、敏感拦截、幂等捕获
   和 pending 流程，在其外增加 MCP transport、协议 DTO 和 Agent Hook adapter。
 - 将 `TurnEnvelope` 演进为框架无关的完成轮次事件，区分用户输入、Agent 输出和
@@ -90,7 +105,10 @@
   不可见”的跨 Agent 数据流组织。
 - 阶段五同时交付框架无关 Hook Runner、两个独立客户端配置和可重复的本地
   PostgreSQL 端到端流程；公网 HTTPS 与安全组边界保留为部署环境验收。
+- 服务端配置模板按数据库、HTTP、认证、模型和日志分区；静态认证使用
+  `AUTH_TOKENS` 等中性名称，内容日志由独立开关控制。Agent 集成提供独立
+  模板并只使用 `MEMORY_HOOK_*`，不再让服务端 `.env` 同时承担多 Agent 验收配置。
 - 在进入阶段六前收敛阶段五实现结构：Hook 使用异步 I/O 但不引入消息队列，
   增加有界去重、payload 冲突检测、连接复用和完整 capture receipt；把真实/固定
-  模型实现统一到语义明确的 `extraction` 包，并清理有副作用的包入口、反向依赖
-  和过长的捕获/Repository 内部职责。
+  模型适配器统一到语义明确的 `extraction` 包（固定适配器仅供测试注入），并清理
+  有副作用的包入口、反向依赖和过长的捕获/Repository 内部职责。

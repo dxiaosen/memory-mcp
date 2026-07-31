@@ -5,6 +5,9 @@ VPC/VPN 内的 Agent 直接访问 ECS 私网服务地址；公网 Agent 通过�
 ALB/CLB HTTPS 入口访问。服务通过 VPC 私网连接托管 PostgreSQL，不安装
 Docker 或 Nginx。
 
+仓库的 `deploy/` 目录只存放运维制品，目前是两个 systemd unit：一个长期运行
+Server，一个一次性执行 migration。它不是应用代码包、运行数据目录或容器目录。
+
 ## 1. 目标拓扑
 
 ```text
@@ -88,14 +91,28 @@ MEMORY_MCP_PORT=8765
 MEMORY_MCP_MCP_PATH=/mcp
 MEMORY_MCP_HEALTH_PATH=/health
 
-MEMORY_MCP_DEMO_TOKENS_JSON='{"REPLACE_WITH_RANDOM_TOKEN":{"owner_key":"demo-user-a","tenant_id":"demo","subject_id":"demo-user-a","client_id":"agent-a","agent_id":"agent-a","scopes":["memory:read","memory:write","memory:review"]}}'
+MEMORY_MCP_AUTH_ISSUER_URL=https://memory.example.com/auth
+MEMORY_MCP_RESOURCE_SERVER_URL=https://memory.example.com/mcp
+MEMORY_MCP_AUTH_TOKENS='{"REPLACE_WITH_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS":{"tenant_id":"tenant-001","subject_id":"subject-001","scopes":["memory:read","memory:write","memory:review"]}}'
+
+MEMORY_MCP_MODEL_PROVIDER=openai
+MEMORY_MCP_MODEL_NAME=REPLACE_WITH_MODEL_ID
+MEMORY_MCP_MODEL_API_KEY=REPLACE_WITH_MODEL_SECRET
+MEMORY_MCP_MODEL_BASE_URL=https://api.openai.com/v1
+MEMORY_MCP_MODEL_TEMPERATURE=0
+MEMORY_MCP_MODEL_TIMEOUT_SECONDS=60
+MEMORY_MCP_MODEL_MAX_RETRIES=2
 
 MEMORY_MCP_LOG_LEVEL=INFO
+MEMORY_MCP_LOG_CONTENT=false
 MEMORY_MCP_LOG_FILE=/var/log/memory-mcp/memory-mcp.log
 ```
 
 数据库密码中的 `@`、`:`、`/`、`#` 等字符必须做 URL 编码。不要把数据库 URL、
 Bearer Token 或模型 API Key 写进 Git、systemd unit 或命令行参数。
+每枚静态 Token 必须至少 32 字符，且不同 Agent 使用不同随机值。
+部署环境应保持 `LOG_CONTENT=false`；只在受控手工联调窗口临时开启，并在结束后
+关闭和清理内容日志。
 
 设置权限：
 
@@ -168,6 +185,25 @@ http://<ECS_PRIVATE_IP>:8765/mcp
 
 ## 9. Agent 直接接入
 
+Server 的 `/etc/memory-mcp/memory-mcp.env` 不包含 Agent Hook 配置。每个 Agent
+Host 在自己的机器或编排单元中单独注入：
+
+```dotenv
+MEMORY_HOOK_MCP_URL=https://memory.example.com/mcp
+MEMORY_HOOK_BEARER_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
+MEMORY_HOOK_SCENARIO=general-work
+MEMORY_HOOK_TIMEOUT_SECONDS=15
+MEMORY_HOOK_FAIL_OPEN=true
+MEMORY_HOOK_RECALL_MAX_ITEMS=5
+MEMORY_HOOK_RECALL_TOKEN_BUDGET=600
+MEMORY_HOOK_CAPTURE_MAX_ATTEMPTS=3
+MEMORY_HOOK_CAPTURE_RETRY_DELAY_SECONDS=0.1
+MEMORY_HOOK_RUN_CACHE_MAX_ENTRIES=1000
+```
+
+这个文件属于 Agent 部署，不应复制到 Memory MCP Server，也不应包含其他 Agent
+的 Token。`MEMORY_HOOK_BEARER_TOKEN` 必须匹配 Server Principal 映射中的一枚 key。
+
 不同 MCP Host 的配置字段可能不同，概念配置如下：
 
 ```json
@@ -215,7 +251,7 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 
 ## 11. 当前边界
 
-- 当前 Bearer Token 映射用于原型身份验证，不是生产 OAuth；
+- 当前 Bearer Token 映射是静态认证适配器，不是生产 OAuth/OIDC；
 - 当前默认单实例，不声称完成多 worker 或自动伸缩；
 - PostgreSQL 是唯一运行时存储，不提供 SQLite 降级路径；
 - PostgreSQL migration、Repository 和真实 RDS 集成验收已经完成；部署到新的

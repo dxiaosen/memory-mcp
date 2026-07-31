@@ -4,7 +4,7 @@
 
 1. [详细总设计](design.md)：从产品定位、数据流、领域模型一直读到部署和扩展；
 2. [配置参考](config.md)：全部环境变量、默认值、Secret 和测试配置；
-3. [端到端使用](usage.md)：从空环境启动、fixed/真实模型、Agent Hook 接入；
+3. [端到端使用](usage.md)：从空环境启动、真实模型、Agent Hook 与确定性测试；
 4. [测试与验收](testing.md)：测试分层、真实 PostgreSQL/模型证据和故障矩阵；
 5. [日志规范](logging.md)：允许记录和禁止记录的字段；
 6. [部署指南](deploy.md)：systemd、RDS、私网和公网 HTTPS。

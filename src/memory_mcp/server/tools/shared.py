@@ -71,8 +71,6 @@ class ToolSupport:
         }
         if event_id is not None:
             fields["event_ref"] = stable_reference(event_id)
-        if principal.agent_id is not None:
-            fields["agent_ref"] = stable_reference(principal.agent_id)
         log_event(
             _LOGGER,
             logging.INFO,
@@ -97,11 +95,6 @@ class ToolSupport:
             logging.INFO,
             "memory.mcp.tool.completed",
             client_ref=stable_reference(principal.client_id),
-            agent_ref=(
-                stable_reference(principal.agent_id)
-                if principal.agent_id is not None
-                else None
-            ),
             duration_ms=round((perf_counter() - started_at) * 1000, 3),
             owner_ref=stable_reference(principal.owner_key),
             request_id=request_id,

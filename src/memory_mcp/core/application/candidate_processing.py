@@ -1,4 +1,4 @@
-"""Candidate validation, admission, and memory-write materialization."""
+"""候选校验、准入和记忆写入实体化。"""
 
 import re
 from collections.abc import Callable, Sequence
@@ -49,8 +49,9 @@ _EXPLICIT_REPLACEMENT = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class CandidateProcessingResult:
-    """Atomic write components produced from one candidate batch."""
+    """一批候选产生的原子写入组成。"""
 
+    candidates: tuple[Candidate, ...]
     outcomes: tuple[CaptureOutcome, ...]
     memories: tuple[MemoryRecord, ...]
     reviews: tuple[ReviewItem, ...]
@@ -59,7 +60,7 @@ class CandidateProcessingResult:
 
 
 class CandidateMaterializer:
-    """Build immutable domain writes from one trusted Candidate."""
+    """根据可信 Candidate 构造不可变领域写入。"""
 
     def __init__(
         self,
@@ -187,7 +188,7 @@ class CandidateMaterializer:
 
 
 class CandidateProcessor:
-    """Validate and classify model proposals into atomic repository writes."""
+    """校验并分类模型建议，生成原子 Repository 写入。"""
 
     def __init__(
         self,
@@ -218,6 +219,7 @@ class CandidateProcessor:
         initial_outcomes: Sequence[CaptureOutcome] = (),
     ) -> CandidateProcessingResult:
         outcomes = list(initial_outcomes)
+        candidates: list[Candidate] = []
         memories: list[MemoryRecord] = []
         reviews: list[ReviewItem] = []
         duplicate_evidence: list[DuplicateEvidenceWrite] = []
@@ -296,6 +298,7 @@ class CandidateProcessor:
                 normalized_time=proposal.normalized_time,
                 **source_metadata,
             )
+            candidates.append(candidate)
             admission = self._admission_policy.decide(candidate)
             if (
                 admission.decision is AdmissionDecision.AUTO_SAVE
@@ -414,6 +417,7 @@ class CandidateProcessor:
                 )
 
         return CandidateProcessingResult(
+            candidates=tuple(candidates),
             outcomes=tuple(outcomes),
             memories=tuple(memories),
             reviews=tuple(reviews),
@@ -427,7 +431,7 @@ def _source_metadata(
     source_expression: str,
     guard: SensitiveContentGuard,
 ) -> dict[str, MessageRole | str | None]:
-    """Derive source identity from trusted message blocks, never model fields."""
+    """只从可信消息块派生来源身份，不信任模型字段。"""
 
     matching: list[TurnMessage] = []
     for message in turn.messages:
@@ -452,7 +456,7 @@ def _source_metadata(
 
 
 def _is_explicit_replacement(candidate: Candidate) -> bool:
-    """Accept only explicit current/default changes expressed by the user."""
+    """只接受用户明确表达的当前值或默认值变更。"""
 
     return (
         candidate.source_role is MessageRole.USER

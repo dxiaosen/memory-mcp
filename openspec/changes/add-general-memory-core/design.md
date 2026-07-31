@@ -13,7 +13,8 @@ PostgreSQL 持久化。
 - PostgreSQL migration、连接池、Repository 和重启恢复；
 - `general-work` 场景、duplicate Evidence、明确 replacement 和 owner-first
   recall；
-- 框架无关 BeforeRun/AfterRun Hook、三个身份 profile、fixed/真实模型抽取；
+- 框架无关 BeforeRun/AfterRun Hook、三份独立 Agent 配置、真实模型抽取与测试
+  注入的确定性 fixed adapter；
 - systemd 部署模板、真实 PostgreSQL/MCP/Hook/模型本地闭环。
 
 尚未完成的内容只在 `tasks.md` 维护，主要是部署环境的公网 HTTPS/安全组验收、
@@ -38,7 +39,11 @@ PostgreSQL 持久化。
   LangChain 或运行配置；
 - PostgreSQL 是部署环境唯一权威存储；
 - owner 只能来自认证后的服务端上下文；
-- 对话、候选、记忆、Evidence、Token 和 Secret 正文不得进入运行日志；
+- Memory MCP Server 与 Agent Host 使用相互独立的运行配置，生产模板不得包含
+  多身份验收配置、固定候选夹具或破坏性测试数据库配置；
+- 普通运行日志不得记录对话、候选、记忆和 Evidence 正文；显式开启内容日志时仅
+  记录通过敏感检查后的核心流程内容，Token、Secret 和被敏感规则拦截的原文在
+  任何模式下都不得记录；
 - 公开工具不得接受 owner、tenant 或 impersonation 参数；
 - 当前交付是单实例研究原型，不宣称生产 OAuth、多 worker 或合规认证。
 
@@ -53,7 +58,8 @@ PostgreSQL 持久化。
 - 保持来源、认识论标签、幂等、当前/历史和用户确认边界；
 - 使用 PostgreSQL 提供跨进程重启的权威状态和事务一致性；
 - 允许本地/私网直接访问服务地址，公网由云负载均衡终止 HTTPS；
-- 保持 fixed backend，使自动化、离线演示和模型故障恢复路径可重复；
+- 保持测试专用 fixed adapter，使自动化验证可重复且不依赖外部模型；
+- 让生产服务模板默认走真实抽取并在缺少凭据时启动失败；
 - 通过依赖方向和小型 adapter 保持 Agent、模型 provider 与存储可替换。
 
 **Non-Goals:**
@@ -129,30 +135,52 @@ MCP Client 可以来自同机、VPC/VPN 或公网 HTTPS。
 不引入 Nginx、Docker 或 Kubernetes，因为当前单实例服务不需要额外应用层代理与
 容器编排。stdio 不作为产品入口；若用于局部调试，也不能替代远程契约验收。
 
-### 4. owner 与调用 Agent 身份分离
+### 4. owner 与认证客户端身份分离
 
 认证适配器把 Bearer Token 映射为：
 
 ```text
 RequestPrincipal
-├── owner_key
 ├── tenant_id
 ├── subject_id
+├── owner_key = tenant_id + ":" + subject_id
 ├── client_id
-├── agent_id?
 └── scopes: read / write / review
 ```
 
-`owner_key` 决定数据隔离；`client_id/agent_id` 只描述调用者。用户 A 的 Agent A
-与 Agent B 可以映射到同一个 owner，用户 B 即使使用 Agent B 也必须映射到不同
-owner。
+`owner_key` 决定数据隔离，并且只能由校验后的 `tenant_id` 和 `subject_id`
+确定性派生，不能作为静态 Token JSON 中另一份容易漂移的配置。两个身份分量只
+允许字母、数字、点、下划线和连字符，因此 `tenant_id:subject_id` 无歧义。
+
+`client_id` 只描述认证客户端，不参与 owner 隔离。OAuth/OIDC 适配器应从已验证
+Token 或 introspection 结果取得它；当前不透明静态 Bearer Token 不携带可验证
+claim，因此 `StaticTokenVerifier` 使用凭据的单向摘要生成稳定、不可还原的
+`static-…` 审计引用。Token 轮换会产生新的客户端引用，这是静态原型边界下的
+预期行为。
+
+`agent_id` 不是 MCP 或 OAuth 标准身份，且当前实现中与 `client_id` 含义重叠、
+只出现在日志，所以删除。未来只有在“同一 OAuth client 下确实存在多个可信 Agent
+实例”且授权服务器提供可验证 claim 时才重新引入。用户 A 的不同客户端可以映射
+到同一个 owner，用户 B 使用相同应用类型时仍必须映射到不同 owner。
 
 工具 schema 不接受 owner、tenant、subject identity 或 impersonation 参数；
 `PrincipalContext` 只由 Server 构造。Repository 的每个用户数据查询仍显式携带
 owner 条件，不能只依赖 transport 层检查。
 
-当前环境变量 Token 映射是原型认证，不等同于生产 OAuth。一个无法提供可信最终
-用户身份的共享应用 Token 只能作为单 owner 原型，不能宣称多用户隔离。
+当前环境变量 Token 映射只配置 `tenant_id`、`subject_id` 和 `scopes`，是原型
+认证，不等同于生产 OAuth。一个无法提供可信最终用户身份的共享应用 Token 只能
+作为单 owner 原型，不能宣称多用户隔离。
+
+运行时采用中性命名：
+
+- `MEMORY_MCP_AUTH_TOKENS`：静态 Token 到 tenant/subject/scopes 的受保护
+  JSON 映射；
+- `ConfiguredPrincipal`：一条配置化身份记录；
+- `StaticTokenVerifier`：当前可替换的 Bearer Token 校验适配器。
+
+名称中不使用 `demo` 或 `test`，但中性命名不改变其安全能力边界。静态 Token
+必须是至少 32 个字符的独立高熵值；该最低长度检查只能防止明显占位符，不能把
+静态映射升级为生产 OAuth/OIDC。
 
 ### 5. 使用版本化完成轮次事件
 
@@ -253,9 +281,10 @@ Host 可以在发出 final response 后调度 AfterRun，但普通 `create_task`
 
 组合根始终创建一个 `CandidateExtractor`：
 
-- `fixed`：精确匹配配置的 `source_expression`，用于自动化、离线演示和恢复；
-- `openai-compatible`：通过 LangChain 调用受支持的 OpenAI/DeepSeek provider，
-  返回严格 `CandidateBatch`。
+- 生产运行时：通过 LangChain 调用受支持的 OpenAI/DeepSeek provider，返回严格
+  `CandidateBatch`；
+- 自动化测试：通过 `candidate_extractor` 依赖注入使用精确匹配
+  `source_expression` 的 `FixedCandidateBackend`，不读取运行时环境。
 
 模型输入只包含脱敏后的完成轮次和当前 ScenarioPolicy，不包含 owner、Token、
 DSN 或 API Key。模型可以建议 subject、memory type、assertion kind、durability、
@@ -272,7 +301,7 @@ Pydantic schema
 → PostgreSQL 事务
 ```
 
-真实模型配置不完整时服务启动失败，不在运行中静默切换 fixed。DeepSeek V4 的
+真实模型配置不完整时服务启动失败，不在运行中静默切换测试 adapter。DeepSeek V4 的
 thinking 模式与 LangChain 强制 schema tool choice 不兼容，因此 DeepSeek
 extraction adapter 固定关闭 thinking；抽取不依赖 chain-of-thought。
 
@@ -387,33 +416,56 @@ ScenarioPolicy 声明合法类型、capture guidance、policy version、召回�
 
 ### 16. 配置和 Secret 只在组合边界读取
 
-配置分三组：
+Memory MCP Server 与 Agent Host 是两个独立部署单元，不共享配置文件。
 
-- Server：PostgreSQL、HTTP、认证映射、预算和日志；
-- Extraction：provider、model、API key、endpoint、超时与重试；
-- Hook profile：MCP URL、Bearer Token、scenario、预算、重试和 fail-open。
+服务端生产模板只包含：
 
-构造参数用于测试显式注入，环境变量覆盖 `.env`，代码默认值提供安全本地行为。
-DSN、Token、API Key 和包含用户原文的 fixed candidate 均按 Secret 处理。
+- Database：PostgreSQL DSN、连接池、迁移和超时；
+- Server：HTTP、路径和请求/召回预算；
+- Authentication：issuer、resource URL 和静态 Token 映射；
+- Model：统一使用面向部署者的 `MEMORY_MCP_MODEL_*`，包含 provider、name、
+  API key、endpoint、temperature、超时和重试；
+- Logging：级别、文件轮转和独立内容日志开关；
+
+Agent Host 使用独立模板和固定 `MEMORY_HOOK_*` 命名空间，只包含该进程的 MCP
+URL、Bearer Token、scenario、预算、重试和 fail-open。多个 Agent 由多个环境或
+EnvironmentFile 表达，不通过动态身份前缀把其他 Agent 的凭据装入同一进程。
+
+生产进程始终构造真实模型 adapter，必须提供完整抽取凭据，不提供 backend 选择
+开关和 fixed candidate JSON。确定性 fixed adapter 及其候选 payload 只由测试
+代码显式构造和注入。测试数据库 URL 也只由测试进程显式注入。
+
+配置实现拆成 `MemoryServerSettings` 和 `ExtractionSettings`，前者只负责数据库、
+HTTP、认证和日志，后者负责候选抽取使用的完整模型配置。`ExtractionSettings`
+是内部职责名，环境变量使用更直观的 `MODEL`；字段使用 `model_name`，避免出现
+`MODEL_MODEL`。构造参数用于测试显式注入，进程环境变量覆盖可选的本地 env file。
+DSN、Token 和 API Key 均按 Secret 处理。
 
 DSN、Token 和模型 Key 不得进入仓库、systemd unit、命令行参数、MCP URL 或日志。
-演示 Token 的映射文件必须限制权限；公网部署要替换为正式授权边界。
+运行配置文件必须限制权限；公网部署要替换为正式授权边界。
 
-### 17. 日志只记录非正文运行元数据
+### 17. 日志默认记录元数据，可显式开启内容跟踪
 
-允许记录：
+普通模式允许记录：
 
 - request/capture/event 的稳定摘要；
-- owner/client/agent 的稳定假名引用；
+- owner/client 的稳定假名引用；
 - tool、scenario、policy version；
 - status、error code、数量、耗时和 retry/replay。
 
-禁止记录：
+`MEMORY_MCP_LOG_CONTENT=false` 是代码和模板默认值。设置为 `true` 后，以独立的
+`memory_mcp.content` logger 在 INFO 级别增加：
 
-- Bearer Token、DSN、API Key；
-- 用户输入、Agent 输出、Memory、Evidence、source expression；
-- blocked 原文；
-- 模型或数据库 backend 异常消息。
+- `memory.capture.input`：敏感检查后的角色消息与 TurnEnvelope；
+- `memory.capture.candidates`：通过敏感检查的结构化候选；
+- `memory.capture.admission`：候选的决定、reason、memory/review 结果；
+- `memory.capture.persisted`：事务提交后的 CaptureResult；
+- `memory.recall.ranked`：query、task intent、候选内容和相关性分数；
+- `memory.recall.output`：选择结果与 rendered context。
+
+内容模式启用时必须在进程启动打印 WARNING。Bearer Token、DSN、API Key、blocked
+原文和 backend 异常正文始终禁止；因此 capture 输入在敏感预检后记录，候选只在
+持久化前敏感检查通过后记录。内容开关只影响日志，不改变准入、权限和持久化。
 
 同步 Core、模型和 Repository 工作通过 worker thread 执行，不直接阻塞 MCP
 事件循环。
@@ -438,20 +490,36 @@ src/memory_mcp/
 
 `server/tools` 按 capture/memory/recall/review 拆分；其余 Server 文件职责单一且体量
 有限，不再增加 `api/transport/mcp` 等重复目录。`extraction` 统一真实/固定模型
-能力，但 settings、provider factory、backend/schema 和 composition 分文件。
+适配能力，但运行时 factory 只组合真实模型；fixed backend 保留在同一契约层供
+测试注入。settings、provider factory、backend/schema 和 composition 分文件。
 
 PostgreSQL Repository 保留单一 facade 与事务边界，row mapping、write validation
 和 schema/migration 分离。CaptureService 保留公开用例 facade，候选处理和 Review
 协调作为内部协作服务。包 `__init__` 保持轻量，避免导入完整 app 或驱动。
+
+### 19. 开发者注释以中文为主，稳定外部契约保持原文
+
+模块、类、函数 docstring 和解释非显然业务约束的源码注释统一使用中文，帮助本
+项目的主要维护者从代码直接理解边界。注释说明“为什么”和契约约束，不逐行复述
+实现，也不为了追求中文覆盖率增加无信息量注释。
+
+以下内容不得仅为了语言统一而翻译：Python/MCP/OAuth/PostgreSQL 等标准标识，
+对外 MCP 工具 description、Pydantic/JSON 字段、错误码、日志事件名、模型 system
+prompt、SQL 和第三方 API 参数。这些字符串属于协议、运行数据或模型契约，不是
+开发者注释，随意翻译会破坏兼容性或行为。
 
 ## Risks / Trade-offs
 
 - **[Agent Host 能连接 MCP 但没有稳定 Hook API]** → 区分“工具兼容”与“自动
   Before/After”；无原生 Hook 时使用外层 Runner。
 - **[原型 Token 被误解为生产身份]** → README、配置和部署文档显式标注边界；
-  公网验收不得宣称生产 OAuth。
-- **[同用户多 Agent 映射错误]** → Server 校验 tenant/subject 与 owner 一一关系，
-  并保留 A/Agent A、A/Agent B、B/Agent B 矩阵测试。
+  公网验收不得宣称生产 OAuth；拒绝短于 32 字符的明显占位 Token。
+- **[服务端与 Agent 配置混放导致凭据扩散]** → 两个独立模板、固定命名空间和
+  单进程单 Agent 配置；多身份矩阵只存在于测试与验收说明。
+- **[内容日志泄漏测试正文]** → 默认关闭、独立显式开关、启动 WARNING；只允许
+  在受控手工环境开启，使用完立即关闭并清理日志。
+- **[同用户多 Agent 映射错误]** → Server 由已校验 tenant/subject 唯一派生
+  owner，并保留 A/Agent A、A/Agent B、B/Agent B 矩阵测试。
 - **[模型产生无效或敏感候选]** → schema、原文证据、场景和敏感检查全部在程序
   边界执行；失败不保存半成品。
 - **[Hook 重试造成重复]** → 稳定 event、payload fingerprint、进程内去重和
@@ -464,8 +532,8 @@ PostgreSQL Repository 保留单一 facade 与事务边界，row mapping、write 
   Host 可接受丢失风险后置调度，可靠投递需求再引入 durable queue。
 - **[公网端点扩大攻击面]** → HTTPS、逐请求认证、受限安全组、私网 PostgreSQL 和
   Secret 注入；部署证据在阶段六单独验收。
-- **[真实模型或云服务影响现场稳定性]** → fixed backend、本地测试库、锁定依赖和
-  录屏兜底，但兜底不替代真实验收。
+- **[真实模型或云服务影响现场稳定性]** → 测试注入的 fixed adapter、本地测试库、
+  锁定依赖和录屏提供自动化与展示证据，但不伪装为生产运行时故障降级。
 - **[单实例限制吞吐和可用性]** → 当前不宣称 SLA；通过真实负载数据决定是否引入
   worker、queue 或连接池扩容。
 
@@ -498,7 +566,8 @@ PostgreSQL Repository 保留单一 facade 与事务边界，row mapping、write 
 - 应用回滚到上一个代码版本并重新同步锁定依赖；
 - 已成功执行的向前兼容 migration 不做破坏性降级；
 - migration 失败时停止发布，不启动新服务；
-- 真实模型失败时由操作者显式切换 fixed backend；
+- 真实模型失败时停止 capture 并修复配置或上游服务，不在生产进程切换测试
+  adapter；
 - TLS 入口失败时保持应用端口受限，不临时开放公网明文 HTTP；
 - Agent adapter 失败时仍可用 MCP Client/Inspector 验证服务端契约。
 

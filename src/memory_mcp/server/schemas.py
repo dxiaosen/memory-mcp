@@ -1,4 +1,4 @@
-"""Strict versioned DTOs for Memory MCP tool inputs and results."""
+"""Memory MCP 工具输入与结果使用的严格版本化 DTO。"""
 
 import base64
 import hashlib

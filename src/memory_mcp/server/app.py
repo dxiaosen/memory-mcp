@@ -1,4 +1,4 @@
-"""Memory MCP composition root and Streamable HTTP entry point."""
+"""Memory MCP 组合根与 Streamable HTTP 入口。"""
 
 import asyncio
 import logging
@@ -23,9 +23,10 @@ from memory_mcp.core.adapters.postgresql.schema import (
 )
 from memory_mcp.core.composition import create_memory_service
 from memory_mcp.extraction.factory import create_configured_candidate_extractor
+from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
 from memory_mcp.scenarios import GeneralWorkPolicy
-from memory_mcp.server.auth import DemoTokenVerifier
+from memory_mcp.server.auth import StaticTokenVerifier
 from memory_mcp.server.settings import MemoryServerSettings
 from memory_mcp.server.tools import MemoryMcpTools
 
@@ -37,7 +38,7 @@ class _RunnableServer(Protocol):
 
 
 class MemoryMcpServer(FastMCP[Any]):
-    """FastMCP server whose process-scoped storage follows ASGI lifespan."""
+    """让进程级存储跟随 ASGI lifespan 的 FastMCP 服务。"""
 
     def __init__(
         self,
@@ -74,16 +75,19 @@ def create_memory_mcp_server(
     *,
     memory_service: MemoryService | None = None,
     candidate_extractor: CandidateExtractor | None = None,
+    extraction_settings: ExtractionSettings | None = None,
     policies: Iterable[ScenarioPolicy] | None = None,
 ) -> MemoryMcpServer:
-    """Create a fully authenticated Memory MCP server."""
+    """创建具备完整认证边界的 Memory MCP 服务。"""
 
-    principals = settings.require_demo_principals()
+    principals = settings.require_configured_principals()
     close_storage: Callable[[], None] | None = None
     if memory_service is None:
         configured_extractor = candidate_extractor
         if configured_extractor is None:
-            configured_extractor = create_configured_candidate_extractor(settings)
+            configured_extractor = create_configured_candidate_extractor(
+                extraction_settings or ExtractionSettings()
+            )
         database_url = settings.require_postgresql_url()
         if settings.database_migrate_on_startup:
             apply_postgresql_migrations(database_url)
@@ -121,7 +125,7 @@ def create_memory_mcp_server(
         json_response=True,
         stateless_http=settings.stateless_http,
         close_storage=close_storage,
-        token_verifier=DemoTokenVerifier(principals),
+        token_verifier=StaticTokenVerifier(principals),
         auth=AuthSettings(
             issuer_url=settings.auth_issuer_url,
             resource_server_url=settings.resource_server_url,
@@ -157,15 +161,21 @@ def create_memory_mcp_server(
     return server
 
 
-def create_app(settings: MemoryServerSettings | None = None):
-    """Build the ASGI app used by tests or an external ASGI runner."""
+def create_app(
+    settings: MemoryServerSettings | None = None,
+    extraction_settings: ExtractionSettings | None = None,
+):
+    """构建测试或外部 ASGI Runner 使用的应用。"""
 
     resolved = settings or MemoryServerSettings.from_environment()
-    return create_memory_mcp_server(resolved).streamable_http_app()
+    return create_memory_mcp_server(
+        resolved,
+        extraction_settings=extraction_settings,
+    ).streamable_http_app()
 
 
 def _run_server(server: _RunnableServer) -> None:
-    """Run until shutdown without exposing a Ctrl+C traceback to operators."""
+    """持续运行到关闭，且不向操作者显示 Ctrl+C traceback。"""
 
     try:
         server.run(transport="streamable-http")
@@ -179,7 +189,7 @@ def _run_server(server: _RunnableServer) -> None:
 
 
 def main() -> None:
-    """Run the prototype remote service with Streamable HTTP."""
+    """通过 Streamable HTTP 运行远程服务。"""
 
     settings = MemoryServerSettings.from_environment()
     configure_logging_from_settings(settings)

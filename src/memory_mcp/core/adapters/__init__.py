@@ -1,1 +1,1 @@
-"""Infrastructure adapters for Memory Core."""
+"""Memory Core 的基础设施 adapter。"""

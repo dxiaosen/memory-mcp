@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+from pathlib import Path
 from uuid import uuid4
 
 from memory_mcp.hooks import (
@@ -14,7 +15,7 @@ from memory_mcp.hooks import (
 )
 
 
-async def _demo_agent(user_input: str, memory_context: str | None) -> str:
+async def _agent(user_input: str, memory_context: str | None) -> str:
     """Replace this callable with the application's real Agent invocation."""
 
     if memory_context:
@@ -23,7 +24,7 @@ async def _demo_agent(user_input: str, memory_context: str | None) -> str:
 
 
 async def _run(args: argparse.Namespace) -> None:
-    settings = MemoryHookSettings.from_profile(args.profile)
+    settings = MemoryHookSettings(_env_file=args.env_file)
     context = HookContext(
         scenario=settings.scenario,
         conversation_id=args.conversation_id,
@@ -33,14 +34,13 @@ async def _run(args: argparse.Namespace) -> None:
     )
     async with MemoryMcpClient(settings) as client:
         bridge = MemoryHookBridge(client, settings)
-        result = await HookedAgentRunner(bridge, _demo_agent).run(
+        result = await HookedAgentRunner(bridge, _agent).run(
             context,
             args.input,
         )
     print(
         json.dumps(
             {
-                "profile": args.profile,
                 "conversation_id": context.conversation_id,
                 "turn_id": context.turn_id,
                 "recalled_count": result.before_run.recalled_count,
@@ -59,18 +59,20 @@ async def _run(args: argparse.Namespace) -> None:
     )
 
 
-def main(default_profile: str | None = None) -> None:
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a top-level Agent turn with Memory MCP hooks."
     )
     parser.add_argument(
-        "--profile",
-        default=default_profile,
-        required=default_profile is None,
-        help="Environment profile, for example agent-a or agent-b.",
+        "--env-file",
+        type=Path,
+        help=(
+            "Optional Agent environment file. Without it, MEMORY_HOOK_* "
+            "is read from the process environment."
+        ),
     )
     parser.add_argument("--input", required=True)
-    parser.add_argument("--conversation-id", default=f"demo-{uuid4()}")
+    parser.add_argument("--conversation-id", default=f"run-{uuid4()}")
     parser.add_argument("--turn-id", default=f"turn-{uuid4()}")
     parser.add_argument("--subject")
     parser.add_argument("--task-intent")

@@ -1,4 +1,4 @@
-"""Pure PostgreSQL row-to-domain mapping helpers."""
+"""PostgreSQL 数据行到领域对象的纯映射函数。"""
 
 from collections.abc import Mapping
 from datetime import datetime

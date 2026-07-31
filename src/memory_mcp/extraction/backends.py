@@ -1,4 +1,4 @@
-"""Structured candidate-extraction backends and model-facing schemas."""
+"""结构化候选抽取 adapter 与面向模型的 schema。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ MAX_CANDIDATES = 20
 
 
 class CandidateOutput(BaseModel):
-    """Strict model-facing representation of one untrusted candidate."""
+    """面向模型的严格不可信候选结构。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -57,7 +57,7 @@ class CandidateOutput(BaseModel):
 
 
 class CandidateBatch(BaseModel):
-    """Bounded response schema used with LangChain structured output."""
+    """用于 LangChain 结构化输出的有界响应 schema。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -68,7 +68,7 @@ class CandidateBatch(BaseModel):
 
 
 class StructuredModel(Protocol):
-    """Small protocol that keeps tests independent from a concrete provider."""
+    """让测试不依赖具体 provider 的最小协议。"""
 
     def invoke(self, input: object) -> object: ...
 
@@ -81,7 +81,7 @@ class SupportsStructuredOutput(Protocol):
 
 
 class LangChainCandidateBackend:
-    """Invoke a real chat model through one strict structured-output contract."""
+    """通过严格结构化输出契约调用真实聊天模型。"""
 
     def __init__(self, model: SupportsStructuredOutput) -> None:
         self._model = model.with_structured_output(CandidateBatch)
@@ -123,7 +123,7 @@ class LangChainCandidateBackend:
 
 
 class FixedCandidateBackend:
-    """Return configured fixtures only when their exact evidence is present."""
+    """仅在原文证据精确出现时返回测试候选。"""
 
     def __init__(self, candidates: Sequence[CandidateOutput]) -> None:
         self._candidates = tuple(candidates)
@@ -133,13 +133,9 @@ class FixedCandidateBackend:
         try:
             candidates = TypeAdapter(list[CandidateOutput]).validate_json(payload)
         except ValidationError as exc:
-            raise ValueError(
-                "MEMORY_MCP_FIXED_CANDIDATES_JSON must be a valid candidate array"
-            ) from exc
+            raise ValueError("fixed candidate payload must be a valid array") from exc
         if len(candidates) > MAX_CANDIDATES:
-            raise ValueError(
-                "MEMORY_MCP_FIXED_CANDIDATES_JSON exceeds the candidate limit"
-            )
+            raise ValueError("fixed candidate payload exceeds the candidate limit")
         return cls(candidates)
 
     def __call__(

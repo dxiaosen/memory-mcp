@@ -73,8 +73,8 @@ Memory MCP Server
 - duplicate Evidence、replacement revision 和显式 history；
 - owner-first recall、阈值、数量和 token budget；
 - BeforeRun/AfterRun Hook SDK；
-- fixed 和真实 OpenAI-compatible/DeepSeek 抽取；
-- 三套身份 profile 的跨 Agent/跨用户闭环；
+- 真实 OpenAI-compatible/DeepSeek 抽取与测试注入的确定性 extractor；
+- 三份独立 Agent 环境配置的跨 Agent/跨用户闭环；
 - systemd 和 ECS/RDS 部署骨架。
 
 尚未完成的是部署环境中的公网 HTTPS、安全组和远端网络证据、完整现场脚本与录屏。
@@ -124,7 +124,7 @@ Memory MCP Server
                 │                      │
                 ▼                      ▼
        Structured Chat Model        PostgreSQL
-       或 fixed backend             唯一权威状态
+       （测试可注入 fixed）         唯一权威状态
 ```
 
 ### 2.2 顶层任务完整时序
@@ -154,8 +154,8 @@ sequenceDiagram
     M-->>H: capture receipt
 ```
 
-业务 Agent 可以使用与记忆抽取不同的模型。示例 Runner 的业务 callable 只是接线
-演示；服务端真实模型专门负责从完成轮次发现长期记忆候选。
+业务 Agent 可以使用与记忆抽取不同的模型。示例 Runner 的业务 callable 只提供
+接线参考；服务端真实模型专门负责从完成轮次发现长期记忆候选。
 
 ### 2.3 两条主要数据流
 
@@ -199,11 +199,11 @@ sequenceDiagram
 | `core.application` | 捕获、准入、审核、生命周期、召回用例 | MCP DTO、Bearer Token |
 | `core.adapters.postgresql` | Repository、transaction、row mapping、migration | Agent 生命周期 |
 | `core.adapters.in_memory` | 快速单元测试替身 | 部署运行 |
-| `extraction` | model settings、provider、fixed/real backend、Candidate schema | owner 和准入 |
+| `extraction` | 真实模型 settings/provider、Candidate schema、测试 fixed adapter | owner 和准入 |
 | `scenarios` | 正式场景允许的类型、guidance、版本和优先级 | transport 和 SQL |
 | `server` | MCP/HTTP、认证、DTO、错误映射和组合根 | Agent 框架 |
 | `hooks` | 远程 Client、Before/After Bridge、Runner | Core Repository |
-| `logging.py` | 统一非正文结构化日志 | 业务正文审计 |
+| `logging.py` | 默认运行元数据和显式内容跟踪 | 记忆存储与长期审计账本 |
 
 ### 3.2 依赖图
 
@@ -290,10 +290,9 @@ memory-mcp/
 │   ├── db.py
 │   └── logging.py
 ├── examples/
+│   ├── .env.example
 │   ├── client.py
-│   ├── hook_runner.py
-│   ├── agent_a.py
-│   └── agent_b.py
+│   └── hook_runner.py
 ├── tests/
 ├── deploy/systemd/
 ├── docs/
@@ -310,6 +309,13 @@ memory-mcp/
   schema 已拆出，再按每个 SQL 方法建目录会削弱事务可读性；
 - CaptureService 同样保留公共用例入口，候选处理和 Review 协调在内部拆分；
 - `hooks` 与 Server 分开，因为它是远程消费者 SDK，不是服务端插件。
+- `db.py` 是 migration/health 的顶层运维命令入口，实际 PostgreSQL schema 和
+  Repository 仍在 adapter 内；为两个命令再增加 `cli/database/commands` 层没有
+  带来新的边界；
+- `logging.py` 被 Core、Server 和数据库 CLI 共同使用，属于横切基础设施，放在
+  包根比塞进 `server` 更准确；
+- `deploy/` 只存放 systemd 运维制品，`examples/` 只存放客户端接线和单 Agent
+  配置模板，两者都不参与领域层依赖。
 
 ## 5. 领域模型
 
@@ -410,9 +416,8 @@ Bearer Token
 RequestPrincipal
 ├── tenant_id
 ├── subject_id
-├── owner_key
+├── owner_key = tenant_id + ":" + subject_id
 ├── client_id
-├── agent_id?
 └── scopes
 ```
 
@@ -421,13 +426,16 @@ RequestPrincipal
 | 字段 | 作用 |
 | --- | --- |
 | `tenant_id + subject_id` | 授权系统中的最终主体 |
-| `owner_key` | Repository 使用的不透明隔离键 |
-| `client_id` | 调用应用或 Agent Host |
-| `agent_id` | 可选 Agent 实例/类型审计信息 |
+| `owner_key` | 服务端唯一派生的 Repository 隔离键 |
+| `client_id` | 已认证客户端；静态 Token 使用凭据摘要引用 |
 | `scopes` | read/write/review 操作授权 |
 
-owner 和 actor 必须分开。用户 A 的两个 Agent 可以具有不同 client ID，但映射到
-相同 owner；用户 B 使用同一种 Agent 仍映射到不同 owner。
+owner 和认证客户端必须分开。静态映射只配置 tenant、subject 和 scopes；
+`owner_key` 由前两项确定性派生。当前不透明 Token 不含 MCP 可自动识别的业务
+client claim，因此校验器用单向哈希产生稳定 `static-…` 审计引用。真实 OAuth/OIDC
+适配器应从已验证 Token 或 introspection 结果取得 `client_id`。`agent_id` 不是
+标准字段且当前没有独立语义，所以不保留。用户 A 的多个 Token 映射到相同 owner；
+用户 B 即使使用同类 Agent 应用，仍因 subject 不同而映射到不同 owner。
 
 ### 6.2 双重隔离
 
@@ -447,9 +455,9 @@ owner 和 actor 必须分开。用户 A 的两个 Agent 可以具有不同 clien
 不能因为已有认证就删除 Repository 的 owner 条件。Transport 校验防止非法入口，
 存储隔离防止代码错误或未来新入口绕过安全边界。
 
-### 6.3 原型认证边界
+### 6.3 静态认证边界
 
-当前 `MEMORY_MCP_DEMO_TOKENS_JSON` 是可信静态映射，适合演示：
+当前 `MEMORY_MCP_AUTH_TOKENS` 是可信静态 JSON 映射：
 
 ```text
 user A / agent A ─┐
@@ -459,8 +467,9 @@ user A / agent B ─┘
 user B / agent B ─── owner B
 ```
 
-它不是生产 OAuth，也没有动态 Token 签发、吊销、组织目录和细粒度授权。一个共享
-Token 若无法携带可信终端用户身份，只能代表单 owner，不能宣称多用户隔离。
+中性配置名表示它是当前运行入口，不表示具备生产 OAuth/OIDC 能力。该适配器没有
+动态 Token 签发、吊销、组织目录和细粒度授权。一个共享 Token 若无法携带可信
+终端用户身份，只能代表单 owner，不能宣称多用户隔离。
 
 ## 7. MCP 对外契约
 
@@ -622,16 +631,17 @@ CandidateExtractor 接收：
 
 ## 9. 模型抽取设计
 
-### 9.1 两种 backend
+### 9.1 生产模型与测试 adapter
 
-| backend | 候选来源 | 用途 |
+| 组合方式 | 候选来源 | 用途 |
 | --- | --- | --- |
-| `fixed` | 配置中的严格 Candidate 数组，source expression 精确命中才返回 | 自动化、离线演示、故障兜底 |
-| `openai-compatible` | LangChain Chat Model + `CandidateBatch` | 自然语言真实抽取 |
+| 生产运行时 | LangChain Chat Model + `CandidateBatch` | 自然语言真实抽取 |
+| 测试依赖注入 | 测试代码中的严格 Candidate 数组，source expression 精确命中才返回 | 自动化、无网络确定性验证 |
 
-两种 backend 只替换“候选发现”，不会改变身份、准入、生命周期、Repository 和
-MCP 契约。因此 fixed 模式不是整个系统 mock：HTTP、鉴权、Core、PostgreSQL 和
-Hook 都可以是真实链路。
+生产配置不提供 backend 选择器或固定候选 JSON，始终构造真实模型 extractor。
+测试通过组合根的 `candidate_extractor` 参数注入 fixed adapter，只替换“候选
+发现”，不会改变身份、准入、生命周期、Repository 和 MCP 契约。因此对应的
+PostgreSQL MCP E2E 仍是真实远程链路，不是整个系统 mock。
 
 ### 9.2 Provider 工厂
 
@@ -721,8 +731,8 @@ replacement 和冲突。任何候选最终只能有一个互斥结果。
 - source message ID；
 - source tool name。
 
-任何一个持久化字段包含禁止内容，整条候选 blocked。日志只记录类别和数量，不记录
-敏感原文或 backend exception message。
+任何一个持久化字段包含禁止内容，整条候选 blocked。普通日志只记录类别和数量；
+即使开启内容日志，也不记录敏感原文或 backend exception message。
 
 当前敏感守卫是研究原型的持久化边界，不等同于企业 DLP 或合规审计。
 
@@ -868,7 +878,7 @@ Embedding 依赖。
 
 `subject` 是精确的候选预过滤器，不是模糊关键词：
 
-- fixed fixture 的 subject 已知，可稳定传入；
+- 测试 fixture 的 subject 已知，可稳定传入；
 - 真实模型可能把 subject 从 hint 归纳为项目名；
 - 调用方无法保证 canonical subject 时应省略；
 - 省略后仍按 owner + scenario + query/task intent 搜索；
@@ -930,7 +940,8 @@ subject?
 task_intent?
 ```
 
-run key 是前三项。Token、Server URL、超时和预算来自 profile，不进入模型上下文。
+run key 是前三项。Token、Server URL、超时和预算来自当前 Agent 进程的
+`MEMORY_HOOK_*` 配置，不进入模型上下文。
 
 ### 14.2 BeforeRun
 
@@ -1086,21 +1097,31 @@ HTTP health 只返回 service、transport、storage 和 path 等非敏感元数�
 
 ## 16. 配置设计
 
-### 16.1 三个配置边界
+### 16.1 两个部署单元与配置分组
 
-| 边界 | 配置 |
+| 配置组 | 内容 |
 | --- | --- |
-| Server | DB、pool、HTTP、auth、预算、extractor selection、日志 |
-| Extraction | provider、model、API key、base URL、超时和重试 |
-| Hook profile | MCP URL、Token、scenario、fail-open、预算、capture 重试 |
+| Database | PostgreSQL DSN、连接池、迁移开关和连接超时 |
+| Server | HTTP 监听、MCP/健康路径、无状态模式和服务端预算 |
+| Authentication | issuer、resource URL 和静态 Token/Principal 映射 |
+| Model | provider、model name、API key、base URL、temperature、超时和重试 |
+| Logging | 日志级别、滚动文件参数和独立内容日志开关 |
+| Scenario policy | 正式场景规则固定在代码，policy version 随决策写入审计数据 |
 
-每个 Agent profile 使用独立前缀，例如：
+前五组属于 Memory MCP Server，统一由根目录模板中的 `MEMORY_MCP_*` 配置；
+Scenario policy 是相关但不可由环境变量覆盖的规则边界。
+模型与候选生成使用更直观的 `MEMORY_MCP_MODEL_*` 子前缀，但仍由 Server 组合根
+加载，不是单独部署的模型服务。内部代码继续使用 `extraction` 表达信息抽取职责。
 
-```text
-MEMORY_AGENT_A_*
-MEMORY_AGENT_B_*
-MEMORY_USER_B_AGENT_B_*
-```
+Agent Host 是第二个独立部署单元。每个 Agent 进程只加载一套固定
+`MEMORY_HOOK_*`：MCP URL、该 Agent 的 Token、scenario、fail-open、召回预算和
+capture 重试。多个 Agent 使用相同变量名，由各自进程环境或 EnvironmentFile
+提供不同值，不使用动态身份前缀，也不读取其他 Agent 的 Secret。
+
+根目录 `.env.example` 只描述 Server 的生产形态：真实模型抽取、一个 Principal、
+无 backend 选择器、无 fixed fixture、无多身份验收矩阵。
+`examples/.env.example` 只描述一个 Agent。fixed 候选由自动化测试代码持有；
+跨 Agent/跨用户三身份矩阵由验收流程显式建立。
 
 ### 16.2 加载优先级
 
@@ -1111,31 +1132,32 @@ MEMORY_USER_B_AGENT_B_*
 > 代码默认值
 ```
 
-显式构造参数主要用于测试依赖注入。部署使用 EnvironmentFile 或等价 Secret
-机制。
+服务端本地运行默认读取根目录 `.env`。`MemoryHookSettings` 不隐式读取该文件；
+Agent 部署使用自己的进程环境，示例程序可以通过 `--env-file` 显式选择一个
+Agent 文件。显式构造参数主要用于测试依赖注入，正式部署使用 EnvironmentFile
+或等价 Secret 机制。
 
 ### 16.3 Secret
 
 按 Secret 处理：
 
 - PostgreSQL DSN；
-- demo Token JSON；
+- 静态 Token JSON；
 - Hook Bearer Token；
-- model API key；
-- 包含真实用户原文的 fixed Candidate JSON。
+- model API key。
 
 Secret 不进入 repr、日志、Git、systemd unit、命令行参数或 MCP URL。DSN 中的
 保留字符必须 percent-encode；本地 `.env` 权限应为 `600`。
 
-全部变量、默认值、范围和 fixed/test 分类见[配置参考](config.md)。
+全部变量、默认值、范围和测试/真实基础设施边界见[配置参考](config.md)。
 
 ## 17. 日志与可观测性
 
-### 17.1 允许字段
+### 17.1 默认运行日志
 
 - request ID；
 - capture/event 的稳定摘要；
-- owner/client/agent 的稳定假名引用；
+- owner/client 的稳定假名引用；
 - tool；
 - scenario/policy version；
 - status 和 error code；
@@ -1143,21 +1165,33 @@ Secret 不进入 repr、日志、Git、systemd unit、命令行参数或 MCP URL
 - duration；
 - retry/replay/truncated。
 
-### 17.2 禁止字段
+### 17.2 显式内容日志
+
+`MEMORY_MCP_LOG_CONTENT=false` 是代码和模板默认值。受控手工联调设置为 `true`
+并重启后，专用 `memory_mcp.content` logger 额外记录：
+
+- SensitiveGuard 脱敏后的完成轮次和 subject hint；
+- 通过持久化前敏感检查的候选；
+- 准入 outcome 和事务提交结果；
+- 当前 owner 范围内的召回 query、排序候选和最终 rendered context；
+- 手动创建、读取、列表和 pending review 的业务对象。
+
+服务启动必须写入 WARNING，提示当前日志会持久化业务内容。联调结束后关闭开关，
+重启服务并清理生成的内容日志。
+
+### 17.3 永久禁止字段
 
 - Bearer Token；
 - DSN；
 - model API key；
-- user/assistant/tool 正文；
-- candidate/memory/Evidence 正文；
-- source expression；
 - blocked 原文；
 - backend exception message。
 
-结构化日志用 `event="..." key=value` 表达。owner/client 等值先经过稳定哈希，
-既能关联同一主体的多个请求，又不泄露真实标识。
+上述字段在普通和内容模式下都禁止。结构化日志用 `event="..." key=value`
+表达；普通日志中的 owner/client 等值先经过稳定哈希，既能关联同一主体的多个
+请求，又不直接输出真实标识。
 
-### 17.3 指标边界
+### 17.4 指标边界
 
 当前日志可测：
 
@@ -1227,7 +1261,7 @@ Public Agent
 | MCP transport | InMemory | Fake | 本机真实 HTTP |
 | Hook 单元 | Fake Client | 无 | 无 |
 | PostgreSQL contract | PostgreSQL test DB | Fake | DB |
-| PostgreSQL MCP E2E | PostgreSQL test DB | fixed | 真实 MCP HTTP |
+| PostgreSQL MCP E2E | PostgreSQL test DB | 注入 fixed adapter | 真实 MCP HTTP |
 | Real-model smoke | PostgreSQL test DB | 真实 provider | MCP + Model API |
 
 ### 19.2 什么是测试替身
@@ -1235,8 +1269,8 @@ Public Agent
 - `InMemoryMemoryRepository`：只替代 PostgreSQL；
 - `FakeCandidateExtractor`：只替代模型；
 - `_StructuredModel`：验证 LangChain schema 边界；
-- `_demo_agent`：只演示业务 Agent 接线；
-- fixed backend：真实系统中的确定性候选源，不是整个系统 mock。
+- `_agent`：只提供业务 Agent 接线示例；
+- fixed adapter：测试中的确定性候选源；不属于生产配置，也不是整个系统 mock。
 
 ### 19.3 必须真实验证
 
@@ -1246,7 +1280,8 @@ Public Agent
 - 同 owner Agent A/B 共享；
 - 不同 owner 隔离；
 - 真实 provider 的 CandidateBatch；
-- 日志无正文和 Secret；
+- 默认日志无正文，内容模式可观察通过敏感检查的核心流程；
+- 两种日志模式都不含 Secret 和敏感规则拦截的原文；
 - Ctrl+C/ASGI lifespan 关闭资源。
 
 ### 19.4 测试数据库安全
@@ -1328,7 +1363,7 @@ Agent/Server
 10. pending/history/inactive 不进入普通 recall；
 11. 当前用户请求优先于历史记忆；
 12. PostgreSQL 是唯一部署权威；
-13. fixed 与真实模型路径共享同一可信后处理；
+13. 注入的测试 extractor 与真实模型路径共享同一可信后处理；
 14. Hook 内部步骤不重复触发；
 15. 新 Agent/模型/索引不能反向污染 Core。
 
@@ -1338,6 +1373,8 @@ Agent/Server
 
 - `server/tools` 的拆分粒度合适；
 - `extraction` 命名和职责已统一；
+- 生产模型配置不再携带测试 backend/fixture，fixed adapter 只由测试注入；
+- 静态身份只配置 tenant/subject/scopes，owner 与审计 client 均由服务端派生；
 - `runtime_logging` 已收敛为直观的 `logging.py`；
 - Hook 是远程消费者，不应移入 Server；
 - PostgreSQL mapping/validation/schema 已分离；
@@ -1345,6 +1382,10 @@ Agent/Server
 - 不需要增加 `integrations`、`observability`、`agent-lab`、`api` 或
   `transport/mcp` 等泛化目录；
 - 当前不需要 Nginx 和外部队列。
+
+源码模块、类、函数 docstring 和解释业务约束的注释以中文为主；MCP/OAuth 字段、
+错误码、日志事件名、模型 prompt、SQL 和第三方参数属于稳定契约，继续保留英文。
+注释只说明职责和非显然约束，不逐行复述代码。
 
 唯一中期关注点是 PostgreSQL Repository 仍然较大，但它围绕一个端口和一组原子
 事务，且协作职责已经拆出。只有 SQL 继续显著增长或出现独立 read/write 模型时，

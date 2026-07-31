@@ -1,4 +1,4 @@
-"""PostgreSQL maintenance entry point for the Memory MCP service."""
+"""Memory MCP 服务的 PostgreSQL 维护入口。"""
 
 import argparse
 
@@ -11,7 +11,7 @@ from memory_mcp.server.settings import MemoryServerSettings
 
 
 def main() -> None:
-    """Run database maintenance using deployment-layer configuration."""
+    """使用部署层配置执行数据库维护。"""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("migrate", "health"))

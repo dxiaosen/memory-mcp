@@ -14,14 +14,14 @@
 | Hook 单元 | Fake Client | 不涉及 | Client protocol | 无 |
 | PostgreSQL contract | 真实 PostgreSQL | Fake | 部分无 | 专用测试库 |
 | PostgreSQL transport E2E | 真实 PostgreSQL | fixed | 真实 HTTP + MCP Client | 专用测试库 |
-| fixed 手工闭环 | 真实 PostgreSQL | fixed | 真实服务 + Hook profiles | 专用测试库 |
-| real-model E2E | 真实 PostgreSQL | 真实 provider | 真实服务 + Hook profiles | 测试库 + 模型 API |
+| real-model E2E | 真实 PostgreSQL | 真实 provider | 真实服务 + 独立 Agent 配置 | 测试库 + 模型 API |
 
 重要边界：
 
 - InMemory 与 Fake 只验证业务和协议，不验证 migration、SQL、连接池和真实模型；
-- `fixed` 只替换候选生成，MCP、鉴权、Core、PostgreSQL 和 Hook 都可保持真实；
-- `examples/hook_runner.py` 的 `_demo_agent` 只是接线 callable，不是业务
+- `fixed` 只由测试代码注入并替换候选生成，MCP、鉴权、Core、PostgreSQL 和 Hook
+  都保持真实；
+- `examples/hook_runner.py` 的 `_agent` 只是接线 callable，不是业务
   Agent 大模型；真实模型在服务端负责记忆候选抽取；
 - real-model E2E 才验证 provider 请求和严格 schema，但模型措辞具有概率性。
 
@@ -39,7 +39,7 @@ openspec-cn validate add-general-memory-core --strict
 而不是读取 `.env` 后静默清库。2026-07-31 本轮代码 review 的本地结果为：
 
 ```text
-80 passed, 6 skipped
+86 passed, 6 skipped
 ```
 
 ## 3. PostgreSQL 安全前置检查
@@ -126,30 +126,38 @@ health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭
 - HTTP 连接池跨工具调用复用并显式关闭；
 - Ctrl+C 关闭服务资源且进程不输出 KeyboardInterrupt traceback。
 
-## 5. fixed 后端手工 E2E
+### 4.4 生产配置边界
 
-此路径适合先验证配置、身份和数据库，不消耗模型额度。
+- 服务端模板不包含 `MEMORY_HOOK_*`、fixed candidate 或测试数据库；
+- Agent 模板不包含 `MEMORY_MCP_*`，只描述一个 Agent Host；
+- 真实抽取缺少 model/API key 时拒绝构造；
+- 运行配置不接受 fixed backend 或候选 JSON；
+- 静态 Token 少于 32 字符时拒绝服务启动；
+- Hook 使用稳定 `MEMORY_HOOK_*` 前缀，不从根目录 `.env` 隐式加载其他 Agent
+  凭据。
 
-1. `.env` 保持 `MEMORY_MCP_EXTRACTOR_BACKEND=fixed`；
-2. 固定候选的 `source_expression` 与测试输入逐字一致；
-3. 启动服务；
-4. Agent A 输入固定证据，AfterRun 应创建一条记忆；
-5. 同 owner Agent B 用相关 query 召回；
-6. 不同 owner profile 使用相同 query，应返回 0；
-7. 检查日志只有引用、数量、状态和耗时。
+## 5. fixed 注入的自动化 PostgreSQL E2E
 
-命令和预期输出见[端到端使用](usage.md)。这里验证的是：
+此路径验证身份、数据库和完整远程链路，不消耗模型额度。测试函数在代码中构造
+候选 fixture 和 `FixedCandidateBackend`，通过 `candidate_extractor` 注入服务，
+不读取 backend 或 fixed candidate 环境变量。
+
+它验证 Agent A 输入固定证据后创建记忆、同 owner Agent B 召回，以及不同 owner
+同查询返回 0：
 
 ```text
-Hook -> HTTP/MCP -> auth -> Core -> fixed candidate -> PostgreSQL
+Hook -> HTTP/MCP -> auth -> Core -> injected fixed candidate -> PostgreSQL
      -> receipt -> 另一 Agent 的 recall
 ```
+
+运行命令见[端到端使用](usage.md)。这里的 fixed 是测试 adapter，不是可部署的
+服务模式。
 
 ## 6. 真实模型 E2E
 
 ### 6.1 前置条件
 
-- `MEMORY_MCP_EXTRACTOR_BACKEND=openai-compatible`；
+- `MEMORY_MCP_MODEL_NAME` 和 `MEMORY_MCP_MODEL_API_KEY` 已配置；
 - provider/model/API key/base URL 可用；
 - 真实模型支持当前 Chat Completions/结构化输出协议；
 - 仍然使用可清理的测试数据库；
@@ -190,7 +198,8 @@ named `tool_choice`。该行为有单元测试，且本轮已用真实 API 验�
 - capture 为 completed/reprocess-required 等已知状态；
 - auto-save/pending/discard/blocked 符合保守准入边界；
 - owner 共享和隔离结果正确；
-- Secret 和正文不进入日志。
+- 默认日志不含正文；内容模式可见通过敏感检查的正文；
+- 两种模式都不含 Secret 和敏感规则拦截的原文。
 
 不要把模型选择的 `subject`、`memory_type` 或具体改写文本作为永远不变的金标。
 

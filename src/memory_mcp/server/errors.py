@@ -1,11 +1,11 @@
-"""Stable, content-free errors exposed by the Memory MCP boundary."""
+"""Memory MCP 边界暴露的稳定、无正文错误。"""
 
 from dataclasses import dataclass
 from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """Public business error codes shared by all Memory MCP tools."""
+    """所有 Memory MCP 工具共用的公开业务错误码。"""
 
     UNAUTHENTICATED = "unauthenticated"
     PERMISSION_DENIED = "permission_denied"
@@ -21,7 +21,7 @@ class ErrorCode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MemoryMcpBoundaryError(Exception):
-    """Expected boundary failure with a safe public representation."""
+    """具有安全公开表示的预期边界错误。"""
 
     code: ErrorCode
     public_message: str

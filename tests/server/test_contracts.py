@@ -7,21 +7,22 @@ from pydantic import SecretStr, ValidationError
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
 from memory_mcp.server.app import _run_server, create_memory_mcp_server
+from memory_mcp.server.auth import StaticTokenVerifier
 from memory_mcp.server.schemas import CompletedTurnEventV1
 from memory_mcp.server.settings import MemoryServerSettings
 from tests.support.fakes import FakeCandidateExtractor, TestScenarioPolicy
 
+_TOKEN_A = "analyst-a-primary-token-000000000001"
+
 
 def _settings() -> MemoryServerSettings:
     return MemoryServerSettings(
-        demo_tokens_json=SecretStr(
+        auth_tokens=SecretStr(
             json.dumps(
                 {
-                    "token-a": {
-                        "owner_key": "analyst-a",
-                        "tenant_id": "demo",
+                    _TOKEN_A: {
+                        "tenant_id": "default",
                         "subject_id": "analyst-a",
-                        "client_id": "agent-a",
                         "scopes": [
                             "memory:read",
                             "memory:write",
@@ -31,6 +32,7 @@ def _settings() -> MemoryServerSettings:
                 }
             )
         ),
+        _env_file=None,
     )
 
 
@@ -101,41 +103,90 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
 def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:
     settings = _settings()
 
-    assert "token-a" not in repr(settings)
-    assert settings.require_demo_principals()["token-a"].owner_key == "analyst-a"
+    assert _TOKEN_A not in repr(settings)
+    assert settings.log_content is False
+    assert (
+        settings.require_configured_principals()[_TOKEN_A].owner_key
+        == "default:analyst-a"
+    )
 
     empty = MemoryServerSettings(
-        demo_tokens_json=SecretStr("{}"),
+        auth_tokens=SecretStr("{}"),
         _env_file=None,
     )
     with pytest.raises(ValueError, match="At least one"):
-        empty.require_demo_principals()
+        empty.require_configured_principals()
 
 
-def test_demo_principal_mapping_rejects_owner_aliases() -> None:
+def test_configured_principal_mapping_rejects_derived_identity_fields() -> None:
     settings = MemoryServerSettings(
-        demo_tokens_json=SecretStr(
+        auth_tokens=SecretStr(
             json.dumps(
                 {
-                    "token-a": {
+                    _TOKEN_A: {
                         "owner_key": "shared-owner",
-                        "tenant_id": "demo",
+                        "tenant_id": "default",
                         "subject_id": "user-a",
-                        "client_id": "agent",
-                    },
-                    "token-b": {
-                        "owner_key": "shared-owner",
-                        "tenant_id": "demo",
-                        "subject_id": "user-b",
-                        "client_id": "agent",
                     },
                 }
             )
         )
     )
 
-    with pytest.raises(ValueError, match="must not alias"):
-        settings.require_demo_principals()
+    with pytest.raises(ValidationError, match="owner_key"):
+        settings.require_configured_principals()
+
+
+def test_static_verifier_derives_an_opaque_stable_client_id() -> None:
+    mappings = _settings().require_configured_principals()
+    verifier = StaticTokenVerifier(mappings)
+
+    first = anyio.run(verifier.verify_token, _TOKEN_A)
+    second = anyio.run(verifier.verify_token, _TOKEN_A)
+
+    assert first is not None
+    assert second is not None
+    assert first.client_id == second.client_id
+    assert first.client_id.startswith("static-")
+    assert _TOKEN_A not in first.client_id
+    assert first.claims == {"tenant_id": "default"}
+
+
+def test_configured_principal_rejects_ambiguous_identity_components() -> None:
+    settings = MemoryServerSettings(
+        auth_tokens=SecretStr(
+            json.dumps(
+                {
+                    _TOKEN_A: {
+                        "tenant_id": "tenant:ambiguous",
+                        "subject_id": "user-a",
+                    },
+                }
+            )
+        ),
+        _env_file=None,
+    )
+
+    with pytest.raises(ValidationError, match="tenant_id"):
+        settings.require_configured_principals()
+
+
+def test_configured_principal_mapping_rejects_short_tokens() -> None:
+    settings = MemoryServerSettings(
+        auth_tokens=SecretStr(
+            json.dumps(
+                {
+                    "short-token": {
+                        "subject_id": "owner",
+                    }
+                }
+            )
+        ),
+        _env_file=None,
+    )
+
+    with pytest.raises(ValueError, match="at least 32"):
+        settings.require_configured_principals()
 
 
 def test_postgresql_settings_require_and_hide_database_url() -> None:
@@ -152,6 +203,12 @@ def test_postgresql_settings_require_and_hide_database_url() -> None:
     missing = MemoryServerSettings(database_url=None, _env_file=None)
     with pytest.raises(ValueError, match="DATABASE_URL"):
         missing.require_postgresql_url()
+
+
+def test_blank_log_file_selects_console_only_logging() -> None:
+    settings = MemoryServerSettings(log_file="", _env_file=None)
+
+    assert settings.log_file is None
 
 
 def test_database_pool_bounds_are_consistent() -> None:

@@ -1,177 +1,238 @@
 # Memory MCP 配置参考
 
-本文是运行时配置的单一参考；`.env.example` 是可复制模板，设计原因见
-[整体设计](design.md)，操作步骤见[端到端使用](usage.md)。
+本文是运行时配置的单一参考。设计原因见[整体设计](design.md)，实际操作见
+[端到端使用](usage.md)。
 
-## 1. 加载、安全与优先级
+## 1. 配置边界
 
-服务端、模型适配器和 Hook Client 都使用 Pydantic Settings：
+Memory MCP 有两个独立部署单元，不能共用一份“全家桶”配置：
 
-1. 构造参数优先级最高，主要供测试和显式依赖注入使用；
-2. 进程环境变量覆盖 `.env`；
-3. 项目根目录 `.env` 提供本地默认值；
-4. 未配置项使用代码默认值，必需项在启动或实际基础设施边界前失败。
+| 部署单元 | 模板 | 前缀 | 内容 |
+| --- | --- | --- | --- |
+| Memory MCP Server | 根目录 `.env.example` | `MEMORY_MCP_` | 数据库、HTTP、认证、抽取、日志 |
+| 一个 Agent Host | `examples/.env.example` | `MEMORY_HOOK_` | MCP URL、该 Agent 的 Token、Hook 预算和重试 |
 
-`.env` 已被 Git 忽略，但仍应限制为当前用户可读：
+一个 Server 可以认证多个 Agent，但一个 Agent 进程只应持有自己的
+`MEMORY_HOOK_*` 配置和 Token。多 Agent 部署需要复制多份 Agent 配置，分别注入
+各自进程；不应让 Agent A 的进程读取 Agent B 的凭据。
+
+根目录 `.env.example` 是生产形态的服务端模板，因此：
+
+- 只包含真实模型抽取配置；
+- 只展示一个正式 Principal，不内置三身份测试矩阵；
+- 不包含模型 backend 选择器或 fixed candidate fixture；
+- 不包含 Agent Hook 配置或测试数据库配置。
+
+`examples/.env.example` 只展示一个 Agent Host。多身份验收所需的额外身份、测试
+候选和测试数据库均由测试代码显式创建，不能混入生产配置。
+
+## 2. 加载顺序与 Secret
+
+服务端 `MemoryServerSettings` 和 `ExtractionSettings` 在本地运行时读取项目根目录
+`.env`；进程环境变量会覆盖文件值。生产环境推荐直接由 Secret Manager、systemd
+`EnvironmentFile` 或编排平台注入。
+
+`MemoryHookSettings` 不会隐式读取项目根目录 `.env`。生产 Agent Host 从自己的
+进程环境读取；仓库里的示例命令仅通过 `--env-file examples/agent.env` 显式加载
+某一个 Agent 的文件，避免跨 Agent 泄露配置。
+
+Pydantic Settings 的有效优先级为：
+
+1. 显式构造参数，主要用于依赖注入和测试；
+2. 进程环境变量；
+3. 显式或默认指定的 env 文件；
+4. 代码默认值。
+
+本地文件至少限制为当前用户可读：
 
 ```bash
 cp .env.example .env
 chmod 600 .env
+cp examples/.env.example examples/agent.env
+chmod 600 examples/agent.env
 ```
 
-不得把真实 DSN、Bearer Token、模型 API Key 或包含真实用户原文的固定候选提交
-到仓库、命令行参数、测试快照或日志。
+`.env` 和 `*.env` 已被 Git 忽略。不得提交或打印真实数据库 DSN、Bearer Token
+和模型 API Key。
 
 PostgreSQL URI 的用户名或密码若包含保留字符必须 percent-encode，例如 `@` 写为
 `%40`，`:` 写为 `%3A`，`/` 写为 `%2F`，`?` 写为 `%3F`，`#` 写为 `%23`，
-`%` 写为 `%25`。否则 URI 的 host、port 或 database 会被错误拆分。
+`%` 写为 `%25`。
 
-## 2. 哪些是固定的，哪些可配置
+## 3. 哪些固定，哪些可配置
 
 | 类别 | 当前性质 | 说明 |
 | --- | --- | --- |
-| Core 领域规则与四类准入 | 代码固定 | owner-first、Evidence、revision、pending、敏感拦截和幂等不能靠环境变量绕过 |
-| `GeneralWorkPolicy` | 代码固定 | 场景名、四种 memory type、捕获说明、policy version 和召回优先级 |
+| Core 领域规则与四类准入 | 代码固定 | owner-first、Evidence、revision、pending、敏感拦截和幂等不能由环境变量绕过 |
+| `GeneralWorkPolicy` | 代码固定 | 场景、memory type、捕获规则、policy version 和召回优先级 |
 | MCP 工具与 DTO v1 | 代码固定 | 七个工具；capture contract version 为 `1` |
-| PostgreSQL schema/migration | 版本固定 | 通过独立 migration 命令升级，不在运行时动态拼表 |
-| Server 地址、连接池、预算 | 环境可配置 | 有边界校验和安全默认值 |
-| 身份映射 | 原型环境配置 | 仅用于当前演示；生产应替换正式授权服务 |
-| extractor backend | 环境可切换 | `fixed` 用于确定性演示/测试；`openai-compatible` 调真实模型 |
-| Hook profile | 每个 Agent 独立配置 | URL、Token、超时、fail-open、召回预算和重试 |
-| InMemory Repository | 仅测试 | 不属于部署运行路径 |
-| Fake extractor/model | 仅自动化测试 | 不访问模型网络 |
-| `.env.example` 的 Token/DSN/模型值 | 占位或测试样例 | 必须替换，不能作为生产凭据 |
+| PostgreSQL schema | migration 管理 | 通过独立命令升级，不在服务启动时动态拼表 |
+| Server 地址、连接池和预算 | 环境可配置 | 有类型与范围校验 |
+| Principal 映射 | 静态环境配置 | 当前正式认证入口；可替换为 OAuth/OIDC 适配器 |
+| 抽取 provider/model | 环境可配置 | 生产始终使用真实模型，不提供 fixed 运行时开关 |
+| Agent Hook 参数 | 每个 Agent 独立配置 | URL、Token、超时、fail-open、召回预算和 capture 重试 |
+| In-memory Repository、fake/fixed extractor | 仅自动化测试 | 通过依赖注入使用，不属于部署路径 |
 
-`fixed` 并不等于“整个系统是 mock”：它只替代候选生成，MCP transport、鉴权、
-Core、准入、PostgreSQL、Hook 和跨 Agent 共享仍是真实链路。
+PostgreSQL MCP 端到端测试会在测试代码里注入确定性 fixed extractor；它只替代
+候选生成，真实执行 MCP transport、鉴权、Core、PostgreSQL、Hook 和 owner 隔离。
 
-## 3. Server 配置
+## 4. Server 配置
 
-变量均以 `MEMORY_MCP_` 开头。
+### 4.1 PostgreSQL
 
-### 3.1 PostgreSQL
-
-| 变量 | 默认值 | 必需 | 说明 |
+| 完整变量名 | 代码默认值 | 必需 | 说明 |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | 无 | 是 | PostgreSQL DSN；Secret |
-| `DATABASE_POOL_MIN_SIZE` | `1` | 否 | 连接池最小连接数，范围 1–50 |
-| `DATABASE_POOL_MAX_SIZE` | `5` | 否 | 最大连接数，范围 1–100，且不小于 min |
-| `DATABASE_CONNECT_TIMEOUT_SECONDS` | `10` | 否 | 建连/取连接超时，最大 300 秒 |
-| `DATABASE_MIGRATE_ON_STARTUP` | `false` | 否 | 本地可临时开启；部署固定采用独立 migration 步骤 |
+| `MEMORY_MCP_DATABASE_URL` | 无 | 是 | PostgreSQL DSN；Secret |
+| `MEMORY_MCP_DATABASE_POOL_MIN_SIZE` | `1` | 否 | 连接池最小连接数，范围 1–50 |
+| `MEMORY_MCP_DATABASE_POOL_MAX_SIZE` | `5` | 否 | 最大连接数，范围 1–100，且不小于 min |
+| `MEMORY_MCP_DATABASE_CONNECT_TIMEOUT_SECONDS` | `10` | 否 | 建连/取连接超时，最大 300 秒 |
+| `MEMORY_MCP_DATABASE_MIGRATE_ON_STARTUP` | `false` | 否 | 本地可临时开启；部署应使用独立 migration 步骤 |
 
-生产或公网数据库链路应启用实例 SSL 并使用 `sslmode=require`。测试数据库必须是
-独立可清空实例或 database，名称包含 `test`；自动化会执行级联 truncate。
+生产数据库连接应按基础设施要求启用 TLS，例如在 DSN 中配置
+`sslmode=require`。破坏性测试必须使用独立、可清空且名称包含 `test` 的 database。
 
-### 3.2 HTTP、契约与预算
+### 4.2 HTTP 与资源预算
 
-| 变量 | 默认值 | 说明 |
+| 完整变量名 | 代码默认值 | 说明 |
 | --- | --- | --- |
-| `HOST` | `127.0.0.1` | 本机默认；ECS 私网监听常用 `0.0.0.0` 并限制安全组 |
-| `PORT` | `8765` | 监听端口 |
-| `MCP_PATH` | `/mcp` | Streamable HTTP 路径 |
-| `HEALTH_PATH` | `/health` | 健康检查路径，不能与 MCP path 相同 |
-| `STATELESS_HTTP` | `true` | 当前服务采用无状态 HTTP session |
-| `MAX_CAPTURE_CHARACTERS` | `100000` | 一次完成轮次的最大字符数，范围 1,000–1,000,000 |
-| `RECALL_MAX_ITEMS` | `10` | 服务端召回条数硬上限，范围 1–10 |
-| `RECALL_MAX_TOKEN_BUDGET` | `1200` | 服务端渲染预算硬上限，范围 64–8,000 |
+| `MEMORY_MCP_HOST` | `127.0.0.1` | 本机默认；私网监听可设为 `0.0.0.0` 并限制安全组 |
+| `MEMORY_MCP_PORT` | `8765` | 监听端口 |
+| `MEMORY_MCP_MCP_PATH` | `/mcp` | Streamable HTTP 路径 |
+| `MEMORY_MCP_HEALTH_PATH` | `/health` | 健康检查路径，不能与 MCP path 相同 |
+| `MEMORY_MCP_STATELESS_HTTP` | `true` | 无状态 HTTP session |
+| `MEMORY_MCP_MAX_CAPTURE_CHARACTERS` | `100000` | 单个完成轮次最大字符数，范围 1,000–1,000,000 |
+| `MEMORY_MCP_RECALL_MAX_ITEMS` | `10` | 服务端召回条数硬上限，范围 1–10 |
+| `MEMORY_MCP_RECALL_MAX_TOKEN_BUDGET` | `1200` | 服务端渲染预算硬上限，范围 64–8,000 |
 
-可信私网可以直接访问 `http://host:port/mcp`，不需要 Nginx。公网由 ALB/CLB
-终止 HTTPS，再转发到受限 ECS 端口。
+同一 VPC/VPN 内可以直接访问 `http://host:port/mcp`，不需要 Nginx。公网场景应由
+ALB/CLB 等入口终止 HTTPS，再转发到受限的 ECS 私网端口。
 
-### 3.3 原型认证
+### 4.3 静态认证
 
-| 变量 | 默认值 | 说明 |
+| 完整变量名 | 代码默认值 | 说明 |
 | --- | --- | --- |
-| `AUTH_ISSUER_URL` | `http://localhost/demo-auth` | MCP auth metadata 的 issuer |
-| `RESOURCE_SERVER_URL` | 未设置 | 未设置时由服务推导 MCP resource URL |
-| `DEMO_TOKENS_JSON` | `{}` | Token 到可信 Principal 的映射；为空拒绝启动；Secret |
+| `MEMORY_MCP_AUTH_ISSUER_URL` | `http://localhost/memory-mcp-auth` | MCP auth metadata issuer |
+| `MEMORY_MCP_RESOURCE_SERVER_URL` | 未设置 | 未设置时根据请求推导 MCP resource URL |
+| `MEMORY_MCP_AUTH_TOKENS` | `{}` | Token 到可信 Principal 的 JSON 映射；为空拒绝启动；Secret |
 
-每个 JSON value 的字段：
+`MEMORY_MCP_AUTH_TOKENS` 的值是 JSON object。变量名不重复描述序列化格式；每个
+key 是至少 32 字符的独立高熵
+Token，每个 value 包含：
 
 | 字段 | 必需 | 含义 |
 | --- | --- | --- |
-| `owner_key` | 是 | Repository 的最终隔离键 |
-| `tenant_id` | 否 | 默认 `demo` |
+| `tenant_id` | 否 | 默认 `default` |
 | `subject_id` | 是 | 授权系统中的最终用户身份 |
-| `client_id` | 是 | 调用客户端身份 |
-| `agent_id` | 否 | 可选 Agent 审计身份 |
 | `scopes` | 否 | 默认 read/write/review，可收窄 |
 
-同一 `(tenant_id, subject_id)` 必须唯一映射到一个 owner；一个 owner 也不能别名到
-多个 subject。用户 A 的 Agent A/B 可共享 owner，用户 B 必须使用不同 owner。
-客户端不能通过 MCP 参数提交或覆盖 owner。
+生产标识应来自稳定的内部身份体系，不使用显示名、邮箱或 `user-a` 之类临时标签。
+推荐形态：
 
-### 3.4 抽取与日志
+```json
+{
+  "<random-token>": {
+    "tenant_id": "tenant-001",
+    "subject_id": "subject-001",
+    "scopes": ["memory:read", "memory:write", "memory:review"]
+  }
+}
+```
 
-| 变量 | 默认值 | 说明 |
+这里的 `001` 只是部署模板占位符，正式环境应替换为授权系统提供的不可变 ID。
+两个 ID 只允许字母、数字、点、下划线和连字符。服务端固定派生
+`owner_key = tenant_id:subject_id`，它一经写入记忆数据就不能随显示名、Token 或
+Agent 变化。同一用户的多个 Token 因而自然共享 owner，不同 subject 自然隔离。
+MCP 工具参数从不接受 owner，调用方无法覆盖该派生规则。
+
+当前 Token 是不透明静态凭据，MCP SDK 无法从中自动识别业务客户端。校验器会对
+Token 做 SHA-256 单向摘要并截取为 `static-…` client ID，只用于日志审计，不参与
+授权和 owner 隔离，也不会暴露原 Token。Token 轮换会产生新的审计 client ID。
+`agent_id` 不是 MCP/OAuth 标准字段，当前没有独立授权语义，因此不再配置。未来
+OAuth/OIDC 适配器应直接使用已验证 Token 或 introspection 返回的 `client_id` 和
+`subject`。
+
+当前实现是静态 Bearer Token 认证适配器，不提供动态签发、自动过期、完整
+revoke/delete、轮换编排或 OAuth/OIDC federation。它适合受控环境和第一阶段上线；
+需要这些能力时应替换认证适配器，而不是继续扩充静态 JSON。
+
+### 4.4 模型与候选生成
+
+抽取由内部 `ExtractionSettings` 负责，但仍属于 Server 部署单元。面向部署者的
+变量统一使用更直观的 `MEMORY_MCP_MODEL_` 前缀。
+
+| 完整变量名 | 代码默认值 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `MEMORY_MCP_MODEL_PROVIDER` | `deepseek` | 否 | `deepseek` 或 `openai` |
+| `MEMORY_MCP_MODEL_NAME` | 无 | 是 | provider 可用的模型 ID |
+| `MEMORY_MCP_MODEL_API_KEY` | 无 | 是 | 模型凭据；Secret |
+| `MEMORY_MCP_MODEL_BASE_URL` | provider 默认 | 否 | 官方或兼容 Chat Completions 地址 |
+| `MEMORY_MCP_MODEL_TEMPERATURE` | `0` | 否 | 范围 0–2 |
+| `MEMORY_MCP_MODEL_TIMEOUT_SECONDS` | `60` | 否 | 单次模型调用超时，最大 300 秒 |
+| `MEMORY_MCP_MODEL_MAX_RETRIES` | `2` | 否 | provider 层重试，范围 0–10 |
+
+生产进程始终构造真实模型 extractor。缺少 model 或 API key 时服务在启动阶段
+失败，不会静默退化为测试替身。运行时没有 backend 选择器和固定候选 JSON。
+
+真实模型只接收脱敏后的场景、subject hint、时间和本轮正文，不接收 owner、Token
+或 DSN。输出还必须经过结构 schema、原文 Evidence、场景类型、敏感边界和准入规则
+的二次校验。
+
+DeepSeek V4 默认 thinking 与 LangChain 的强制 schema tool choice 不兼容，当前
+DeepSeek extraction adapter 固定关闭 thinking。OpenAI provider 不应用该参数。
+
+### 4.5 日志
+
+| 完整变量名 | 代码默认值 | 说明 |
 | --- | --- | --- |
-| `EXTRACTOR_BACKEND` | `fixed` | `fixed` 或 `openai-compatible` |
-| `FIXED_CANDIDATES_JSON` | `[]` | 严格候选数组；仅精确命中 `source_expression` 才返回 |
-| `LOG_LEVEL` | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
-| `LOG_FILE` | `.memory-mcp/logs/memory-mcp.log` | 设为空可只输出 stderr |
-| `LOG_MAX_BYTES` | `10485760` | 单日志文件轮转阈值 |
-| `LOG_BACKUP_COUNT` | `5` | 保留的轮转文件数 |
+| `MEMORY_MCP_LOG_LEVEL` | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
+| `MEMORY_MCP_LOG_CONTENT` | `false` | 是否记录通过敏感检查后的业务内容 |
+| `MEMORY_MCP_LOG_FILE` | `.memory-mcp/logs/memory-mcp.log` | 日志文件 |
+| `MEMORY_MCP_LOG_MAX_BYTES` | `10485760` | 单文件轮转阈值 |
+| `MEMORY_MCP_LOG_BACKUP_COUNT` | `5` | 保留的轮转文件数 |
 
-日志只记录稳定哈希引用、工具名、状态、数量和耗时；不记录对话、记忆、Token、
-DSN、API Key 或 backend 异常正文。
+将 `MEMORY_MCP_LOG_FILE` 设为空字符串会关闭文件 handler，只保留 stderr/systemd
+journal。
 
-## 4. 真实模型配置
+默认日志只记录稳定引用、工具、阶段、状态、数量、错误码和耗时。手工联调可短期
+开启 `MEMORY_MCP_LOG_CONTENT=true`，记录经过日志清洗后的输入、候选、准入、
+持久化和召回内容。Bearer Token、DSN、API Key、异常正文和敏感规则拦截的原文在
+任何模式下都不应写入日志。
 
-模型变量没有 `MEMORY_MCP_` 前缀，只有
-`MEMORY_MCP_EXTRACTOR_BACKEND=openai-compatible` 时才参与运行。
+## 5. Agent Host 配置
 
-| 变量 | 默认值 | 必需 | 说明 |
+每个 Agent 进程使用完全相同的变量名，但配置值和 Secret 相互独立：
+
+| 完整变量名 | 默认值 | 必需 | 说明 |
 | --- | --- | --- | --- |
-| `CHAT_MODEL_PROVIDER` | `deepseek` | 否 | `deepseek` 或 `openai` |
-| `CHAT_MODEL_NAME` | 无 | 是 | provider 可用的模型 ID |
-| `CHAT_MODEL_API_KEY` | 无 | 是 | Secret |
-| `CHAT_MODEL_BASE_URL` | provider 默认 | 否 | 官方或兼容 Chat Completions 地址 |
-| `CHAT_MODEL_TEMPERATURE` | `0` | 否 | 范围 0–2 |
-| `CHAT_MODEL_TIMEOUT_SECONDS` | `60` | 否 | 单次模型超时 |
-| `CHAT_MODEL_MAX_RETRIES` | `2` | 否 | LangChain/provider 层重试，范围 0–10 |
+| `MEMORY_HOOK_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
+| `MEMORY_HOOK_BEARER_TOKEN` | 无 | 是 | 必须存在于 Server Token 映射；Secret |
+| `MEMORY_HOOK_SCENARIO` | `general-work` | 否 | 已注册场景 |
+| `MEMORY_HOOK_TIMEOUT_SECONDS` | `15` | 否 | Hook HTTP 超时 |
+| `MEMORY_HOOK_FAIL_OPEN` | `true` | 否 | 记忆故障时是否允许 Agent 主任务继续 |
+| `MEMORY_HOOK_RECALL_MAX_ITEMS` | `5` | 否 | 客户端请求上限，仍受 Server 上限约束 |
+| `MEMORY_HOOK_RECALL_TOKEN_BUDGET` | `600` | 否 | 客户端召回预算 |
+| `MEMORY_HOOK_CAPTURE_MAX_ATTEMPTS` | `3` | 否 | AfterRun capture 有界重试次数 |
+| `MEMORY_HOOK_CAPTURE_RETRY_DELAY_SECONDS` | `0.1` | 否 | 重试间隔 |
+| `MEMORY_HOOK_RUN_CACHE_MAX_ENTRIES` | `1000` | 否 | 单个 Bridge 的完成 receipt 缓存上限 |
 
-真实模型只接收脱敏后的场景、subject hint、时间和本轮正文，不接收 owner、Token、
-DSN。模型输出必须通过 `CandidateBatch`、原文证据、场景类型、敏感边界和准入的
-二次校验。
+Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参数、模型上下文
+或 settings 日志。若需要同一用户跨 Agent 共享记忆，服务端为两枚不同 Token 配置
+相同 tenant/subject identity；Agent 配置本身不包含 owner。
 
-DeepSeek V4 默认开启 thinking，但 LangChain 的强制 schema tool choice 与该模式
-不兼容。当前 DeepSeek extraction adapter 固定关闭 thinking；这是抽取适配策略，
-不是用户可调推理开关。OpenAI provider 不应用该参数。
-
-## 5. Hook profile 配置
-
-`MemoryHookSettings.from_profile("agent-a")` 将 profile 转为
-`MEMORY_AGENT_A_`；`user-b-agent-b` 对应 `MEMORY_USER_B_AGENT_B_`。
-
-| 后缀 | 默认值 | 必需 | 说明 |
-| --- | --- | --- | --- |
-| `MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
-| `BEARER_TOKEN` | 无 | 是 | 必须存在于 Server 映射；Secret |
-| `SCENARIO` | `general-work` | 否 | 已注册场景 |
-| `TIMEOUT_SECONDS` | `15` | 否 | Hook HTTP 超时 |
-| `FAIL_OPEN` | `true` | 否 | 记忆故障是否允许 Agent 主任务继续 |
-| `RECALL_MAX_ITEMS` | `5` | 否 | 客户端请求上限，仍受 Server 上限约束 |
-| `RECALL_TOKEN_BUDGET` | `600` | 否 | 客户端渲染预算 |
-| `CAPTURE_MAX_ATTEMPTS` | `3` | 否 | AfterRun 有界重试次数 |
-| `CAPTURE_RETRY_DELAY_SECONDS` | `0.1` | 否 | 重试间隔 |
-| `RUN_CACHE_MAX_ENTRIES` | `1000` | 否 | 单 Bridge 的完成 receipt 缓存上限 |
-
-profile 的 URL 与 Token 必须成对独立配置。Bearer Token 只在 HTTP Authorization
-边界解封，不应作为 CLI 参数或打印 settings。
-
-## 6. 测试专用配置
+## 6. 测试专用依赖注入
 
 | 变量/对象 | 使用位置 | 说明 |
 | --- | --- | --- |
-| `MEMORY_MCP_TEST_DATABASE_URL` | PostgreSQL pytest | 必须指向名称含 `test` 的可清空数据库 |
-| `InMemoryMemoryRepository` | 单元/MCP transport 测试 | 快速替身，不验证 SQL/migration |
+| `MEMORY_MCP_TEST_DATABASE_URL` | PostgreSQL pytest | 必须显式设置并指向名称含 `test` 的可清空 database |
+| `InMemoryMemoryRepository` | 单元/transport 测试 | 快速替身，不验证 SQL 或 migration |
 | `FakeCandidateExtractor` | Core/transport 测试 | 返回确定候选，不调用网络 |
-| `_StructuredModel` | extraction 单元测试 | 验证 LangChain schema 边界 |
-| `fixed` backend | 自动化和手工闭环 | 真实服务链路中的确定性 extractor |
-| `examples/*` 的 demo Agent callable | 手工接线示例 | 只回显处理结果，不是业务大模型 Agent |
+| `_StructuredModel` | extraction 单元测试 | 验证结构化输出边界 |
+| `FixedCandidateBackend` | 自动化 PostgreSQL MCP 闭环 | 测试代码构造并通过 `candidate_extractor` 注入 |
+| `examples/hook_runner.py` 的 Agent callable | 手工接线 | 回显处理结果，不是业务大模型 Agent |
 
-不要让普通 `uv run pytest` 自动读取 `.env` 并清空数据库；外部 E2E 必须显式把
-专用 DSN 映射到 `MEMORY_MCP_TEST_DATABASE_URL`，从而保留人为安全确认。
+普通 `pytest` 不会自动读取 `.env` 去清空数据库。真实 PostgreSQL 测试必须由操作者
+显式设置 `MEMORY_MCP_TEST_DATABASE_URL`，保留人为安全确认。固定候选直接写在
+测试用例中，不进入 `.env`，也不能在生产服务启动时选择。
 
 ## 7. 固定场景值
 
@@ -184,6 +245,8 @@ profile 的 URL 与 Token 必须成对独立配置。Bearer Token 只在 HTTP Au
 | policy version | `general-work-v1` |
 | recall priority | preference 40, decision 35, ongoing_item 30, stable_context 20 |
 
-`subject` 是可选的精确预过滤条件。真实模型可能把 subject 归纳为项目名；若调用方
-传入不同 subject，即使 query 相关也会先被过滤。通用查询应省略 subject，只有
-Host 能稳定生成与写入一致的规范 subject 时才传入。
+policy version 表示“哪一版场景规则做出了本次抽取与准入决定”，用于审计、回放和
+未来规则升级后的差异识别；它不是模型版本，也不是每次请求动态递增的计数器。
+
+`subject` 是可选的精确预过滤条件。通用查询应省略 subject；只有 Agent Host 能
+稳定生成与写入一致的规范 subject 时才传入。

@@ -1,4 +1,4 @@
-"""Small typed client for the two MCP tools used by lifecycle hooks."""
+"""生命周期 Hook 使用的两个 MCP 工具的轻量类型化客户端。"""
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -58,7 +58,7 @@ class CaptureResponse(_Receipt):
 
 
 class MemoryHookClientError(RuntimeError):
-    """Stable, secret-free client failure."""
+    """稳定且不含 Secret 的客户端错误。"""
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class MemoryHookClient(Protocol):
 
 
 class MemoryMcpClient:
-    """Reuse one authenticated HTTP connection pool across MCP invocations."""
+    """在多次 MCP 调用间复用同一个认证 HTTP 连接池。"""
 
     def __init__(self, settings: MemoryHookSettings) -> None:
         self._settings = settings
@@ -116,7 +116,7 @@ class MemoryMcpClient:
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Close the reusable connection pool owned by this client."""
+        """关闭当前客户端持有的可复用连接池。"""
 
         if self._http_client is not None:
             await self._http_client.aclose()

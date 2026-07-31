@@ -16,11 +16,17 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import SecretStr
 
+from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
+from memory_mcp.core.ports import CandidateExtractor
+from memory_mcp.extraction.backends import SCHEMA_VERSION, FixedCandidateBackend
 from memory_mcp.server.app import create_memory_mcp_server
 from memory_mcp.server.settings import MemoryServerSettings
 from tests.support.fakes import FakeCandidateExtractor, candidate_proposal
 
 _DATABASE_ENV = "MEMORY_MCP_TEST_DATABASE_URL"
+_OWNER_A_AGENT_A_TOKEN = "owner-a-agent-a-token-000000000001"
+_OWNER_A_AGENT_B_TOKEN = "owner-a-agent-b-token-000000000002"
+_OWNER_B_AGENT_TOKEN = "owner-b-agent-token-0000000000003"
 
 
 def _connect_safely(database_url: SecretStr):
@@ -34,23 +40,17 @@ def _tokens() -> SecretStr:
     return SecretStr(
         json.dumps(
             {
-                "owner-a-agent-a": {
-                    "owner_key": "owner-a",
+                _OWNER_A_AGENT_A_TOKEN: {
                     "tenant_id": "test",
                     "subject_id": "owner-a",
-                    "client_id": "agent-a",
                 },
-                "owner-a-agent-b": {
-                    "owner_key": "owner-a",
+                _OWNER_A_AGENT_B_TOKEN: {
                     "tenant_id": "test",
                     "subject_id": "owner-a",
-                    "client_id": "agent-b",
                 },
-                "owner-b-agent": {
-                    "owner_key": "owner-b",
+                _OWNER_B_AGENT_TOKEN: {
                     "tenant_id": "test",
                     "subject_id": "owner-b",
-                    "client_id": "agent",
                 },
             }
         )
@@ -78,9 +78,9 @@ def _event() -> dict[str, object]:
 @contextmanager
 def _running_server(
     database_url: SecretStr,
-    extractor: FakeCandidateExtractor | None = None,
+    extractor: CandidateExtractor | None = None,
     *,
-    fixed_candidates_json: SecretStr | None = None,
+    fixed_candidates_payload: str | None = None,
 ) -> Iterator[str]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -90,13 +90,18 @@ def _running_server(
         database_migrate_on_startup=True,
         database_pool_min_size=1,
         database_pool_max_size=4,
-        demo_tokens_json=_tokens(),
+        auth_tokens=_tokens(),
         host="127.0.0.1",
         port=port,
         log_file=None,
-        extractor_backend="fixed",
-        fixed_candidates_json=fixed_candidates_json or SecretStr("[]"),
     )
+    if extractor is None and fixed_candidates_payload is not None:
+        extractor = StructuredCandidateExtractor(
+            FixedCandidateBackend.from_json(fixed_candidates_payload),
+            model_id="fixed-test-catalog",
+            prompt_version="fixed-test-v1",
+            schema_version=SCHEMA_VERSION,
+        )
     server = create_memory_mcp_server(
         settings,
         candidate_extractor=extractor,
@@ -179,7 +184,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
         with _running_server(database_url, first_extractor) as first_url:
 
             async def first_turn() -> None:
-                async with _session(first_url, "owner-a-agent-a") as session:
+                async with _session(first_url, _OWNER_A_AGENT_A_TOKEN) as session:
                     captured = _payload(
                         await session.call_tool(
                             "capture_completed_turn",
@@ -191,7 +196,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
             anyio.run(first_turn)
 
             async def second_turn() -> None:
-                async with _session(first_url, "owner-a-agent-b") as session:
+                async with _session(first_url, _OWNER_A_AGENT_B_TOKEN) as session:
                     recalled = _payload(
                         await session.call_tool(
                             "recall_memory",
@@ -209,7 +214,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
             anyio.run(second_turn)
 
             async def isolated_turn() -> None:
-                async with _session(first_url, "owner-b-agent") as session:
+                async with _session(first_url, _OWNER_B_AGENT_TOKEN) as session:
                     recalled = _payload(
                         await session.call_tool(
                             "recall_memory",
@@ -227,7 +232,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
         with _running_server(database_url, replay_extractor) as reopened_url:
 
             async def third_turn() -> None:
-                async with _session(reopened_url, "owner-a-agent-a") as session:
+                async with _session(reopened_url, _OWNER_A_AGENT_A_TOKEN) as session:
                     replay = _payload(
                         await session.call_tool(
                             "capture_completed_turn",
@@ -272,23 +277,21 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         MemoryMcpClient,
     )
 
-    fixed_candidates = SecretStr(
-        json.dumps(
-            [
-                {
-                    "subject": "weekly-report",
-                    "memory_type": "preference",
-                    "content": "项目周报默认使用表格",
-                    "assertion_kind": "user_view",
-                    "source_expression": "以后项目周报默认用表格",
-                    "save_rationale": "用户明确表达了长期格式偏好",
-                    "confidence": 0.98,
-                    "durability": "durable",
-                    "expression_basis": "explicit",
-                }
-            ],
-            ensure_ascii=False,
-        )
+    fixed_candidates_payload = json.dumps(
+        [
+            {
+                "subject": "weekly-report",
+                "memory_type": "preference",
+                "content": "项目周报默认使用表格",
+                "assertion_kind": "user_view",
+                "source_expression": "以后项目周报默认用表格",
+                "save_rationale": "用户明确表达了长期格式偏好",
+                "confidence": 0.98,
+                "durability": "durable",
+                "expression_basis": "explicit",
+            }
+        ],
+        ensure_ascii=False,
     )
 
     async def agent(
@@ -322,7 +325,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         )
 
     async def scenario(url: str) -> None:
-        first_client, first_runner = runner(url, "owner-a-agent-a")
+        first_client, first_runner = runner(url, _OWNER_A_AGENT_A_TOKEN)
         async with first_client:
             first = await first_runner.run(
                 HookContext(
@@ -335,7 +338,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         assert first.before_run.recalled_count == 0
         assert len(first.after_run.created_memory_ids) == 1
 
-        shared_client, shared_runner = runner(url, "owner-a-agent-b")
+        shared_client, shared_runner = runner(url, _OWNER_A_AGENT_B_TOKEN)
         async with shared_client:
             shared = await shared_runner.run(
                 HookContext(
@@ -348,7 +351,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         assert shared.before_run.recalled_count == 1
         assert "项目周报默认使用表格" in (shared.before_run.memory_context or "")
 
-        isolated_client, isolated_runner = runner(url, "owner-b-agent")
+        isolated_client, isolated_runner = runner(url, _OWNER_B_AGENT_TOKEN)
         async with isolated_client:
             isolated = await isolated_runner.run(
                 HookContext(
@@ -366,7 +369,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
     try:
         with _running_server(
             database_url,
-            fixed_candidates_json=fixed_candidates,
+            fixed_candidates_payload=fixed_candidates_payload,
         ) as url:
             anyio.run(scenario, url)
     finally:

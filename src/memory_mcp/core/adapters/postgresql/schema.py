@@ -1,4 +1,4 @@
-"""PostgreSQL migration loading, application, and schema validation."""
+"""PostgreSQL migration 加载、执行与 schema 校验。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _REQUIRED_TABLES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class Migration:
-    """One immutable PostgreSQL migration bundled with the package."""
+    """随包发布的一条不可变 PostgreSQL migration。"""
 
     version: str
     sql: str
@@ -39,7 +39,7 @@ class Migration:
 
 
 def load_migrations() -> tuple[Migration, ...]:
-    """Load migrations in filename order and calculate stable checksums."""
+    """按文件名顺序加载 migration 并计算稳定 checksum。"""
 
     root = files("memory_mcp.core.adapters.postgresql.migrations")
     migrations: list[Migration] = []
@@ -58,7 +58,7 @@ def load_migrations() -> tuple[Migration, ...]:
 
 
 def apply_migrations(database_url: str) -> tuple[str, ...]:
-    """Apply pending migrations serially and reject modified history."""
+    """串行执行待处理 migration，并拒绝被修改的历史。"""
 
     applied_now: list[str] = []
     with psycopg.connect(database_url, row_factory=dict_row) as connection:
@@ -132,7 +132,7 @@ def apply_migrations(database_url: str) -> tuple[str, ...]:
 
 
 def check_health(database_url: str) -> None:
-    """Verify connectivity and the required schema without exposing the DSN."""
+    """验证连接和必需 schema，且不暴露 DSN。"""
 
     with psycopg.connect(
         database_url,
@@ -148,7 +148,7 @@ def check_health(database_url: str) -> None:
 
 
 def validate_schema(connection) -> None:
-    """Require every bundled migration and core table on an open connection."""
+    """要求当前连接包含全部内置 migration 和核心数据表。"""
 
     expected = {
         migration.version: migration.checksum for migration in load_migrations()

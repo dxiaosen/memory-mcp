@@ -1,4 +1,4 @@
-"""BeforeRun/AfterRun lifecycle semantics independent of Agent frameworks."""
+"""与 Agent 框架无关的 BeforeRun/AfterRun 生命周期语义。"""
 
 import asyncio
 import hashlib
@@ -19,7 +19,7 @@ from memory_mcp.hooks.settings import MemoryHookSettings
 
 @dataclass(frozen=True, slots=True)
 class BeforeRunResult:
-    """Context to inject once, or a stable fail-open warning."""
+    """一次性注入的上下文或稳定的 fail-open 警告。"""
 
     memory_context: str | None
     recalled_count: int
@@ -29,7 +29,7 @@ class BeforeRunResult:
 
 @dataclass(frozen=True, slots=True)
 class AfterRunResult:
-    """Capture receipt returned once for a successful top-level run."""
+    """顶层任务成功后返回一次的捕获回执。"""
 
     event_id: str
     status: str
@@ -44,7 +44,7 @@ class AfterRunResult:
 
 
 class MemoryHookRunConflictError(ValueError):
-    """The same top-level run identity was reused with a different payload."""
+    """同一个顶层任务标识被不同 payload 重用。"""
 
     def __init__(self, phase: str) -> None:
         self.phase = phase
@@ -64,7 +64,7 @@ class _AfterTask:
 
 
 class MemoryHookBridge:
-    """Deduplicate hooks by top-level run and apply bounded fail-open retries."""
+    """按顶层任务去重 Hook，并执行有界 fail-open 重试。"""
 
     def __init__(
         self,
@@ -89,7 +89,7 @@ class MemoryHookBridge:
         context: HookContext,
         user_input: str,
     ) -> BeforeRunResult:
-        """Recall at most once before one top-level user task starts."""
+        """一个顶层用户任务开始前最多召回一次。"""
 
         fingerprint = _fingerprint(
             {
@@ -120,7 +120,7 @@ class MemoryHookBridge:
         final_output: str,
         observed_at: datetime | None = None,
     ) -> AfterRunResult:
-        """Capture once after the successful final response of a top-level task."""
+        """顶层任务成功产生最终响应后捕获一次。"""
 
         if observed_at is not None and (
             observed_at.tzinfo is None or observed_at.utcoffset() is None
@@ -245,7 +245,7 @@ class MemoryHookBridge:
             _BeforeTask | _AfterTask,
         ],
     ) -> None:
-        """Bound retained receipts without cancelling in-flight hook work."""
+        """限制已保留回执数量，但不取消正在执行的 Hook。"""
 
         limit = self._settings.run_cache_max_entries
         while len(cache) > limit:

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -15,14 +16,17 @@ from memory_mcp.hooks import MemoryHookSettings
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--profile",
-        default="agent-a",
-        help="Environment profile containing MCP URL and bearer token",
+        "--env-file",
+        type=Path,
+        help=(
+            "Optional Agent environment file. Without it, MEMORY_HOOK_* "
+            "is read from the process environment."
+        ),
     )
     parser.add_argument(
         "command",
         choices=("tools", "memories", "pending", "recall"),
-        help="Read-only operation to demonstrate",
+        help="Read-only operation to execute",
     )
     parser.add_argument("--scenario", default="general-work")
     parser.add_argument("--query", default="当前任务相关的用户偏好和上下文")
@@ -90,7 +94,7 @@ async def _run(
 
 def main() -> None:
     args = _parser().parse_args()
-    settings = MemoryHookSettings.from_profile(args.profile)
+    settings = MemoryHookSettings(_env_file=args.env_file)
     asyncio.run(
         _run(
             str(settings.mcp_url),

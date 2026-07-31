@@ -20,7 +20,7 @@ from memory_mcp.hooks.client import CaptureSummary, RecalledItem
 def _settings(**overrides: object) -> MemoryHookSettings:
     values: dict[str, object] = {
         "mcp_url": "http://127.0.0.1:8765/mcp",
-        "bearer_token": "test-token",
+        "bearer_token": "configured-token",
         "capture_retry_delay_seconds": 0,
         "_env_file": None,
     }

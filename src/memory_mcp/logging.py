@@ -1,4 +1,4 @@
-"""Centralized, privacy-aware application logging."""
+"""集中管理运行日志和显式启用的应用内容日志。"""
 
 import hashlib
 import json
@@ -12,6 +12,8 @@ DEFAULT_LOG_FILE = Path(".memory-mcp/logs/memory-mcp.log")
 DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_LOG_BACKUP_COUNT = 5
 _MANAGED_HANDLER_ATTRIBUTE = "_memory_mcp_managed"
+_CONTENT_LOGGER = logging.getLogger("memory_mcp.content")
+_content_logging_enabled = False
 _SENSITIVE_FIELD_NAMES = {
     "answer",
     "api_key",
@@ -40,6 +42,9 @@ class LoggingConfiguration(Protocol):
     @property
     def log_backup_count(self) -> int: ...
 
+    @property
+    def log_content(self) -> bool: ...
+
 
 def configure_logging_from_settings(settings: LoggingConfiguration) -> None:
     """使用任意符合最小结构的配置对象初始化日志。"""
@@ -49,6 +54,7 @@ def configure_logging_from_settings(settings: LoggingConfiguration) -> None:
         log_file=settings.log_file,
         max_bytes=settings.log_max_bytes,
         backup_count=settings.log_backup_count,
+        content=settings.log_content,
     )
 
 
@@ -58,8 +64,11 @@ def configure_logging(
     log_file: str | PathLike[str] | None = DEFAULT_LOG_FILE,
     max_bytes: int = DEFAULT_LOG_MAX_BYTES,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+    content: bool = False,
 ) -> None:
-    """Configure idempotent console and optional rotating-file logging."""
+    """幂等配置控制台日志和可选的滚动文件日志。"""
+
+    global _content_logging_enabled
 
     normalized_level = level.upper()
     numeric_level = logging.getLevelNamesMapping().get(normalized_level)
@@ -69,6 +78,7 @@ def configure_logging(
         raise ValueError("max_bytes must be positive")
     if backup_count < 0:
         raise ValueError("backup_count must not be negative")
+    _content_logging_enabled = content
 
     root_logger = logging.getLogger()
     _remove_managed_handlers(root_logger)
@@ -106,7 +116,18 @@ def configure_logging(
         file_enabled=log_file is not None,
         max_bytes=max_bytes,
         backup_count=backup_count,
+        content_logging=content,
     )
+    if content:
+        log_event(
+            logging.getLogger(__name__),
+            logging.WARNING,
+            "logging.content.enabled",
+            warning=(
+                "application content logging is enabled; disable it after "
+                "manual verification"
+            ),
+        )
 
 
 def log_event(
@@ -115,7 +136,7 @@ def log_event(
     event: str,
     **fields: Any,
 ) -> None:
-    """Write a single-line event with deterministic, redacted key-value fields."""
+    """写入经过确定性排序和脱敏的单行键值事件。"""
 
     normalized_event = event.strip()
     if not normalized_event:
@@ -130,8 +151,27 @@ def log_event(
     logger.log(level, " ".join(parts))
 
 
+def log_content_event(event: str, **fields: Any) -> None:
+    """仅在显式启用内容日志时写入应用字段。"""
+
+    if not _content_logging_enabled:
+        return
+    normalized_event = event.strip()
+    if not normalized_event:
+        raise ValueError("event must not be empty")
+    parts = [f"event={_encode(normalized_event)}"]
+    parts.extend(f"{key}={_encode(fields[key])}" for key in sorted(fields))
+    _CONTENT_LOGGER.info(" ".join(parts))
+
+
+def content_logging_enabled() -> bool:
+    """为诊断和专项测试返回进程级内容日志状态。"""
+
+    return _content_logging_enabled
+
+
 def stable_reference(value: str) -> str:
-    """Return a stable short reference without logging the raw identifier."""
+    """返回稳定短引用且不记录原始标识。"""
 
     normalized = value.strip()
     if not normalized:

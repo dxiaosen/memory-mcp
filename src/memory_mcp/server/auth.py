@@ -1,6 +1,7 @@
-"""Prototype bearer authentication and trusted principal construction."""
+"""静态 Bearer 认证与可信请求主体构造。"""
 
 from enum import StrEnum
+from hashlib import sha256
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -11,7 +12,7 @@ from memory_mcp.server.errors import (
     PermissionDeniedError,
     UnauthenticatedError,
 )
-from memory_mcp.server.settings import DemoPrincipalSettings
+from memory_mcp.server.settings import ConfiguredPrincipal, derive_owner_key
 
 
 class MemoryScope(StrEnum):
@@ -21,7 +22,7 @@ class MemoryScope(StrEnum):
 
 
 class RequestPrincipal(BaseModel):
-    """Trusted request identity kept separate from tool payloads."""
+    """与工具请求正文隔离的可信请求身份。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -29,19 +30,18 @@ class RequestPrincipal(BaseModel):
     tenant_id: str = Field(min_length=1)
     subject_id: str = Field(min_length=1)
     client_id: str = Field(min_length=1)
-    agent_id: str | None = Field(default=None, min_length=1)
     scopes: frozenset[MemoryScope]
 
     def to_core(self) -> PrincipalContext:
         return PrincipalContext(owner_id=self.owner_key)
 
 
-class DemoTokenVerifier(TokenVerifier):
-    """Validate explicitly configured prototype tokens; never mint tokens."""
+class StaticTokenVerifier(TokenVerifier):
+    """校验显式配置的 Bearer Token，不签发新 Token。"""
 
-    def __init__(self, mappings: dict[str, DemoPrincipalSettings]) -> None:
+    def __init__(self, mappings: dict[str, ConfiguredPrincipal]) -> None:
         if not mappings:
-            raise ValueError("at least one demo token mapping is required")
+            raise ValueError("at least one configured token mapping is required")
         self._mappings = dict(mappings)
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -50,40 +50,37 @@ class DemoTokenVerifier(TokenVerifier):
             return None
         return AccessToken(
             token=token,
-            client_id=configured.client_id,
+            client_id=_static_client_id(token),
             scopes=sorted(configured.scopes),
             subject=configured.subject_id,
             claims={
-                "owner_key": configured.owner_key,
                 "tenant_id": configured.tenant_id,
-                "agent_id": configured.agent_id,
             },
         )
 
 
 def current_request_principal() -> RequestPrincipal:
-    """Build the current principal only from verified MCP auth context."""
+    """只根据已验证的 MCP 认证上下文构造当前主体。"""
 
     access_token = get_access_token()
     if access_token is None:
         raise UnauthenticatedError
     claims = access_token.claims or {}
-    owner_key = claims.get("owner_key")
     tenant_id = claims.get("tenant_id")
-    if not isinstance(owner_key, str) or not isinstance(tenant_id, str):
+    if not isinstance(tenant_id, str):
         raise UnauthenticatedError
     subject_id = access_token.subject
     if not isinstance(subject_id, str):
         raise UnauthenticatedError
-    agent_id = claims.get("agent_id")
-    if agent_id is not None and not isinstance(agent_id, str):
-        raise UnauthenticatedError
+    try:
+        owner_key = derive_owner_key(tenant_id, subject_id)
+    except ValueError:
+        raise UnauthenticatedError from None
     return RequestPrincipal(
         owner_key=owner_key,
         tenant_id=tenant_id,
         subject_id=subject_id,
         client_id=access_token.client_id,
-        agent_id=agent_id,
         scopes=frozenset(MemoryScope(scope) for scope in access_token.scopes),
     )
 
@@ -94,3 +91,10 @@ def require_scope(
 ) -> None:
     if required_scope not in principal.scopes:
         raise PermissionDeniedError(required_scope.value)
+
+
+def _static_client_id(token: str) -> str:
+    """生成只用于审计的稳定凭据引用，不暴露原始 Token。"""
+
+    digest = sha256(token.encode("utf-8")).hexdigest()[:24]
+    return f"static-{digest}"

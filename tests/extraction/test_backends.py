@@ -4,18 +4,18 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 
+from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 from memory_mcp.core.ports import ExtractionRequest
 from memory_mcp.extraction import (
     CandidateBatch,
-    ChatModelSettings,
+    ExtractionSettings,
     FixedCandidateBackend,
     LangChainCandidateBackend,
     create_configured_candidate_extractor,
 )
-from memory_mcp.server.app import create_memory_mcp_server
-from memory_mcp.server.settings import MemoryServerSettings
+from memory_mcp.extraction.backends import SCHEMA_VERSION
 
 
 def _candidate(source: str = "以后项目周报默认用表格") -> dict[str, object]:
@@ -86,34 +86,30 @@ def test_real_backend_uses_strict_schema_and_untrusted_source_prompt() -> None:
     assert "以后项目周报默认用表格" in rendered
 
 
-def test_default_server_extractor_is_configured_fixed_backend() -> None:
-    settings = MemoryServerSettings(
-        fixed_candidates_json=json.dumps([_candidate()]),
-        _env_file=None,
+def test_fixed_extractor_can_be_injected_without_runtime_configuration() -> None:
+    extractor = StructuredCandidateExtractor(
+        FixedCandidateBackend.from_json(json.dumps([_candidate()])),
+        model_id="fixed-test-catalog",
+        prompt_version="fixed-test-v1",
+        schema_version=SCHEMA_VERSION,
     )
 
-    extractor = create_configured_candidate_extractor(settings)
     proposals = extractor.extract(_request("[user]\n以后项目周报默认用表格"))
 
-    assert extractor.model_id == "fixed-candidate-catalog"
+    assert extractor.model_id == "fixed-test-catalog"
     assert proposals[0].content == "项目周报默认使用表格"
 
 
 def test_real_extractor_uses_configured_chat_model() -> None:
-    server_settings = MemoryServerSettings(
-        extractor_backend="openai-compatible",
-        _env_file=None,
-    )
-    chat_settings = ChatModelSettings(
-        chat_model_provider="openai",
-        chat_model_name="structured-model",
-        chat_model_api_key="secret",
+    settings = ExtractionSettings(
+        provider="openai",
+        model_name="structured-model",
+        api_key="secret",
         _env_file=None,
     )
 
     extractor = create_configured_candidate_extractor(
-        server_settings,
-        chat_model_settings=chat_settings,
+        settings,
         chat_model=_StructuredModel(),
     )
 
@@ -126,25 +122,8 @@ def test_real_extractor_missing_credentials_fails_before_database_startup(
     tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CHAT_MODEL_NAME", raising=False)
-    monkeypatch.delenv("CHAT_MODEL_API_KEY", raising=False)
-    settings = MemoryServerSettings(
-        extractor_backend="openai-compatible",
-        demo_tokens_json=SecretStr(
-            json.dumps(
-                {
-                    "token": {
-                        "owner_key": "owner",
-                        "tenant_id": "test",
-                        "subject_id": "owner",
-                        "client_id": "agent",
-                    }
-                }
-            )
-        ),
-        database_url=None,
-        _env_file=None,
-    )
+    monkeypatch.delenv("MEMORY_MCP_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MEMORY_MCP_MODEL_API_KEY", raising=False)
 
     with pytest.raises(ValidationError):
-        create_memory_mcp_server(settings)
+        ExtractionSettings(_env_file=None)

@@ -1,4 +1,4 @@
-"""Framework-neutral hooks for adding Memory MCP to an Agent runner."""
+"""用于把 Memory MCP 接入 Agent Runner 的框架无关 Hook。"""
 
 from memory_mcp.hooks.bridge import (
     AfterRunResult,

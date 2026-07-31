@@ -1,4 +1,4 @@
-"""Owner-scoped Memory Repository implemented with PostgreSQL."""
+"""使用 PostgreSQL 实现的 owner-scoped Memory Repository。"""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def create_pool(
     max_size: int = 5,
     timeout: float = 10.0,
 ) -> PostgreSQLPool:
-    """Open a bounded synchronous pool for the MCP service."""
+    """为 MCP 服务打开有界同步连接池。"""
 
     pool: PostgreSQLPool = ConnectionPool(
         conninfo=database_url,
@@ -76,18 +76,18 @@ def create_pool(
 
 
 class PostgreSQLMemoryRepository:
-    """Use PostgreSQL transactions and constraints as persistence boundary."""
+    """以 PostgreSQL 事务和约束作为持久化边界。"""
 
     def __init__(self, pool: PostgreSQLPool) -> None:
         self._pool = pool
 
     def close(self) -> None:
-        """Close all pooled connections."""
+        """关闭连接池中的全部连接。"""
 
         self._pool.close()
 
     def check_health(self) -> None:
-        """Verify that the pool can reach the migrated schema."""
+        """验证连接池能够访问已迁移 schema。"""
 
         with self._pool.connection() as connection:
             validate_schema(connection)

@@ -11,15 +11,22 @@ request before entering Memory Core when identity is absent or invalid.
 - **AND** performs no memory read or write
 
 ### Requirement: Separate memory owner from calling Agent
-The system MUST derive memory owner scope from trusted tenant and subject identity while
-recording the calling client or Agent separately. Different Agents acting for the same
-owner MUST share eligible memory; different owners using the same Agent MUST remain
-isolated.
+The system MUST derive memory owner scope deterministically from validated tenant and
+subject identity while recording the authenticated client separately. Static token
+configuration MUST NOT duplicate the derived owner or provide an unverified Agent
+identifier. Different clients acting for the same owner MUST share eligible memory;
+different owners using the same client application MUST remain isolated.
 
 #### Scenario: Two Agents act for one user
 - **WHEN** user A connects through Agent A and Agent B with distinct client identifiers
 - **THEN** both calls map to the same owner scope
 - **AND** the audit metadata preserves the distinct client identifiers
+
+#### Scenario: Static token establishes a principal
+- **WHEN** a configured static token is accepted with tenant, subject, and scopes
+- **THEN** owner scope is derived as `tenant_id:subject_id`
+- **AND** the audit client identifier is an opaque one-way reference derived from the credential
+- **AND** neither owner, client, nor Agent identifier is duplicated in the token mapping
 
 #### Scenario: Two users share one Agent application
 - **WHEN** user A and user B both use Agent B
@@ -89,26 +96,69 @@ category and count for blocked outcomes.
 - **THEN** the response reports a blocked outcome without raw text
 - **AND** later list and recall operations cannot retrieve that text
 
-### Requirement: Expose prototype identity limitations
-The project MUST clearly state that environment-configured demo tokens and virtual users
-demonstrate logical isolation but do not constitute production authentication,
-authorization, OAuth deployment, or compliance certification.
+### Requirement: Expose static identity limitations
+The project MUST use neutral runtime names for environment-configured static tokens and
+principal mappings. It MUST clearly state that this static authentication boundary
+demonstrates logical isolation but does not constitute production authentication,
+authorization, OAuth/OIDC deployment, or compliance certification.
 
-#### Scenario: Reviewer inspects the demo
-- **WHEN** the service or documentation presents the virtual-user token setup
-- **THEN** it labels the setup as prototype identity
+#### Scenario: Reviewer inspects static authentication
+- **WHEN** the service or documentation presents the configured token-to-principal mapping
+- **THEN** runtime fields avoid `demo` and `test` naming
+- **AND** documentation labels the implementation as replaceable static authentication
 - **AND** it does not claim production-grade security
 
-### Requirement: Produce non-content operational audit metadata
-The server SHALL log stable request, event, client, owner-reference, tool, status, count,
-and duration fields for significant MCP operations. It MUST NOT log bearer tokens,
-message content, memory content, source expressions, prohibited raw text, or exception
-messages originating from model and storage backends.
+### Requirement: Separate service, Agent, and verification configuration
+The Memory MCP service and each Agent Host MUST be configurable as independent
+deployment units. The service configuration template MUST contain only settings consumed
+by the service process. An Agent Host MUST use one stable `MEMORY_HOOK_*` namespace for
+its own MCP endpoint, credential, timeout, policy, and retry settings.
+
+Multi-identity acceptance settings, deterministic candidate fixtures, destructive-test
+database URLs, and other verification-only values MUST NOT appear in the production
+service template. Real-model configuration MUST use the service-owned
+`MEMORY_MCP_MODEL_*` namespace. Fixed extraction MUST be available only through test
+dependency injection, not a runtime setting. The static token-to-principal JSON mapping MUST use the neutral
+`MEMORY_MCP_AUTH_TOKENS` setting.
+
+#### Scenario: Operator prepares a service deployment
+- **WHEN** the operator copies the production service environment template
+- **THEN** it contains no Agent A/B identity variables or verification candidate payloads
+- **AND** it contains no runtime fixed-backend selector
+- **AND** example principal values contain only neutral tenant, subject, and scopes
+
+#### Scenario: Agent Host prepares its integration
+- **WHEN** one Agent process configures the Hook client
+- **THEN** it provides only `MEMORY_HOOK_*` values for that process
+- **AND** it does not need the service DSN, model credential, or another Agent's token
+
+### Requirement: Produce configurable operational logs
+The server SHALL always log stable request, event, client, owner-reference, tool, status,
+count, and duration fields for significant MCP operations. Content logging MUST be
+controlled by an explicit setting independent from the ordinary log level and MUST be
+disabled by default.
+
+When content logging is disabled, the server MUST NOT log message content, memory
+content, source expressions, recall queries, rendered context, or exception messages
+originating from model and storage backends. When explicitly enabled in a controlled
+manual-test environment, the server MAY additionally log redacted completed-turn
+messages, validated non-blocked candidates, admission outcomes, persisted memory
+results, recall queries, ranked memories, and rendered recall context.
+
+Bearer tokens, PostgreSQL DSNs, model API keys, and raw text rejected by the sensitive
+content guard MUST NOT be logged in either mode. Enabling content logging MUST emit a
+startup warning that application content will be written to configured handlers.
 
 #### Scenario: Cross-Agent capture succeeds
-- **WHEN** Agent A captures memory for an authenticated owner
+- **WHEN** Agent A captures memory for an authenticated owner with content logging disabled
 - **THEN** the log records opaque owner and client references, tool, status, counts, and duration
 - **AND** contains no user-message or memory content
+
+#### Scenario: Operator enables manual content logging
+- **WHEN** the service starts with explicit content logging enabled
+- **THEN** capture and recall logs include application content at their major processing stages
+- **AND** the log emits a warning that the mode is enabled
+- **AND** configured authentication and infrastructure secrets remain absent
 
 ### Requirement: Remain independent of an Agent platform
 The remote MCP service MUST expose its complete product contract through authenticated

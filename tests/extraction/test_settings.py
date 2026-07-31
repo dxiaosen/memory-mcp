@@ -1,33 +1,50 @@
 import pytest
 from pydantic import ValidationError
 
-from memory_mcp.extraction.settings import ChatModelSettings
+from memory_mcp.extraction.settings import ExtractionSettings
 
 
-def _valid_settings(**overrides: object) -> ChatModelSettings:
+def _valid_settings(**overrides: object) -> ExtractionSettings:
     values: dict[str, object] = {
-        "chat_model_name": "chat-model",
-        "chat_model_api_key": "chat-key",
+        "model_name": "chat-model",
+        "api_key": "chat-key",
         "_env_file": None,
     }
     values.update(overrides)
-    return ChatModelSettings(**values)
+    return ExtractionSettings(**values)
 
 
 def test_settings_have_explicit_engineering_defaults() -> None:
     settings = _valid_settings()
 
-    assert settings.chat_model_provider == "deepseek"
-    assert settings.chat_model_temperature == 0.0
-    assert settings.chat_model_timeout_seconds == 60.0
-    assert settings.chat_model_max_retries == 2
+    assert settings.provider == "deepseek"
+    assert settings.temperature == 0.0
+    assert settings.timeout_seconds == 60.0
+    assert settings.max_retries == 2
 
 
-def test_chat_model_settings_require_model_credentials(
+def test_real_extraction_settings_require_model_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for name in ("CHAT_MODEL_NAME", "CHAT_MODEL_API_KEY"):
+    for name in (
+        "MEMORY_MCP_MODEL_NAME",
+        "MEMORY_MCP_MODEL_API_KEY",
+    ):
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(ValidationError):
-        ChatModelSettings(_env_file=None)
+        ExtractionSettings(_env_file=None)
+
+
+def test_model_settings_use_deployment_facing_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MEMORY_MCP_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("MEMORY_MCP_MODEL_NAME", "configured-model")
+    monkeypatch.setenv("MEMORY_MCP_MODEL_API_KEY", "configured-key")
+
+    settings = ExtractionSettings(_env_file=None)
+
+    assert settings.provider == "openai"
+    assert settings.model_name == "configured-model"
+    assert settings.require_api_key().get_secret_value() == "configured-key"

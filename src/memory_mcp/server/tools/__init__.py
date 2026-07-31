@@ -21,7 +21,7 @@ class MemoryMcpTools(
     ReviewTools,
     ToolSupport,
 ):
-    """Owner-safe MCP facade over one MemoryService instance."""
+    """单个 MemoryService 实例之上的 owner-safe MCP 门面。"""
 
     def register(self, server: FastMCP[Any]) -> None:
         self._register_capture(server)

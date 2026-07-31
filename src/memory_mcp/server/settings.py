@@ -1,10 +1,18 @@
-"""Environment-backed configuration for the remote Memory MCP service."""
+"""远程 Memory MCP 服务的环境配置。"""
 
 import json
+import re
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from memory_mcp.logging import (
@@ -13,25 +21,35 @@ from memory_mcp.logging import (
 )
 
 MemoryScopeName = Literal["memory:read", "memory:write", "memory:review"]
+MIN_STATIC_TOKEN_LENGTH = 32
+IDENTITY_COMPONENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+_IDENTITY_COMPONENT_RE = re.compile(IDENTITY_COMPONENT_PATTERN)
 
 
-class DemoPrincipalSettings(BaseModel):
-    """One prototype token's trusted principal mapping."""
+class ConfiguredPrincipal(BaseModel):
+    """一条静态 Token 对应的可信主体配置。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    owner_key: str = Field(min_length=1)
-    client_id: str = Field(min_length=1)
-    subject_id: str = Field(min_length=1)
-    tenant_id: str = Field(default="demo", min_length=1)
-    agent_id: str | None = Field(default=None, min_length=1)
+    subject_id: str = Field(min_length=1, pattern=IDENTITY_COMPONENT_PATTERN)
+    tenant_id: str = Field(
+        default="default",
+        min_length=1,
+        pattern=IDENTITY_COMPONENT_PATTERN,
+    )
     scopes: frozenset[MemoryScopeName] = frozenset(
         {"memory:read", "memory:write", "memory:review"}
     )
 
+    @property
+    def owner_key(self) -> str:
+        """由可信租户和主体身份唯一派生存储隔离键。"""
+
+        return derive_owner_key(self.tenant_id, self.subject_id)
+
 
 class MemoryServerSettings(BaseSettings):
-    """Settings required to build one single-process Memory MCP server."""
+    """构建单进程 Memory MCP 服务所需的配置。"""
 
     model_config = SettingsConfigDict(
         env_prefix="MEMORY_MCP_",
@@ -53,17 +71,25 @@ class MemoryServerSettings(BaseSettings):
     max_capture_characters: int = Field(default=100_000, ge=1_000, le=1_000_000)
     recall_max_items: int = Field(default=10, ge=1, le=10)
     recall_max_token_budget: int = Field(default=1_200, ge=64, le=8_000)
-    extractor_backend: Literal["fixed", "openai-compatible"] = "fixed"
-    fixed_candidates_json: SecretStr = SecretStr("[]")
 
-    auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/demo-auth")
+    auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/memory-mcp-auth")
     resource_server_url: AnyHttpUrl | None = None
-    demo_tokens_json: SecretStr = SecretStr("{}")
+    auth_tokens: SecretStr = SecretStr("{}")
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_file: Path | None = Path(".memory-mcp/logs/memory-mcp.log")
     log_max_bytes: int = Field(default=DEFAULT_LOG_MAX_BYTES, ge=1024)
     log_backup_count: int = Field(default=DEFAULT_LOG_BACKUP_COUNT, ge=0, le=100)
+    log_content: bool = False
+
+    @field_validator("log_file", mode="before")
+    @classmethod
+    def normalize_optional_log_file(cls, value: object) -> object:
+        """将空日志文件配置解释为仅输出到控制台。"""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     def model_post_init(self, __context: object) -> None:
         for field_name in ("mcp_path", "health_path"):
@@ -81,7 +107,7 @@ class MemoryServerSettings(BaseSettings):
             )
 
     def require_postgresql_url(self) -> str:
-        """Return the PostgreSQL DSN only at the infrastructure boundary."""
+        """只在基础设施边界返回 PostgreSQL DSN。"""
 
         if self.database_url is None:
             raise ValueError("MEMORY_MCP_DATABASE_URL is required")
@@ -90,41 +116,38 @@ class MemoryServerSettings(BaseSettings):
             raise ValueError("MEMORY_MCP_DATABASE_URL must not be empty")
         return value
 
-    def fixed_candidates_payload(self) -> str:
-        """Return the offline extractor fixture only at its parsing boundary."""
+    def configured_principals(self) -> dict[str, ConfiguredPrincipal]:
+        """解析静态 Token JSON，且不在配置 repr 中泄露内容。"""
 
-        return self.fixed_candidates_json.get_secret_value()
-
-    def demo_principals(self) -> dict[str, DemoPrincipalSettings]:
-        """Parse the secret JSON token mapping without exposing it in settings repr."""
-
-        raw = self.demo_tokens_json.get_secret_value()
+        raw = self.auth_tokens.get_secret_value()
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ValueError("MEMORY_MCP_DEMO_TOKENS_JSON must be valid JSON") from exc
+            raise ValueError("MEMORY_MCP_AUTH_TOKENS must be valid JSON") from exc
         if not isinstance(payload, dict):
-            raise ValueError("MEMORY_MCP_DEMO_TOKENS_JSON must be a JSON object")
-        principals: dict[str, DemoPrincipalSettings] = {}
+            raise ValueError("MEMORY_MCP_AUTH_TOKENS must be a JSON object")
+        principals: dict[str, ConfiguredPrincipal] = {}
         for token, value in payload.items():
             if (
                 not isinstance(token, str)
                 or not token.strip()
                 or token != token.strip()
             ):
-                raise ValueError("demo token keys must be non-empty strings")
-            principals[token] = DemoPrincipalSettings.model_validate(value)
-        _validate_principal_mapping(principals)
+                raise ValueError("configured token keys must be non-empty strings")
+            if len(token) < MIN_STATIC_TOKEN_LENGTH:
+                raise ValueError(
+                    "configured tokens must contain at least "
+                    f"{MIN_STATIC_TOKEN_LENGTH} characters"
+                )
+            principals[token] = ConfiguredPrincipal.model_validate(value)
         return principals
 
-    def require_demo_principals(self) -> dict[str, DemoPrincipalSettings]:
-        """Return configured principals or fail closed during server startup."""
+    def require_configured_principals(self) -> dict[str, ConfiguredPrincipal]:
+        """返回已配置主体；没有主体时在启动阶段安全失败。"""
 
-        principals = self.demo_principals()
+        principals = self.configured_principals()
         if not principals:
-            raise ValueError(
-                "At least one MEMORY_MCP_DEMO_TOKENS_JSON mapping is required"
-            )
+            raise ValueError("At least one MEMORY_MCP_AUTH_TOKENS mapping is required")
         return principals
 
     @classmethod
@@ -132,22 +155,11 @@ class MemoryServerSettings(BaseSettings):
         return cls()
 
 
-def _validate_principal_mapping(
-    principals: dict[str, DemoPrincipalSettings],
-) -> None:
-    """Prevent configuration from aliasing distinct subjects into one owner."""
+def derive_owner_key(tenant_id: str, subject_id: str) -> str:
+    """用已校验的身份分量生成无歧义 owner key。"""
 
-    owner_by_subject: dict[tuple[str, str], str] = {}
-    subject_by_owner: dict[str, tuple[str, str]] = {}
-    for principal in principals.values():
-        subject = (principal.tenant_id, principal.subject_id)
-        existing_owner = owner_by_subject.setdefault(subject, principal.owner_key)
-        if existing_owner != principal.owner_key:
-            raise ValueError(
-                "one tenant/subject identity must map to exactly one owner_key"
-            )
-        existing_subject = subject_by_owner.setdefault(principal.owner_key, subject)
-        if existing_subject != subject:
-            raise ValueError(
-                "one owner_key must not alias different tenant/subject identities"
-            )
+    if not _IDENTITY_COMPONENT_RE.fullmatch(tenant_id):
+        raise ValueError("tenant_id has an invalid format")
+    if not _IDENTITY_COMPONENT_RE.fullmatch(subject_id):
+        raise ValueError("subject_id has an invalid format")
+    return f"{tenant_id}:{subject_id}"

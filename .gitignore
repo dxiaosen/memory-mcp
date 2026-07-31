@@ -16,6 +16,7 @@ pytest-cache-files-*/
 
 # Local secrets
 .env
+*.env
 
 # Local runtime state
 .memory-mcp/

@@ -1,4 +1,4 @@
-"""Create provider-specific LangChain chat models."""
+"""创建 provider 专用的 LangChain 聊天模型。"""
 
 from typing import Any
 
@@ -7,33 +7,31 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 
 from memory_mcp.exceptions import ConfigurationError
-from memory_mcp.extraction.settings import ChatModelSettings
+from memory_mcp.extraction.settings import ExtractionSettings
 
 
-def create_chat_model(settings: ChatModelSettings) -> BaseChatModel:
-    """Create the LangChain chat model selected by configuration."""
+def create_chat_model(settings: ExtractionSettings) -> BaseChatModel:
+    """根据配置创建 LangChain 聊天模型。"""
 
     common_options: dict[str, Any] = {
-        "model": settings.chat_model_name,
-        "api_key": settings.chat_model_api_key,
-        "temperature": settings.chat_model_temperature,
-        "timeout": settings.chat_model_timeout_seconds,
-        "max_retries": settings.chat_model_max_retries,
+        "model": settings.require_model_name(),
+        "api_key": settings.require_api_key(),
+        "temperature": settings.temperature,
+        "timeout": settings.timeout_seconds,
+        "max_retries": settings.max_retries,
     }
-    if settings.chat_model_base_url:
-        common_options["base_url"] = settings.chat_model_base_url
+    if settings.base_url:
+        common_options["base_url"] = settings.base_url
 
-    if settings.chat_model_provider == "deepseek":
-        # Candidate extraction forces one schema tool. DeepSeek V4 enables thinking
-        # by default, while its thinking mode rejects LangChain's named tool_choice.
-        # Extraction does not need chain-of-thought, so keep it in non-thinking mode.
+    if settings.provider == "deepseek":
+        # 候选抽取强制使用一个 schema tool。DeepSeek V4 默认启用 thinking，
+        # 但 thinking 模式不接受 LangChain 的具名 tool_choice。
+        # 抽取不需要思维链，因此固定关闭 thinking。
         return ChatDeepSeek(
             **common_options,
             extra_body={"thinking": {"type": "disabled"}},
         )
-    if settings.chat_model_provider == "openai":
+    if settings.provider == "openai":
         return ChatOpenAI(**common_options)
 
-    raise ConfigurationError(
-        f"Unsupported chat model provider: {settings.chat_model_provider}"
-    )
+    raise ConfigurationError(f"Unsupported extraction provider: {settings.provider}")
