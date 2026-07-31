@@ -10,11 +10,12 @@ Memory MCP 有两个独立部署单元，不能共用一份“全家桶”配置
 | 部署单元 | 模板 | 前缀 | 内容 |
 | --- | --- | --- | --- |
 | Memory MCP Server | 根目录 `.env.example` | `MEMORY_MCP_` | 数据库、HTTP、认证、抽取、日志 |
-| 一个 Agent Host | `examples/.env.example` | `MEMORY_HOOK_` | MCP URL、该 Agent 的 Token、Hook 预算和重试 |
+| 一个 Agent Host | `examples/.env.example` | `MEMORY_MCP_URL/TOKEN` | MCP URL、该 Agent 的 Token |
 
 一个 Server 可以认证多个 Agent，但一个 Agent 进程只应持有自己的
-`MEMORY_HOOK_*` 配置和 Token。多 Agent 部署需要复制多份 Agent 配置，分别注入
-各自进程；不应让 Agent A 的进程读取 Agent B 的凭据。
+地址和 Token。多 Agent 部署需要复制多份 Agent 配置，分别注入各自进程；不应让
+Agent A 的进程读取 Agent B 的凭据。scenario、owner、client/Agent ID、Hook
+预算和重试不要求普通用户配置。
 
 根目录 `.env.example` 是生产形态的服务端模板，因此：
 
@@ -33,8 +34,9 @@ Memory MCP 有两个独立部署单元，不能共用一份“全家桶”配置
 `EnvironmentFile` 或编排平台注入。
 
 `MemoryHookSettings` 不会隐式读取项目根目录 `.env`。生产 Agent Host 从自己的
-进程环境读取；仓库里的示例命令仅通过 `--env-file examples/agent.env` 显式加载
-某一个 Agent 的文件，避免跨 Agent 泄露配置。
+进程环境读取 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；仓库里的示例命令仅通过
+`--env-file examples/agent.env` 显式加载某一个 Agent 的文件，避免跨 Agent
+泄露配置。
 
 Pydantic Settings 的有效优先级为：
 
@@ -70,7 +72,8 @@ PostgreSQL URI 的用户名或密码若包含保留字符必须 percent-encode�
 | Server 地址、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | Principal 映射 | 静态环境配置 | 当前正式认证入口；可替换为 OAuth/OIDC 适配器 |
 | 抽取 provider/model | 环境可配置 | 生产始终使用真实模型，不提供 fixed 运行时开关 |
-| Agent Hook 参数 | 每个 Agent 独立配置 | URL、Token、超时、fail-open、召回预算和 capture 重试 |
+| Agent 连接 | 每个 Agent 独立配置 | 只要求 URL 和 Token |
+| Agent Hook 策略 | 代码默认 | scenario、超时、fail-open、召回预算、capture 重试和状态 TTL |
 | In-memory Repository、fake/fixed extractor | 仅自动化测试 | 通过依赖注入使用，不属于部署路径 |
 
 PostgreSQL MCP 端到端测试会在测试代码里注入确定性 fixed extractor；它只替代
@@ -200,24 +203,37 @@ journal。
 
 ## 5. Agent Host 配置
 
-每个 Agent 进程使用完全相同的变量名，但配置值和 Secret 相互独立：
+### 5.1 普通用户配置
+
+每个 Agent 进程只配置两个值，配置值和 Secret 相互独立：
 
 | 完整变量名 | 默认值 | 必需 | 说明 |
 | --- | --- | --- | --- |
-| `MEMORY_HOOK_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
-| `MEMORY_HOOK_BEARER_TOKEN` | 无 | 是 | 必须存在于 Server Token 映射；Secret |
-| `MEMORY_HOOK_SCENARIO` | `general-work` | 否 | 已注册场景 |
-| `MEMORY_HOOK_TIMEOUT_SECONDS` | `15` | 否 | Hook HTTP 超时 |
-| `MEMORY_HOOK_FAIL_OPEN` | `true` | 否 | 记忆故障时是否允许 Agent 主任务继续 |
-| `MEMORY_HOOK_RECALL_MAX_ITEMS` | `5` | 否 | 客户端请求上限，仍受 Server 上限约束 |
-| `MEMORY_HOOK_RECALL_TOKEN_BUDGET` | `600` | 否 | 客户端召回预算 |
-| `MEMORY_HOOK_CAPTURE_MAX_ATTEMPTS` | `3` | 否 | AfterRun capture 有界重试次数 |
-| `MEMORY_HOOK_CAPTURE_RETRY_DELAY_SECONDS` | `0.1` | 否 | 重试间隔 |
-| `MEMORY_HOOK_RUN_CACHE_MAX_ENTRIES` | `1000` | 否 | 单个 Bridge 的完成 receipt 缓存上限 |
+| `MEMORY_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
+| `MEMORY_MCP_TOKEN` | 无 | 是 | 必须存在于 Server Token 映射；Secret |
 
 Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参数、模型上下文
 或 settings 日志。若需要同一用户跨 Agent 共享记忆，服务端为两枚不同 Token 配置
 相同 tenant/subject identity；Agent 配置本身不包含 owner。
+
+### 5.2 代码默认值
+
+| 项目 | 默认值 | 用户是否需要配置 |
+| --- | --- | --- |
+| scenario | `general-work` | 否 |
+| HTTP 超时 | 15 秒 | 否 |
+| fail-open | `true` | 否 |
+| recall 最大条数 | 5 | 否 |
+| recall token 预算 | 600 | 否 |
+| capture 最大尝试 | 3 | 否 |
+| capture 重试间隔 | 0.1 秒 | 否 |
+| 进程内回执缓存 | 1000 | 否 |
+| 跨进程状态 TTL | 24 小时 | 否 |
+
+高级集成仍可通过显式构造 `MemoryHookSettings` 调整预算。为了兼容已经部署的
+环境，`MEMORY_HOOK_MCP_URL` 和 `MEMORY_HOOK_BEARER_TOKEN` 仍作为连接变量别名；
+新旧同时存在时 `MEMORY_MCP_URL/TOKEN` 优先。旧的其他 `MEMORY_HOOK_*` 调优变量
+暂时保留，但不属于普通用户配置或快速开始合同。
 
 ## 6. 测试专用依赖注入
 
@@ -229,6 +245,7 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 | `_StructuredModel` | extraction 单元测试 | 验证结构化输出边界 |
 | `FixedCandidateBackend` | 自动化 PostgreSQL MCP 闭环 | 测试代码构造并通过 `candidate_extractor` 注入 |
 | `examples/hook_runner.py` 的 Agent callable | 手工接线 | 回显处理结果，不是业务大模型 Agent |
+| `examples/agents/*.json` | 内置宿主示例 | Codex/Claude Code Hook 注册，不含地址或 Token |
 
 普通 `pytest` 不会自动读取 `.env` 去清空数据库。真实 PostgreSQL 测试必须由操作者
 显式设置 `MEMORY_MCP_TEST_DATABASE_URL`，保留人为安全确认。固定候选直接写在

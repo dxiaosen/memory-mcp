@@ -1,9 +1,13 @@
 import json
+import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import anyio
 import httpx
@@ -306,7 +310,6 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     await session.call_tool(
                         "recall_memory",
                         arguments={
-                            "scenario": "general-work",
                             "query": "项目周报 表格",
                             "subject": "weekly-report",
                         },
@@ -452,3 +455,131 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
             "secret-password-123" not in request.content
             for request in first_extractor.requests
         )
+
+
+def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
+    tmp_path,
+) -> None:
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "以后项目周报默认用表格",
+                content="项目周报默认使用表格",
+            ),
+        )
+    )
+
+    hook_command = Path(sys.executable).with_name("memory-mcp-hook")
+
+    def handle(
+        url: str,
+        token: str,
+        event: dict[str, object],
+    ) -> dict[str, object]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "MEMORY_MCP_URL": url,
+                "MEMORY_MCP_TOKEN": token,
+            }
+        )
+        completed = subprocess.run(
+            [str(hook_command)],
+            input=json.dumps(event, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            check=True,
+            cwd=tmp_path,
+            env=environment,
+        )
+        assert token not in completed.stdout
+        assert token not in completed.stderr
+        for field in ("prompt", "last_assistant_message"):
+            content = event.get(field)
+            if isinstance(content, str):
+                assert content not in completed.stderr
+        return json.loads(completed.stdout)
+
+    with _running_server(extractor=extractor) as url:
+        codex_before = handle(
+            url,
+            _TOKEN_A_AGENT_A,
+            {
+                "session_id": "codex-session",
+                "turn_id": "codex-turn-1",
+                "cwd": str(tmp_path),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "以后项目周报默认用表格",
+            },
+        )
+        assert codex_before == {}
+
+        codex_after = handle(
+            url,
+            _TOKEN_A_AGENT_A,
+            {
+                "session_id": "codex-session",
+                "turn_id": "codex-turn-1",
+                "cwd": str(tmp_path),
+                "hook_event_name": "Stop",
+                "last_assistant_message": "好的，以后默认使用表格。",
+            },
+        )
+        assert codex_after == {}
+
+        claude_recall = handle(
+            url,
+            _TOKEN_A_AGENT_B,
+            {
+                "session_id": "claude-session",
+                "prompt_id": "claude-prompt-1",
+                "cwd": str(tmp_path),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "项目周报应该使用什么格式？",
+            },
+        )
+        context = claude_recall["hookSpecificOutput"]["additionalContext"]
+        assert "项目周报默认使用表格" in context
+
+        generic_cwd = tmp_path / "generic-workspace"
+        generic_recall = handle(
+            url,
+            _TOKEN_A_AGENT_B,
+            {
+                "conversation_id": "generic-conversation",
+                "run_id": "generic-run-1",
+                "cwd": str(generic_cwd),
+                "hook_event_name": "BeforeRun",
+                "user_input": "项目周报应该使用什么格式？",
+            },
+        )
+        generic_context = generic_recall["hookSpecificOutput"]["additionalContext"]
+        assert "项目周报默认使用表格" in generic_context
+        assert len(list((generic_cwd / ".memory-mcp/hooks").glob("*.json"))) == 1
+
+        generic_after = handle(
+            url,
+            _TOKEN_A_AGENT_B,
+            {
+                "conversation_id": "generic-conversation",
+                "run_id": "generic-run-1",
+                "cwd": str(generic_cwd),
+                "hook_event_name": "AfterRun",
+                "final_output": "应该继续使用表格。",
+            },
+        )
+        assert generic_after == {}
+        assert list((generic_cwd / ".memory-mcp/hooks").glob("*.json")) == []
+
+        isolated = handle(
+            url,
+            _TOKEN_B_AGENT_B,
+            {
+                "session_id": "other-session",
+                "turn_id": "other-turn-1",
+                "cwd": str(tmp_path),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "项目周报应该使用什么格式？",
+            },
+        )
+        assert isolated == {}

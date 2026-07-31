@@ -36,12 +36,12 @@ class CaptureTools(ToolSupport):
         async def capture_completed_turn(
             event_id: str,
             contract_version: str,
-            scenario: str,
             conversation_id: str,
             turn_id: str,
             observed_at: datetime,
             messages: list[RoleMessageV1],
             ctx: Context,
+            scenario: str = "general-work",
             subject_hint: str | None = None,
         ) -> CaptureReceipt | ErrorResponse:
             current_request_id = request_id(ctx)

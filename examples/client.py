@@ -19,8 +19,8 @@ def _parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         help=(
-            "Optional Agent environment file. Without it, MEMORY_HOOK_* "
-            "is read from the process environment."
+            "Optional Agent environment file. Without it, MEMORY_MCP_URL "
+            "and MEMORY_MCP_TOKEN are read from the process environment."
         ),
     )
     parser.add_argument(

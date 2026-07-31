@@ -9,7 +9,7 @@
 
 ```text
 Agent Host
-  MEMORY_HOOK_*
+  MEMORY_MCP_URL + MEMORY_MCP_TOKEN
        │ BeforeRun / AfterRun
        ▼
 Memory MCP Server
@@ -22,9 +22,9 @@ Memory MCP Server
 PostgreSQL
 ```
 
-模型候选抽取属于 Server。Agent Host 只知道 MCP 地址、自己的 Token 和 Hook 参数。
-多个 Agent Host 使用相同的 `MEMORY_HOOK_*` 变量名，但由各自部署环境注入不同值；
-不存在运行时身份配置选择器。
+模型候选抽取属于 Server。Agent Host 只知道 MCP 地址和自己的 Token。scenario、
+Hook 预算、重试和 owner 都不要求用户配置。多个 Agent Host 使用相同的两个变量
+名，但由各自部署环境注入不同值；不存在运行时身份配置选择器。
 
 示例 Runner 中的 `_agent` 只是可替换的接线 callable。它验证 Hook 生命周期，但
 不冒充业务 Agent 大模型；真实业务接入方法见第 8 节。
@@ -63,8 +63,8 @@ chmod 600 examples/agent.env
 编辑 `examples/agent.env`：
 
 ```dotenv
-MEMORY_HOOK_MCP_URL=http://127.0.0.1:8765/mcp
-MEMORY_HOOK_BEARER_TOKEN=<与服务端映射中完全相同的一枚 Token>
+MEMORY_MCP_URL=http://127.0.0.1:8765/mcp
+MEMORY_MCP_TOKEN=<与服务端映射中完全相同的一枚 Token>
 ```
 
 Token 至少 32 字符。不要把真实 DSN、Token 或 API Key 放入命令行、Git、截图或
@@ -216,8 +216,8 @@ cp examples/.env.example examples/user-b-agent-b.env
 chmod 600 examples/agent-a.env examples/agent-b.env examples/user-b-agent-b.env
 ```
 
-每个文件只填写同名 `MEMORY_HOOK_*`，但 `MEMORY_HOOK_BEARER_TOKEN` 分别对应服务端
-的三枚 Token。不要把三份 Token 合并到同一个 Agent 进程。
+每个文件只填写同名 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`，但 Token 分别对应
+服务端的三枚 key。不要把三份 Token 合并到同一个 Agent 进程。
 
 用 Agent A 按第 4 节执行一次真实模型写入，再用同 owner Agent B 召回：
 
@@ -263,6 +263,11 @@ chmod 600 examples/agent-a.env examples/agent-b.env examples/user-b-agent-b.env
 6. 检查 max items 和 token budget。
 
 ## 8. 接入真实业务 Agent
+
+支持 command Hook 的宿主优先使用 [Agent 主动记忆接入](agents.md) 中的标准
+BeforeRun/AfterRun 合同；Codex 和 Claude Code 已提供可直接复制的配置。框架本身
+能够包装顶层调用时，可以使用下面的 `HookedAgentRunner`，不需要 command Hook
+或跨进程状态文件。
 
 把示例 `_agent` 替换为业务 Agent 的顶层异步调用：
 

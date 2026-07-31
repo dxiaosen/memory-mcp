@@ -111,8 +111,9 @@ authorization, OAuth/OIDC deployment, or compliance certification.
 ### Requirement: Separate service, Agent, and verification configuration
 The Memory MCP service and each Agent Host MUST be configurable as independent
 deployment units. The service configuration template MUST contain only settings consumed
-by the service process. An Agent Host MUST use one stable `MEMORY_HOOK_*` namespace for
-its own MCP endpoint, credential, timeout, policy, and retry settings.
+by the service process. An Agent Host MUST require only `MEMORY_MCP_URL` and
+`MEMORY_MCP_TOKEN` for its own MCP endpoint and credential under the default flow.
+Timeout, policy, and retry settings MUST have built-in defaults.
 
 Multi-identity acceptance settings, deterministic candidate fixtures, destructive-test
 database URLs, and other verification-only values MUST NOT appear in the production
@@ -129,7 +130,7 @@ dependency injection, not a runtime setting. The static token-to-principal JSON 
 
 #### Scenario: Agent Host prepares its integration
 - **WHEN** one Agent process configures the Hook client
-- **THEN** it provides only `MEMORY_HOOK_*` values for that process
+- **THEN** it provides only `MEMORY_MCP_URL` and `MEMORY_MCP_TOKEN` for that process
 - **AND** it does not need the service DSN, model credential, or another Agent's token
 
 ### Requirement: Produce configurable operational logs

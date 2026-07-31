@@ -1,4 +1,4 @@
-"""展示两个 Hook 接入位置的参考 Runner。"""
+"""展示通用 BeforeRun/AfterRun 接入位置的参考 Runner。"""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass

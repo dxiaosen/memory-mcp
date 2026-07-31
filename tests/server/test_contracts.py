@@ -98,6 +98,11 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
     assert "owner_key" not in serialized_schema
     assert "tenant_id" not in serialized_schema
     assert capture.inputSchema.get("additionalProperties") is False
+    assert "scenario" not in capture.inputSchema["required"]
+    assert capture.inputSchema["properties"]["scenario"]["default"] == "general-work"
+    recall = next(tool for tool in tools if tool.name == "recall_memory")
+    assert "scenario" not in recall.inputSchema["required"]
+    assert recall.inputSchema["properties"]["scenario"]["default"] == "general-work"
 
 
 def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:

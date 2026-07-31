@@ -427,8 +427,9 @@ Memory MCP Server 与 Agent Host 是两个独立部署单元，不共享配置�
   API key、endpoint、temperature、超时和重试；
 - Logging：级别、文件轮转和独立内容日志开关；
 
-Agent Host 使用独立模板和固定 `MEMORY_HOOK_*` 命名空间，只包含该进程的 MCP
-URL、Bearer Token、scenario、预算、重试和 fail-open。多个 Agent 由多个环境或
+Agent Host 使用独立模板，普通使用者只提供该进程的 `MEMORY_MCP_URL` 和
+`MEMORY_MCP_TOKEN`。scenario、预算、重试和 fail-open 使用代码默认值；旧
+`MEMORY_HOOK_*` 连接变量仅作为迁移别名。多个 Agent 由多个环境或
 EnvironmentFile 表达，不通过动态身份前缀把其他 Agent 的凭据装入同一进程。
 
 生产进程始终构造真实模型 adapter，必须提供完整抽取凭据，不提供 backend 选择

@@ -11,12 +11,13 @@ PostgreSQL 持久化由服务端统一负责。
 - duplicate Evidence、replacement revision 和 history；
 - 七个带认证和 scope 的 MCP 工具；
 - owner-first recall 和安全 rendered context；
-- BeforeRun/AfterRun Hook、Runner 和每个 Agent 独立的运行配置；
+- 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
 - 真实 OpenAI-compatible/DeepSeek 结构化抽取，以及测试注入的确定性候选；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
-公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。完整进度只
-看 [OpenSpec tasks](openspec/changes/add-general-memory-core/tasks.md)。
+公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
+主动记忆的实施进度分别见[核心 Tasks](openspec/changes/add-general-memory-core/tasks.md)
+和[主动记忆 Tasks](openspec/changes/add-agent-active-memory/tasks.md)。
 
 ## 快速开始
 
@@ -41,8 +42,9 @@ cp examples/.env.example examples/agent.env
 chmod 600 examples/agent.env
 ```
 
-`examples/agent.env` 中的 `MEMORY_HOOK_BEARER_TOKEN` 必须与服务端 Token 映射中的
-一枚 Token 完全相同。生产部署应通过 Secret Manager、systemd
+Agent Host 只填写 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；Token 必须与服务端
+Token 映射中的一枚 key 完全相同。scenario、owner、超时、预算和重试无需用户
+配置。生产部署应通过 Secret Manager、systemd
 `EnvironmentFile` 或编排平台注入，而不是长期保留在项目目录。
 
 然后：
@@ -87,6 +89,11 @@ Health: http://127.0.0.1:8765/health
 PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身份隔离步骤见使用
 文档。
 
+要让 Agent 每轮自动召回和捕获，而不是等待模型自行选择 MCP 工具，请继续阅读
+[Agent 主动记忆接入](docs/agents.md)。`memory-mcp-hook` 接受通用
+BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置示例位于
+`examples/agents/`。
+
 ## MCP 工具
 
 | 工具 | Scope | 作用 |
@@ -108,6 +115,7 @@ PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身
 
 - [详细总设计](docs/design.md)
 - [配置参考](docs/config.md)
+- [Agent 主动记忆](docs/agents.md)
 - [端到端使用](docs/usage.md)
 - [测试与验收](docs/testing.md)
 - [日志规范](docs/logging.md)
@@ -115,10 +123,8 @@ PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身
 
 OpenSpec 只承担规范和变更管理：
 
-- [Proposal](openspec/changes/add-general-memory-core/proposal.md)
-- [Technical Decisions](openspec/changes/add-general-memory-core/design.md)
-- [Tasks](openspec/changes/add-general-memory-core/tasks.md)
-- [Capability Specs](openspec/changes/add-general-memory-core/specs/)
+- [通用记忆核心变更](openspec/changes/add-general-memory-core/)
+- [Agent 主动记忆变更](openspec/changes/add-agent-active-memory/)
 
 ## 验证
 
@@ -127,6 +133,7 @@ OpenSpec 只承担规范和变更管理：
 uv run ruff format --check .
 uv run ruff check .
 openspec-cn validate add-general-memory-core --strict
+openspec-cn validate add-agent-active-memory --strict
 ```
 
 真实 PostgreSQL 测试必须显式设置

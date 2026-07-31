@@ -4,10 +4,11 @@
 
 1. [详细总设计](design.md)：从产品定位、数据流、领域模型一直读到部署和扩展；
 2. [配置参考](config.md)：全部环境变量、默认值、Secret 和测试配置；
-3. [端到端使用](usage.md)：从空环境启动、真实模型、Agent Hook 与确定性测试；
-4. [测试与验收](testing.md)：测试分层、真实 PostgreSQL/模型证据和故障矩阵；
-5. [日志规范](logging.md)：允许记录和禁止记录的字段；
-6. [部署指南](deploy.md)：systemd、RDS、私网和公网 HTTPS。
+3. [Agent 主动记忆](agents.md)：通用合同、内置宿主配置和手工端到端验证；
+4. [端到端使用](usage.md)：从空环境启动、真实模型、通用 Runner 与确定性测试；
+5. [测试与验收](testing.md)：测试分层、真实 PostgreSQL/模型证据和故障矩阵；
+6. [日志规范](logging.md)：允许记录和禁止记录的字段；
+7. [部署指南](deploy.md)：systemd、RDS、私网和公网 HTTPS。
 
 ## 文档职责
 
@@ -15,7 +16,8 @@
 | --- | --- |
 | `design.md` | 系统是什么、为什么这样设计、各层如何协作 |
 | `config.md` | 配置什么、默认值是什么、哪些是 Secret/测试值 |
-| `usage.md` | 如何启动、切换模型和接入真实 Agent |
+| `agents.md` | 如何让任意 Agent 每轮自动召回和捕获 |
+| `usage.md` | 如何启动、切换模型和使用通用 Runner |
 | `testing.md` | 如何证明行为正确，哪些路径使用替身或外部服务 |
 | `logging.md` | 可以记录什么，如何避免正文和 Secret 泄漏 |
 | `deploy.md` | 如何发布到 ECS/RDS 和配置网络边界 |
@@ -33,7 +35,7 @@ OpenSpec 是规范与变更管理区，不是第二套使用手册：
 | `design.md` | 关键技术决策、替代方案和权衡 |
 | `tasks.md` | 唯一实施进度 |
 
-当前变更：
+基础变更：
 
 - [Proposal](../openspec/changes/add-general-memory-core/proposal.md)
 - [OpenSpec Design](../openspec/changes/add-general-memory-core/design.md)
@@ -42,6 +44,13 @@ OpenSpec 是规范与变更管理区，不是第二套使用手册：
 - [Governance Spec](../openspec/changes/add-general-memory-core/specs/memory-governance/spec.md)
 - [Lifecycle Spec](../openspec/changes/add-general-memory-core/specs/memory-lifecycle/spec.md)
 - [Recall Spec](../openspec/changes/add-general-memory-core/specs/memory-recall/spec.md)
+
+主动记忆变更：
+
+- [Proposal](../openspec/changes/add-agent-active-memory/proposal.md)
+- [OpenSpec Design](../openspec/changes/add-agent-active-memory/design.md)
+- [Tasks](../openspec/changes/add-agent-active-memory/tasks.md)
+- [Agent Active Memory Spec](../openspec/changes/add-agent-active-memory/specs/agent-active-memory/spec.md)
 
 规范性需求以 capability specs 为准，完成状态只看 tasks，当前实现解释以
 `docs/design.md` 为准。

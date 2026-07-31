@@ -3,17 +3,43 @@ import pytest
 from memory_mcp.hooks import MemoryHookSettings, MemoryMcpClient
 
 
-def test_agent_process_settings_use_stable_prefix_and_hide_token(
+def test_agent_process_settings_use_minimal_names_and_hide_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MEMORY_HOOK_MCP_URL", "https://memory.internal/mcp")
-    monkeypatch.setenv("MEMORY_HOOK_BEARER_TOKEN", "agent-process-secret")
+    monkeypatch.setenv("MEMORY_MCP_URL", "https://memory.internal/mcp")
+    monkeypatch.setenv("MEMORY_MCP_TOKEN", "agent-process-secret")
 
     settings = MemoryHookSettings()
 
     assert str(settings.mcp_url) == "https://memory.internal/mcp"
     assert settings.token_value() == "agent-process-secret"
     assert "agent-process-secret" not in repr(settings)
+
+
+def test_agent_process_settings_accept_legacy_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MEMORY_HOOK_MCP_URL", "https://legacy.internal/mcp")
+    monkeypatch.setenv("MEMORY_HOOK_BEARER_TOKEN", "legacy-secret")
+
+    settings = MemoryHookSettings()
+
+    assert str(settings.mcp_url) == "https://legacy.internal/mcp"
+    assert settings.token_value() == "legacy-secret"
+
+
+def test_new_agent_connection_names_take_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MEMORY_MCP_URL", "https://current.internal/mcp")
+    monkeypatch.setenv("MEMORY_MCP_TOKEN", "current-secret")
+    monkeypatch.setenv("MEMORY_HOOK_MCP_URL", "https://legacy.internal/mcp")
+    monkeypatch.setenv("MEMORY_HOOK_BEARER_TOKEN", "legacy-secret")
+
+    settings = MemoryHookSettings()
+
+    assert str(settings.mcp_url) == "https://current.internal/mcp"
+    assert settings.token_value() == "current-secret"
 
 
 def test_mcp_client_reuses_and_closes_its_http_pool() -> None:

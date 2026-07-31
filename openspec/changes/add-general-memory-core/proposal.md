@@ -34,8 +34,9 @@
   配置字段中使用 `demo` 或 `test`；同时明确静态 Token 认证仍是可替换的原型
   边界，不等同于生产 OAuth/OIDC。
 - 将 Memory MCP Server 与 Agent Host 视为独立部署单元：服务端模板只包含数据库、
-  HTTP、认证、抽取和日志配置；Agent Host 使用自己的 `MEMORY_HOOK_*` 配置，
-  多身份验收配置和 fixed candidate 夹具不得混入生产模板。
+  HTTP、认证、抽取和日志配置；Agent Host 只要求自己的
+  `MEMORY_MCP_URL/TOKEN`，多身份验收配置和 fixed candidate 夹具不得混入生产
+  模板。
 - 将候选抽取所使用的模型配置统一到面向运维的 `MEMORY_MCP_MODEL_*` 命名空间；
   静态 Token 映射入口统一为 `MEMORY_MCP_AUTH_TOKENS`；生产进程始终要求真实
   模型配置，fixed candidate 只存在于测试代码。
@@ -107,7 +108,8 @@
   PostgreSQL 端到端流程；公网 HTTPS 与安全组边界保留为部署环境验收。
 - 服务端配置模板按数据库、HTTP、认证、模型和日志分区；静态认证使用
   `AUTH_TOKENS` 等中性名称，内容日志由独立开关控制。Agent 集成提供独立
-  模板并只使用 `MEMORY_HOOK_*`，不再让服务端 `.env` 同时承担多 Agent 验收配置。
+  模板并只要求 `MEMORY_MCP_URL/TOKEN`，不再让服务端 `.env` 同时承担多 Agent
+  验收配置。
 - 在进入阶段六前收敛阶段五实现结构：Hook 使用异步 I/O 但不引入消息队列，
   增加有界去重、payload 冲突检测、连接复用和完整 capture receipt；把真实/固定
   模型适配器统一到语义明确的 `extraction` 包（固定适配器仅供测试注入），并清理

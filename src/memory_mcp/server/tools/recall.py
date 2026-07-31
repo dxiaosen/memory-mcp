@@ -22,9 +22,9 @@ class RecallTools(ToolSupport):
             annotations=READ_ONLY,
         )
         async def recall_memory(
-            scenario: str,
             query: str,
             ctx: Context,
+            scenario: str = "general-work",
             subject: str | None = None,
             task_intent: str | None = None,
             max_items: int = 5,

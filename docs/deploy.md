@@ -189,20 +189,14 @@ Server 的 `/etc/memory-mcp/memory-mcp.env` 不包含 Agent Hook 配置。每个
 Host 在自己的机器或编排单元中单独注入：
 
 ```dotenv
-MEMORY_HOOK_MCP_URL=https://memory.example.com/mcp
-MEMORY_HOOK_BEARER_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
-MEMORY_HOOK_SCENARIO=general-work
-MEMORY_HOOK_TIMEOUT_SECONDS=15
-MEMORY_HOOK_FAIL_OPEN=true
-MEMORY_HOOK_RECALL_MAX_ITEMS=5
-MEMORY_HOOK_RECALL_TOKEN_BUDGET=600
-MEMORY_HOOK_CAPTURE_MAX_ATTEMPTS=3
-MEMORY_HOOK_CAPTURE_RETRY_DELAY_SECONDS=0.1
-MEMORY_HOOK_RUN_CACHE_MAX_ENTRIES=1000
+MEMORY_MCP_URL=https://memory.example.com/mcp
+MEMORY_MCP_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
 ```
 
 这个文件属于 Agent 部署，不应复制到 Memory MCP Server，也不应包含其他 Agent
-的 Token。`MEMORY_HOOK_BEARER_TOKEN` 必须匹配 Server Principal 映射中的一枚 key。
+的 Token。`MEMORY_MCP_TOKEN` 必须匹配 Server Principal 映射中的一枚 key。
+scenario、owner、client/Agent ID、超时、预算和重试使用代码默认值，不要求普通
+Agent 用户配置。
 
 不同 MCP Host 的配置字段可能不同，概念配置如下：
 
@@ -224,12 +218,17 @@ MEMORY_HOOK_RUN_CACHE_MAX_ENTRIES=1000
 `https://memory.example.com/mcp`，MCP 工具契约不变。
 
 连接 MCP 只表示 Host 可以发现工具。主动记忆的确定性调用流程仍应由 Agent Hook
-或外层 Runner 保证：
+保证：
 
 ```text
 BeforeRun  → recall_memory → 注入 rendered_context
 AfterRun   → capture_completed_turn（仅成功完成的轮次）
 ```
+
+`memory-mcp-hook` 接受通用 BeforeRun/AfterRun 合同，并内置 Codex/Claude Code
+字段兼容，不需要复制客户端实现。Host 安装、标准合同、首批配置模板、信任步骤和
+手工闭环见[Agent 主动记忆接入](agents.md)。单进程 Agent Framework 可以直接使用
+`MemoryHookBridge`/`HookedAgentRunner`。
 
 同一用户通过不同 Agent 接入时，可以配置不同 Token，但这些 Token 必须映射到同一
 tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作为工具参数。

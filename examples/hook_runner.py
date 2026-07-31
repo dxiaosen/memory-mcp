@@ -1,4 +1,4 @@
-"""Run one framework-neutral Agent turn with automatic memory hooks."""
+"""使用主动记忆 Hook 运行一个框架无关的 Agent 顶层轮次。"""
 
 import argparse
 import asyncio
@@ -16,7 +16,7 @@ from memory_mcp.hooks import (
 
 
 async def _agent(user_input: str, memory_context: str | None) -> str:
-    """Replace this callable with the application's real Agent invocation."""
+    """实际接入时把此函数替换为应用自己的 Agent 调用。"""
 
     if memory_context:
         return f"已结合长期记忆处理：{user_input}"
@@ -67,8 +67,8 @@ def main() -> None:
         "--env-file",
         type=Path,
         help=(
-            "Optional Agent environment file. Without it, MEMORY_HOOK_* "
-            "is read from the process environment."
+            "Optional Agent environment file. Without it, MEMORY_MCP_URL "
+            "and MEMORY_MCP_TOKEN are read from the process environment."
         ),
     )
     parser.add_argument("--input", required=True)

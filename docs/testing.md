@@ -14,6 +14,7 @@
 | Hook 单元 | Fake Client | 不涉及 | Client protocol | 无 |
 | PostgreSQL contract | 真实 PostgreSQL | Fake | 部分无 | 专用测试库 |
 | PostgreSQL transport E2E | 真实 PostgreSQL | fixed | 真实 HTTP + MCP Client | 专用测试库 |
+| Agent Host adapter | InMemory/真实 MCP | Fake | 通用/Codex/Claude Hook JSON + 真实 HTTP | 无 |
 | real-model E2E | 真实 PostgreSQL | 真实 provider | 真实服务 + 独立 Agent 配置 | 测试库 + 模型 API |
 
 重要边界：
@@ -33,13 +34,14 @@ uv run ruff format --check .
 uv run ruff check .
 git diff --check
 openspec-cn validate add-general-memory-core --strict
+openspec-cn validate add-agent-active-memory --strict
 ```
 
 未显式提供 `MEMORY_MCP_TEST_DATABASE_URL` 时，6 个 PostgreSQL 外部用例应 skip，
-而不是读取 `.env` 后静默清库。2026-07-31 本轮代码 review 的本地结果为：
+而不是读取 `.env` 后静默清库。2026-07-31 主动记忆实现后的本地结果为：
 
 ```text
-86 passed, 6 skipped
+105 passed, 6 skipped
 ```
 
 ## 3. PostgreSQL 安全前置检查
@@ -125,16 +127,24 @@ health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭
 - fail-open 返回稳定 warning，fail-closed 抛 typed error；
 - HTTP 连接池跨工具调用复用并显式关闭；
 - Ctrl+C 关闭服务资源且进程不输出 KeyboardInterrupt traceback。
+- 标准 `run_id`、Codex `turn_id` 与 Claude Code `prompt_id` 归一化为稳定顶层 turn；
+- `UserPromptSubmit` 输出严格 `additionalContext` JSON，`Stop` 输出空成功 JSON；
+- 两个独立 Hook 进程通过权限受限的原子状态文件关联；
+- 并发轮次不串 prompt，缺失/过期/损坏状态安全跳过；
+- `SubagentStop` 不产生独立 capture；
+- 第三方标准 BeforeRun/AfterRun 不修改 Bridge、状态或 Core 即可完成闭环；
+- 真实 HTTP/MCP 中 Codex 写入后 Claude/通用 Agent 可跨 Agent 召回，不同 owner 隔离。
 
 ### 4.4 生产配置边界
 
 - 服务端模板不包含 `MEMORY_HOOK_*`、fixed candidate 或测试数据库；
-- Agent 模板不包含 `MEMORY_MCP_*`，只描述一个 Agent Host；
+- Agent 模板只包含 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；
 - 真实抽取缺少 model/API key 时拒绝构造；
 - 运行配置不接受 fixed backend 或候选 JSON；
 - 静态 Token 少于 32 字符时拒绝服务启动；
-- Hook 使用稳定 `MEMORY_HOOK_*` 前缀，不从根目录 `.env` 隐式加载其他 Agent
-  凭据。
+- Hook 首选两个 `MEMORY_MCP_*` 连接变量并兼容旧名称，不从根目录 `.env`
+  隐式加载其他 Agent 凭据；
+- 内置 Codex/Claude Code 配置模板只注册顶层事件且不包含地址或 Token。
 
 ## 5. fixed 注入的自动化 PostgreSQL E2E
 

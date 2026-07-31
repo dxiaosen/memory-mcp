@@ -31,7 +31,9 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 journal。ECS 示例写入 `/var/log/memory-mcp/memory-mcp.log`。
 
 固定和真实候选抽取都在 MCP 服务进程中运行，统一使用上述
-`MEMORY_MCP_LOG_*` 配置。Hook Client 不记录业务正文或 Secret。
+`MEMORY_MCP_LOG_*` 配置。通用 Agent Hook Client 固定把非内容阶段日志写到
+stderr 和当前进程工作目录的 `.memory-mcp/logs/agent-hook.log`，不要求用户增加
+日志配置。
 
 需要手工查看核心流程时临时设置：
 
@@ -164,6 +166,19 @@ memory.postgresql.migration.applied
 memory.postgresql.health_check.completed
 ```
 
+Agent Host：
+
+```text
+agent_hook.started
+agent_hook.recall.completed
+agent_hook.capture.completed
+agent_hook.capture.skipped
+agent_hook.failed
+```
+
+Agent Hook 事件只记录 host、事件名、稳定 run reference、数量、状态、尝试次数和
+错误码，不记录 prompt、最终回复、Token 或本地状态内容。
+
 已删除的 Knowledge、Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
 
 ## 6. 新增日志
@@ -222,6 +237,7 @@ Linux：
 ```bash
 tail -n 50 .memory-mcp/logs/memory-mcp.log
 tail -f .memory-mcp/logs/memory-mcp.log
+tail -f .memory-mcp/logs/agent-hook.log
 journalctl -u memory-mcp.service -f
 ```
 

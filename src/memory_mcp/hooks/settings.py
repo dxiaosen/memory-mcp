@@ -1,6 +1,6 @@
-"""Memory Hook 客户端的环境配置。"""
+"""Agent Host 主动记忆客户端的环境配置。"""
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,10 +10,21 @@ class MemoryHookSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MEMORY_HOOK_",
         extra="ignore",
+        populate_by_name=True,
     )
 
-    mcp_url: AnyHttpUrl
-    bearer_token: SecretStr
+    mcp_url: AnyHttpUrl = Field(
+        validation_alias=AliasChoices(
+            "MEMORY_MCP_URL",
+            "MEMORY_HOOK_MCP_URL",
+        )
+    )
+    bearer_token: SecretStr = Field(
+        validation_alias=AliasChoices(
+            "MEMORY_MCP_TOKEN",
+            "MEMORY_HOOK_BEARER_TOKEN",
+        )
+    )
     scenario: str = Field(default="general-work", min_length=1)
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)
     fail_open: bool = True

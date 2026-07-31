@@ -68,7 +68,7 @@
 - [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、真实模型配置检查、云服务检查和测试注入的确定性证据
 - [ ] 6.6 运行格式、静态检查、全量测试、PostgreSQL/MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
 - [x] 6.7 规范化数据库、服务、静态认证、抽取、日志和 Hook 配置；去除运行时 demo/test 命名；实现默认关闭的核心内容日志及手工启用说明
-- [x] 6.8 按独立部署单元重构配置：服务端生产模板不含多 Agent 身份配置或 fixed 夹具，抽取配置收敛到单一服务端命名空间，Agent Host 固定使用 `MEMORY_HOOK_*`，增加静态 Token 最低长度校验并迁移示例、文档与测试
+- [x] 6.8 按独立部署单元重构配置：服务端生产模板不含多 Agent 身份配置或 fixed 夹具，抽取配置收敛到单一服务端命名空间，Agent Host 只要求 `MEMORY_MCP_URL/TOKEN`（旧名称兼容），增加静态 Token 最低长度校验并迁移示例、文档与测试
 - [x] 6.9 将面向部署者的候选抽取变量改为 `MEMORY_MCP_MODEL_*`，将静态映射入口缩短为 `MEMORY_MCP_AUTH_TOKENS`，并把生产模板与本地验收配置中的身份值统一为中性的 tenant/subject/owner/Agent ID
 - [x] 6.10 删除运行时 fixed backend 与候选 JSON 配置，改为测试依赖注入；由 tenant/subject 派生 owner、由静态 Token 摘要派生审计 client 并删除冗余 agent_id；同步配置、测试、文档和核心源码中文注释
 

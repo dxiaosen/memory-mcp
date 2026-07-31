@@ -285,12 +285,16 @@ memory-mcp/
 │   │   ├── client.py
 │   │   ├── bridge.py
 │   │   ├── context.py
+│   │   ├── hosts.py               # command 输入、通用事件与输出适配
+│   │   ├── state.py               # Before/After 短期轮次关联
+│   │   ├── cli.py                 # memory-mcp-hook
 │   │   ├── runner.py
 │   │   └── settings.py
 │   ├── db.py
 │   └── logging.py
 ├── examples/
 │   ├── .env.example
+│   ├── agents/                    # 首批宿主 Hook 配置模板
 │   ├── client.py
 │   └── hook_runner.py
 ├── tests/
@@ -940,8 +944,11 @@ subject?
 task_intent?
 ```
 
-run key 是前三项。Token、Server URL、超时和预算来自当前 Agent 进程的
-`MEMORY_HOOK_*` 配置，不进入模型上下文。
+run key 是前三项。通用 Framework 可以显式构造全部字段；command 输入边界把
+`conversation_id/run_id` 或首批宿主的 `session_id + turn_id/prompt_id`
+归一化为同一个 `AgentTurnEvent`，并固定使用 `general-work`。它不根据字段推断
+宿主，也不在 Bridge/Core 中保留宿主分支。Server URL 和 Token 来自 Agent 进程的
+`MEMORY_MCP_URL/TOKEN`，不进入模型上下文。
 
 ### 14.2 BeforeRun
 
@@ -1018,6 +1025,31 @@ created IDs、pending IDs、failure/warning。
 - 需要离线重放和死信治理。
 
 正确形态是 durable outbox + queue worker。单纯 `asyncio.create_task` 不是可靠队列。
+
+### 14.7 通用 Agent 主动记忆
+
+command Hook 接入统一经过三层：
+
+```text
+Host JSON
+  → AgentHookInput.normalize
+  → AgentTurnEvent(before_run | after_run)
+  → AgentHookAdapter
+  → AgentHookOutcome(additional_context? | warning_code?)
+  → command Hook JSON renderer
+```
+
+标准输入使用 `BeforeRun/AfterRun + conversation_id + run_id`。Codex 的
+`turn_id` 和 Claude Code 的 `prompt_id` 只在输入边界归一化；多个别名同时出现时
+必须相等。状态文件名是标识摘要，权限为目录 `0700`、文件 `0600`，原子写入并按
+24 小时清理。状态目录取事件的可信 `cwd`，stdout 只输出 Hook JSON，阶段日志写入
+进程当前目录的 `.memory-mcp/logs/agent-hook.log`，不含 prompt、回复或 Token。
+
+Codex/Claude Code 当前共享一个 command renderer；输出协议不同的新宿主只增加薄
+输入/输出映射。单进程 Framework 则直接使用 `HookedAgentRunner`，无需 command
+状态文件。默认不监听工具或 `SubagentStop`，这是“一个顶层轮次一组
+Before/After”，不是每次内部模型调用都形成记忆。完整合同和配置见
+[Agent 主动记忆](agents.md)。
 
 ## 15. PostgreSQL 设计
 
@@ -1113,10 +1145,11 @@ Scenario policy 是相关但不可由环境变量覆盖的规则边界。
 模型与候选生成使用更直观的 `MEMORY_MCP_MODEL_*` 子前缀，但仍由 Server 组合根
 加载，不是单独部署的模型服务。内部代码继续使用 `extraction` 表达信息抽取职责。
 
-Agent Host 是第二个独立部署单元。每个 Agent 进程只加载一套固定
-`MEMORY_HOOK_*`：MCP URL、该 Agent 的 Token、scenario、fail-open、召回预算和
-capture 重试。多个 Agent 使用相同变量名，由各自进程环境或 EnvironmentFile
-提供不同值，不使用动态身份前缀，也不读取其他 Agent 的 Secret。
+Agent Host 是第二个独立部署单元。每个 Agent 进程只要求
+`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。scenario 固定为 `general-work`，
+fail-open、召回预算、capture 重试和状态 TTL 使用代码默认值。多个 Agent 使用
+相同变量名，由各自进程环境或 EnvironmentFile 提供不同值，不使用动态身份前缀，
+也不读取其他 Agent 的 Secret。
 
 根目录 `.env.example` 只描述 Server 的生产形态：真实模型抽取、一个 Principal、
 无 backend 选择器、无 fixed fixture、无多身份验收矩阵。

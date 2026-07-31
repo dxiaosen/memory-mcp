@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from memory_mcp.extraction.settings import ExtractionSettings
@@ -57,4 +58,28 @@ def test_agent_environment_template_contains_only_hook_settings() -> None:
 
     assert str(settings.mcp_url) == "https://memory.example.com/mcp"
     assert settings.scenario == "general-work"
-    assert "MEMORY_MCP_" not in text
+    assignments = {
+        line.split("=", maxsplit=1)[0]
+        for line in text.splitlines()
+        if line and not line.startswith("#")
+    }
+    assert assignments == {"MEMORY_MCP_URL", "MEMORY_MCP_TOKEN"}
+    assert "MEMORY_HOOK_" not in text
+
+
+def test_agent_hook_templates_register_only_top_level_turn_events() -> None:
+    codex = (_ROOT / "examples" / "agents" / "codex-hooks.json").read_text(
+        encoding="utf-8"
+    )
+    claude = (_ROOT / "examples" / "agents" / "claude-code-settings.json").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (codex, claude):
+        payload = json.loads(text)
+        assert set(payload["hooks"]) == {"UserPromptSubmit", "Stop"}
+        assert '"UserPromptSubmit"' in text
+        assert '"Stop"' in text
+        assert '"SubagentStop"' not in text
+        assert text.count('"command": "memory-mcp-hook"') == 2
+        assert "MEMORY_MCP_TOKEN" not in text
