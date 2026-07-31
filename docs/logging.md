@@ -9,7 +9,8 @@
 实现位于：
 
 ```text
-src/memory_mcp/logging.py
+server/src/memory_mcp/logging.py               # Server/Core/DB
+agent/src/memory_mcp_agent/logging.py           # Agent Hook
 ```
 
 ## 2. 输出与配置
@@ -31,7 +32,8 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 journal。ECS 示例写入 `/var/log/memory-mcp/memory-mcp.log`。
 
 固定和真实候选抽取都在 MCP 服务进程中运行，统一使用上述
-`MEMORY_MCP_LOG_*` 配置。通用 Agent Hook Client 固定把非内容阶段日志写到
+`MEMORY_MCP_LOG_*` 配置。独立 `memory-mcp-agent` 不导入 Server 日志模块，也不
+支持内容日志。它固定把非内容阶段日志写到
 stderr 和当前进程工作目录的 `.memory-mcp/logs/agent-hook.log`，不要求用户增加
 日志配置。
 
@@ -49,7 +51,7 @@ MEMORY_MCP_LOG_CONTENT=true
 每条事件是一行可检索的 `event + key=value`：
 
 ```text
-2026-07-30T14:20:31+0800 INFO memory_mcp.server.tools:
+2026-07-30T14:20:31+0800 INFO memory_mcp.tools:
 event="memory.mcp.tool.completed" duration_ms=7.413 owner_ref="..."
 request_id="..." result_count=1 status="completed" tool_name="list_memories"
 ```
@@ -118,7 +120,7 @@ memory.mcp.tool.failed
 Core：
 
 ```text
-memory.scenario.registered
+memory.profile.registered
 memory.create.started
 memory.create.completed
 memory.create.blocked
@@ -158,7 +160,7 @@ memory.recall.output
 持久化与运维：
 
 ```text
-memory.postgresql.scenario_registered
+memory.postgresql.profile_registered
 memory.postgresql.record_committed
 memory.postgresql.capture_committed
 memory.postgresql.migration.started
@@ -229,6 +231,10 @@ log_content_event(
 
 不要把 settings、HTTP headers、异常对象、数据库连接参数或未经 SensitiveGuard
 检查的原始 payload 传给该函数。
+
+Agent 包新增运行事件时从 `memory_mcp_agent.logging` 导入 `log_event`。Agent
+日志永远不接受 `content=True`，也不得为复用 Server formatter 而反向依赖
+`memory_mcp.logging`。
 
 ## 7. 查看日志
 

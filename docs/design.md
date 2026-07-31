@@ -69,10 +69,10 @@ Memory MCP Server
 - event 级幂等、payload conflict 和失败重处理；
 - 带 Bearer Token 认证和 scope 的 MCP Server；
 - 七个 MCP 工具、严格 DTO、稳定错误码；
-- `GeneralWorkPolicy`；
+- `GeneralWorkProfile`；
 - duplicate Evidence、replacement revision 和显式 history；
 - owner-first recall、阈值、数量和 token budget；
-- BeforeRun/AfterRun Hook SDK；
+- 独立轻量 BeforeRun/AfterRun Agent Client 发行包；
 - 真实 OpenAI-compatible/DeepSeek 抽取与测试注入的确定性 extractor；
 - 三份独立 Agent 环境配置的跨 Agent/跨用户闭环；
 - systemd 和 ECS/RDS 部署骨架。
@@ -90,7 +90,7 @@ Memory MCP Server
 - Redis/Kafka 消息队列；
 - Embedding、向量数据库和 HNSW；
 - 自动过期、完整 revoke/delete 和 suppression；
-- 第二正式场景和通用关系图；
+- 第二套正式记忆配置和通用关系图；
 - Web 管理后台和 MCP Apps；
 - Docker、Kubernetes 或 Nginx；
 - 对用户陈述进行事实核验；
@@ -119,7 +119,7 @@ Memory MCP Server
 │                        │                               │
 │ Capture / Review / Lifecycle / Recall                  │
 │                        │                               │
-│ ScenarioPolicy / CandidateExtractor / Repository ports │
+│ MemoryProfile / CandidateExtractor / Repository ports │
 └───────────────┬──────────────────────┬─────────────────┘
                 │                      │
                 ▼                      ▼
@@ -139,7 +139,7 @@ sequenceDiagram
 
     U->>H: 顶层用户任务
     H->>M: BeforeRun / recall_memory
-    M->>D: owner + active/current + scenario
+    M->>D: owner + active/current + profile_id
     D-->>M: 候选集合
     M-->>H: 结构化 items + 安全 rendered_context
     H->>H: 业务 Agent 的模型、工具、子任务和重试
@@ -148,7 +148,7 @@ sequenceDiagram
     M->>M: 事件幂等检查与敏感预检
     M->>L: 脱敏后的结构化抽取
     L-->>M: CandidateBatch
-    M->>M: 证据、场景、敏感和准入校验
+    M->>M: 证据、记忆配置、敏感和准入校验
     M->>D: 一个 capture 事务
     D-->>M: commit
     M-->>H: capture receipt
@@ -164,7 +164,7 @@ sequenceDiagram
 ```text
 可信 Principal
 → PostgreSQL owner-first current 集合
-→ scenario / optional subject
+→ profile_id / optional subject
 → query + task intent 相关性
 → 类型优先级
 → 阈值、数量、预算
@@ -181,7 +181,7 @@ sequenceDiagram
 → CandidateExtractor
 → 严格 Candidate schema
 → 原文 Evidence 校验
-→ 场景校验
+→ 记忆配置校验
 → 持久化前敏感复检
 → 准入和 lifecycle 分类
 → PostgreSQL 原子事务
@@ -195,34 +195,35 @@ sequenceDiagram
 | 模块 | 负责 | 不负责 |
 | --- | --- | --- |
 | `core.domain` | Memory、Revision、Evidence、Candidate、Review、Recall 等领域对象 | HTTP、配置、SQL、模型 provider |
-| `core.ports` | Repository、Extractor、Sensitive Guard、ScenarioPolicy 契约 | 具体实现 |
+| `core.ports` | Repository、Extractor、Sensitive Guard、MemoryProfile 契约 | 具体实现 |
 | `core.application` | 捕获、准入、审核、生命周期、召回用例 | MCP DTO、Bearer Token |
 | `core.adapters.postgresql` | Repository、transaction、row mapping、migration | Agent 生命周期 |
 | `core.adapters.in_memory` | 快速单元测试替身 | 部署运行 |
 | `extraction` | 真实模型 settings/provider、Candidate schema、测试 fixed adapter | owner 和准入 |
-| `scenarios` | 正式场景允许的类型、guidance、版本和优先级 | transport 和 SQL |
-| `server` | MCP/HTTP、认证、DTO、错误映射和组合根 | Agent 框架 |
-| `hooks` | 远程 Client、Before/After Bridge、Runner | Core Repository |
+| `profiles` | 正式记忆配置允许的类型、guidance、版本和优先级 | transport 和 SQL |
+| 包根 `app/auth/settings/schemas/errors/tools` | MCP/HTTP、认证、DTO、错误映射和组合根 | Agent 框架 |
+| `memory_mcp_agent` | 远程 Client、Before/After Bridge、Host adapter、Runner | Server、Core Repository、数据库和模型 |
 | `logging.py` | 默认运行元数据和显式内容跟踪 | 记忆存储与长期审计账本 |
 
 ### 3.2 依赖图
 
 ```text
-memory_mcp.server ───────────────┐
-memory_mcp.scenarios ────────────┼──> core.application
+memory_mcp.app / tools ──────────┐
+memory_mcp.profiles ─────────────┼──> core.application
 postgresql / extraction adapter ─┘           │
                                              ▼
                                   core.domain / core.ports
 
-hooks ── HTTP/MCP ──> server
+memory_mcp_agent ── 最小 JSON-RPC/HTTP ──> memory_mcp
 ```
 
 必须保持：
 
 - Domain/Application/Ports 不导入 MCP、HTTP、LangChain、psycopg 和 settings；
 - Server 只调用 Application 或公开 Port，不直接执行 SQL；
-- Hook Client 不导入 Core Repository；
-- 场景实现依赖 `ScenarioPolicy`，Core 不反向导入正式场景；
+- Agent Client 不导入 Server、Core、完整 MCP SDK、LangChain 或 psycopg；
+- Server 生产依赖不包含 Agent 发行包；
+- 记忆配置实现依赖 `MemoryProfile`，Core 不反向导入正式配置；
 - PostgreSQL adapter 不读取 Server Settings；
 - Secret 只在组合和基础设施边界解封；
 - 包 `__init__` 不为便利而加载完整 app、模型或数据库驱动。
@@ -233,68 +234,74 @@ hooks ── HTTP/MCP ──> server
 
 ```text
 memory-mcp/
-├── src/memory_mcp/
-│   ├── core/
-│   │   ├── domain/
-│   │   │   ├── models.py           # Memory/Revision/Evidence
-│   │   │   ├── capture.py          # Candidate/Review/Capture
-│   │   │   ├── lifecycle.py        # history 和状态操作
-│   │   │   └── recall.py           # Recall query/result
-│   │   ├── ports/
-│   │   │   ├── repositories.py
-│   │   │   ├── capture.py
-│   │   │   └── scenarios.py
-│   │   ├── application/
-│   │   │   ├── capture_service.py  # 捕获公开 facade
-│   │   │   ├── candidate_processing.py
-│   │   │   ├── review_service.py
-│   │   │   ├── recall_service.py
-│   │   │   ├── service.py          # MemoryService facade
-│   │   │   └── admission.py
-│   │   ├── adapters/
-│   │   │   ├── postgresql/
-│   │   │   │   ├── repository.py   # 单一事务 facade
-│   │   │   │   ├── mapping.py
-│   │   │   │   ├── validation.py
-│   │   │   │   ├── schema.py
-│   │   │   │   └── migrations/
-│   │   │   ├── in_memory.py
-│   │   │   ├── sensitive.py
-│   │   │   └── structured_model.py
-│   │   └── composition.py
-│   ├── extraction/
-│   │   ├── settings.py
-│   │   ├── chat_models.py
-│   │   ├── backends.py
-│   │   └── factory.py
-│   ├── scenarios/
-│   │   └── general_work.py
-│   ├── server/
-│   │   ├── tools/
-│   │   │   ├── capture.py
-│   │   │   ├── memory.py
-│   │   │   ├── recall.py
-│   │   │   ├── review.py
-│   │   │   └── shared.py
-│   │   ├── app.py
-│   │   ├── auth.py
-│   │   ├── schemas.py
-│   │   ├── settings.py
-│   │   └── errors.py
-│   ├── hooks/
-│   │   ├── client.py
-│   │   ├── bridge.py
-│   │   ├── context.py
-│   │   ├── hosts.py               # command 输入、通用事件与输出适配
-│   │   ├── state.py               # Before/After 短期轮次关联
-│   │   ├── cli.py                 # memory-mcp-hook
-│   │   ├── runner.py
-│   │   └── settings.py
-│   ├── db.py
-│   └── logging.py
+├── pyproject.toml                 # 仅负责 workspace 和统一开发工具
+├── server/
+│   ├── pyproject.toml             # memory-mcp 发行包
+│   ├── .env.example               # 仅服务端生产配置
+│   └── src/memory_mcp/
+│       ├── core/
+│       │   ├── domain/
+│       │   │   ├── models.py       # Memory/Revision/Evidence
+│       │   │   ├── capture.py      # Candidate/Review/Capture
+│       │   │   ├── lifecycle.py    # history 和状态操作
+│       │   │   └── recall.py       # Recall query/result
+│       │   ├── ports/
+│       │   │   ├── repositories.py
+│       │   │   ├── capture.py
+│       │   │   └── profiles.py
+│       │   ├── application/
+│       │   │   ├── capture_service.py
+│       │   │   ├── candidate_processing.py
+│       │   │   ├── review_service.py
+│       │   │   ├── recall_service.py
+│       │   │   ├── service.py
+│       │   │   └── admission.py
+│       │   ├── adapters/
+│       │   │   ├── postgresql/
+│       │   │   │   ├── repository.py
+│       │   │   │   ├── mapping.py
+│       │   │   │   ├── validation.py
+│       │   │   │   ├── schema.py
+│       │   │   │   └── migrations/
+│       │   │   ├── in_memory.py
+│       │   │   ├── sensitive.py
+│       │   │   └── structured_model.py
+│       │   └── composition.py
+│       ├── extraction/
+│       │   ├── settings.py
+│       │   ├── chat_models.py
+│       │   ├── backends.py
+│       │   └── factory.py
+│       ├── profiles/
+│       │   └── general_work.py
+│       ├── tools/
+│       │   ├── capture.py
+│       │   ├── memory.py
+│       │   ├── recall.py
+│       │   ├── review.py
+│       │   └── shared.py
+│       ├── app.py
+│       ├── auth.py
+│       ├── schemas.py
+│       ├── settings.py
+│       ├── errors.py
+│       ├── db.py
+│       └── logging.py
+├── agent/
+│   ├── pyproject.toml             # memory-mcp-agent 独立发行元数据
+│   ├── .env.example              # 单个 Agent 只含 URL 和 Token
+│   └── src/memory_mcp_agent/
+│       ├── client.py               # 最小 MCP JSON-RPC/HTTP Client
+│       ├── bridge.py               # BeforeRun/AfterRun 语义与幂等
+│       ├── context.py
+│       ├── hosts.py                # command 输入、通用事件与输出适配
+│       ├── state.py                # Before/After 短期轮次关联
+│       ├── cli.py                  # memory-mcp-hook
+│       ├── logging.py              # Agent 非内容运行日志
+│       ├── runner.py
+│       └── settings.py
 ├── examples/
-│   ├── .env.example
-│   ├── agents/                    # 首批宿主 Hook 配置模板
+│   ├── agents/                    # 宿主 Hook 配置模板
 │   ├── client.py
 │   └── hook_runner.py
 ├── tests/
@@ -305,21 +312,22 @@ memory-mcp/
 
 结构判断：
 
-- `server/tools` 已经是合理的功能子目录；`app/auth/settings/schemas/errors` 均为
+- `tools` 已经是合理的功能子目录；`app/auth/settings/schemas/errors` 均为
   单一职责，不需要继续制造 `api/transport/mcp` 重复层级；
 - `extraction` 是一个语义包，但 provider 构造、schema/backend、settings 和组合
   分离，避免再出现 `model_extraction.py` 大杂烩；
 - PostgreSQL Repository 公开类必须维持一个事务 facade；mapping、validation 和
   schema 已拆出，再按每个 SQL 方法建目录会削弱事务可读性；
 - CaptureService 同样保留公共用例入口，候选处理和 Review 协调在内部拆分；
-- `hooks` 与 Server 分开，因为它是远程消费者 SDK，不是服务端插件。
+- `memory_mcp_agent` 是单独 distribution，因为它是远程消费者，不是服务端插件；
+  Agent Host 不能为一个 Hook 命令被迫安装数据库、模型和 ASGI Server；
 - `db.py` 是 migration/health 的顶层运维命令入口，实际 PostgreSQL schema 和
   Repository 仍在 adapter 内；为两个命令再增加 `cli/database/commands` 层没有
   带来新的边界；
 - `logging.py` 被 Core、Server 和数据库 CLI 共同使用，属于横切基础设施，放在
   包根比塞进 `server` 更准确；
-- `deploy/` 只存放 systemd 运维制品，`examples/` 只存放客户端接线和单 Agent
-  配置模板，两者都不参与领域层依赖。
+- `deploy/` 只存放 systemd 运维制品，`examples/` 只存放客户端接线和宿主 Hook
+  模板，两者都不参与领域层依赖。
 
 ## 5. 领域模型
 
@@ -329,7 +337,7 @@ memory-mcp/
 MemoryItem
 ├── memory_id
 ├── owner_id
-├── scenario
+├── profile_id
 ├── subject
 ├── memory_type
 └── current_revision_id
@@ -385,19 +393,19 @@ Evidence[]
 
 召回和渲染必须保留这些标签。系统不能把“用户曾这样说”渲染为“已经验证为真”。
 
-### 5.4 场景策略
+### 5.4 记忆配置
 
-ScenarioPolicy 提供：
+MemoryProfile 提供：
 
-- scenario ID；
+- `profile_id`；
 - 合法 memory types；
 - capture guidance；
-- policy version；
+- `profile_version`；
 - 可选 business progress；
 - 可选 relation 声明；
 - recall type priorities。
 
-当前唯一正式场景 `general-work`：
+当前默认正式配置 `general-work`：
 
 | memory type | 用途 |
 | --- | --- |
@@ -406,7 +414,7 @@ ScenarioPolicy 提供：
 | `ongoing_item` | 后续仍需推进的事项 |
 | `decision` | 用户明确形成的当前决策 |
 
-Core 不硬编码这些词义。未来新增场景只实现 Policy，不修改 owner、准入、幂等和
+Core 不硬编码这些词义。未来新增配置只实现 `MemoryProfile`，不修改 owner、准入、幂等和
 Repository 基础语义。
 
 ## 6. 身份、认证与隔离
@@ -504,7 +512,7 @@ user B / agent B ─── owner B
 ```text
 contract_version
 event_id
-scenario
+profile_id
 conversation_id
 turn_id
 observed_at
@@ -533,7 +541,7 @@ Capture receipt 至少提供：
 - request/capture ID；
 - completed、failed 或 reprocess-required 状态；
 - replay 标记；
-- policy version；
+- `profile_version`；
 - 四类准入数量；
 - created memory IDs；
 - pending review IDs；
@@ -554,7 +562,7 @@ Recall receipt 提供：
 
 - `unauthenticated`
 - `permission_denied`
-- `scenario_not_registered`
+- `profile_not_registered`
 - `invalid_event`
 - `unsupported_contract_version`
 - `idempotency_conflict`
@@ -595,13 +603,13 @@ Server 将严格 DTO 转为 Core TurnEnvelope：
 
 CandidateExtractor 接收：
 
-- scenario；
+- `profile_id`；
 - conversation/source turn；
 - 脱敏后的内容；
 - observed time；
 - allowed memory types；
 - capture guidance；
-- policy version；
+- `profile_version`；
 - 可选 subject hint。
 
 返回的每个原子候选包括：
@@ -627,7 +635,7 @@ CandidateExtractor 接收：
 - conversation/turn/time：永远使用验证后的 event；
 - source expression：必须出现在对应脱敏来源；
 - source role：来自消息块；
-- memory type：必须在当前 ScenarioPolicy 中；
+- memory type：必须在当前 MemoryProfile 中；
 - confidence/durability/expression basis：必须满足 schema；
 - 所有自由文本：持久化前再次敏感检查。
 
@@ -663,7 +671,7 @@ DeepSeek V4 默认 thinking 模式会拒绝 LangChain 强制 schema tool 使用�
 `tool_choice`。Candidate extraction 不需要 chain-of-thought，因此 DeepSeek
 provider 固定通过 `extra_body` 关闭 thinking，然后使用同一个 Pydantic schema。
 
-该行为是 provider compatibility，不是场景策略或用户可调的业务推理开关。
+该行为是 provider compatibility，不是记忆配置或用户可调的业务推理开关。
 
 ### 9.4 安全提示词边界
 
@@ -674,7 +682,7 @@ System prompt 明确：
 - 不发明身份或事实；
 - source expression 必须是原文连续子串；
 - 临时或含糊内容优先返回零候选；
-- memory type 只能来自 ScenarioPolicy。
+- memory type 只能来自 MemoryProfile。
 
 即使提示词失败，后续程序校验仍然是最终安全边界。
 
@@ -747,7 +755,7 @@ replacement 和冲突。任何候选最终只能有一个互斥结果。
 Hook run key：
 
 ```text
-(scenario, conversation_id, turn_id)
+(profile_id, conversation_id, turn_id)
 ```
 
 Bridge 分别保存 BeforeRun 和 AfterRun task：
@@ -760,7 +768,7 @@ Bridge 分别保存 BeforeRun 和 AfterRun task：
 
 ### 11.2 服务端 event 幂等
 
-服务端以 owner + event + payload fingerprint + policy version 判断：
+服务端以 owner + event + payload fingerprint + `profile_version` 判断：
 
 | 情况 | 行为 |
 | --- | --- |
@@ -793,7 +801,7 @@ capture event 记录保证。
 
 ### 12.1 New
 
-同 owner/scenario/subject/type 下没有等价 current memory 时：
+同 owner/profile_id/subject/type 下没有等价 current memory 时：
 
 - 创建 MemoryItem；
 - 创建初始 active/current Revision；
@@ -856,7 +864,7 @@ Repository 首先执行：
 ```text
 owner
 → active/current
-→ scenario
+→ profile_id
 → optional subject
 ```
 
@@ -872,7 +880,7 @@ Application 对候选计算：
 - Unicode word overlap；
 - 字符二元组 overlap，改善中文小样本召回；
 - subject 完全相等加权；
-- ScenarioPolicy memory type priority；
+- MemoryProfile memory type priority；
 - observed time 作为稳定排序补充。
 
 只有达到 relevance threshold 的记录才进入结果。当前算法故意可解释、无外部
@@ -885,10 +893,10 @@ Embedding 依赖。
 - 测试 fixture 的 subject 已知，可稳定传入；
 - 真实模型可能把 subject 从 hint 归纳为项目名；
 - 调用方无法保证 canonical subject 时应省略；
-- 省略后仍按 owner + scenario + query/task intent 搜索；
+- 省略后仍按 owner + profile_id + query/task intent 搜索；
 - 召回为 0 时，排查第一步是移除 subject。
 
-未来若引入 canonical subject registry，应由场景或服务端统一规范化，不能让每个
+未来若引入 canonical subject registry，应由记忆配置或服务端统一规范化，不能让每个
 Agent 自行定义。
 
 ### 13.4 数量与预算
@@ -925,19 +933,19 @@ Rendered context 包含固定边界说明：
 - owner；
 - current revision；
 - lifecycle；
-- scenario；
+- `profile_id`；
 - 可见性。
 
 索引永远不能成为身份或生命周期事实源。
 
-## 14. Hook SDK
+## 14. 轻量 Agent Client 与 Hook
 
 ### 14.1 HookContext
 
 每个顶层任务携带：
 
 ```text
-scenario
+profile_id
 conversation_id
 turn_id
 subject?
@@ -1051,13 +1059,20 @@ Codex/Claude Code 当前共享一个 command renderer；输出协议不同的新
 Before/After”，不是每次内部模型调用都形成记忆。完整合同和配置见
 [Agent 主动记忆](agents.md)。
 
+Agent Client 是独立 `memory-mcp-agent` 发行包，只依赖 `httpx`、Pydantic 和
+Pydantic Settings。它没有引入完整 MCP SDK，因为后者会把 ASGI Server、OAuth/JWT
+等 Agent 不使用的能力带到客户端。当前最小 Client 只实现主动记忆所需的
+`initialize`、`notifications/initialized` 和 `tools/call`，支持可选 session
+header，并要求 Memory MCP Server 固定的 JSON response 模式。这个边界通过真实
+HTTP 集成测试和隔离 wheel 安装测试共同保护；它不是任意 MCP Server 的通用 SDK。
+
 ## 15. PostgreSQL 设计
 
 ### 15.1 权威范围
 
 PostgreSQL 是唯一运行时权威，保存：
 
-- scenario 和合法类型；
+- `profile_id` 和合法类型；
 - MemoryItem；
 - MemoryRevision；
 - Evidence；
@@ -1074,7 +1089,7 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 唯一索引和 deferred constraint 保证：
 
 - 引用 owner 一致；
-- scenario/type 已注册；
+- profile_id/type 已注册；
 - 每个 MemoryItem 最多一个 current Revision；
 - capture event 幂等；
 - primary Evidence 完整；
@@ -1090,7 +1105,7 @@ Application 校验提供友好错误；数据库约束提供最终防线。
 - capture commit；
 - review confirm/reject；
 - replacement current 切换；
-- scenario registration。
+- profile registration。
 
 Repository facade 负责完整事务。`mapping.py` 负责 row → domain，
 `validation.py` 负责写入前关系校验，`schema.py` 负责 migration/health。这样既
@@ -1106,6 +1121,17 @@ Migration：
 - 已执行文件不能修改；
 - 发布时显式运行；
 - 默认 `MIGRATE_ON_STARTUP=false`。
+
+当前顺序为：
+
+1. `0001_memory_core.sql`：建立初始 Memory Core schema；
+2. `0002_lifecycle_recall.sql`：增加生命周期召回索引；
+3. `0003_profile_naming.sql`：原地把旧 `scenario/policy_version` 命名迁移为
+   `profile_id/profile_version`，通过 rename 保留已有数据。
+
+前两条 migration 已经可能存在于部署数据库中，因此即使源码术语升级也不能修改
+它们的内容或 checksum。新安装同样按三条顺序执行，最终 schema 只暴露 profile
+命名。
 
 这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
 
@@ -1129,7 +1155,17 @@ HTTP health 只返回 service、transport、storage 和 path 等非敏感元数�
 
 ## 16. 配置设计
 
-### 16.1 两个部署单元与配置分组
+### 16.1 两个发行包、两个部署单元与配置分组
+
+| 发行包 | Python 包/命令 | 生产职责 |
+| --- | --- | --- |
+| `memory-mcp` | `memory_mcp`、`memory-mcp`、`memory-mcp-db` | Server、Core、模型、PostgreSQL |
+| `memory-mcp-agent` | `memory_mcp_agent`、`memory-mcp-hook` | 远程主动记忆 Client 与 Host adapter |
+
+二者由一个 uv workspace 开发和测试，但生产依赖互不引用。根
+`pyproject.toml` 是不发布的 virtual workspace，只通过 dev group 引用两个
+member，让全量测试在同一仓库环境运行；它不会产生第三个 wheel，也不会把 Agent
+依赖带入 `memory-mcp`。
 
 | 配置组 | 内容 |
 | --- | --- |
@@ -1138,22 +1174,23 @@ HTTP health 只返回 service、transport、storage 和 path 等非敏感元数�
 | Authentication | issuer、resource URL 和静态 Token/Principal 映射 |
 | Model | provider、model name、API key、base URL、temperature、超时和重试 |
 | Logging | 日志级别、滚动文件参数和独立内容日志开关 |
-| Scenario policy | 正式场景规则固定在代码，policy version 随决策写入审计数据 |
+| Memory profile | 正式记忆配置固定在代码，`profile_version` 随决策写入审计数据 |
 
 前五组属于 Memory MCP Server，统一由根目录模板中的 `MEMORY_MCP_*` 配置；
-Scenario policy 是相关但不可由环境变量覆盖的规则边界。
+Memory profile 是相关但不可由环境变量覆盖的规则边界。
 模型与候选生成使用更直观的 `MEMORY_MCP_MODEL_*` 子前缀，但仍由 Server 组合根
 加载，不是单独部署的模型服务。内部代码继续使用 `extraction` 表达信息抽取职责。
 
-Agent Host 是第二个独立部署单元。每个 Agent 进程只要求
-`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。scenario 固定为 `general-work`，
+Agent Host 是第二个独立部署单元，只安装轻量 `memory-mcp-agent`。每个 Agent
+进程只要求
+`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。`profile_id` 默认为 `general-work`，
 fail-open、召回预算、capture 重试和状态 TTL 使用代码默认值。多个 Agent 使用
 相同变量名，由各自进程环境或 EnvironmentFile 提供不同值，不使用动态身份前缀，
 也不读取其他 Agent 的 Secret。
 
-根目录 `.env.example` 只描述 Server 的生产形态：真实模型抽取、一个 Principal、
+`server/.env.example` 只描述 Server 的生产形态：真实模型抽取、一个 Principal、
 无 backend 选择器、无 fixed fixture、无多身份验收矩阵。
-`examples/.env.example` 只描述一个 Agent。fixed 候选由自动化测试代码持有；
+`agent/.env.example` 只描述一个 Agent。fixed 候选由自动化测试代码持有；
 跨 Agent/跨用户三身份矩阵由验收流程显式建立。
 
 ### 16.2 加载优先级
@@ -1192,7 +1229,7 @@ Secret 不进入 repr、日志、Git、systemd unit、命令行参数或 MCP URL
 - capture/event 的稳定摘要；
 - owner/client 的稳定假名引用；
 - tool；
-- scenario/policy version；
+- profile_id/profile_version；
 - status 和 error code；
 - result count；
 - duration；
@@ -1273,7 +1310,8 @@ Public Agent
 
 ### 18.3 进程管理
 
-- `uv sync --frozen --no-dev` 安装；
+- `uv sync --frozen --no-dev --package memory-mcp` 只安装 Server member；
+- Agent Host 从版本化 wheel 或 registry 固定版本安装 `memory-mcp-agent`；
 - oneshot systemd unit 运行 migration；
 - service unit 运行 `memory-mcp`；
 - EnvironmentFile 提供 Secret；
@@ -1296,6 +1334,7 @@ Public Agent
 | PostgreSQL contract | PostgreSQL test DB | Fake | DB |
 | PostgreSQL MCP E2E | PostgreSQL test DB | 注入 fixed adapter | 真实 MCP HTTP |
 | Real-model smoke | PostgreSQL test DB | 真实 provider | MCP + Model API |
+| Agent wheel isolation | 无 | 无 | 隔离 venv、发行元数据与 console script |
 
 ### 19.2 什么是测试替身
 
@@ -1315,7 +1354,9 @@ Public Agent
 - 真实 provider 的 CandidateBatch；
 - 默认日志无正文，内容模式可观察通过敏感检查的核心流程；
 - 两种日志模式都不含 Secret 和敏感规则拦截的原文；
-- Ctrl+C/ASGI lifespan 关闭资源。
+- Ctrl+C/ASGI lifespan 关闭资源；
+- Agent wheel 只暴露 `memory-mcp-hook`，不安装 Server 命令、数据库、模型框架或
+  完整 MCP SDK。
 
 ### 19.4 测试数据库安全
 
@@ -1331,21 +1372,22 @@ Public Agent
 
 优先复用：
 
-1. `MemoryMcpClient`；
-2. `MemoryHookBridge`；
-3. 只实现薄 Host adapter。
+1. 安装 `memory-mcp-agent`，不安装 Server；
+2. 复用 `MemoryMcpClient`；
+3. 复用 `MemoryHookBridge`；
+4. 只实现薄 Host adapter。
 
 如果 Host 没有生命周期 API，使用外层 Runner。不得为某个平台改变 MCP 工具、
 owner 或 lifecycle 语义。
 
-### 20.2 新场景
+### 20.2 新记忆配置
 
-新增 ScenarioPolicy：
+新增 MemoryProfile：
 
-- 定义 scenario ID；
+- 定义 `profile_id`；
 - memory types；
 - capture guidance；
-- policy version；
+- `profile_version`；
 - recall priorities；
 - 可选 progress/relations。
 
@@ -1398,18 +1440,21 @@ Agent/Server
 12. PostgreSQL 是唯一部署权威；
 13. 注入的测试 extractor 与真实模型路径共享同一可信后处理；
 14. Hook 内部步骤不重复触发；
-15. 新 Agent/模型/索引不能反向污染 Core。
+15. 新 Agent/模型/索引不能反向污染 Core；
+16. Agent 发行包不能引入 Server、数据库、模型或完整 MCP SDK 依赖。
 
 ## 22. 当前结构 Review 结论
 
 当前代码结构总体合理：
 
-- `server/tools` 的拆分粒度合适；
+- `tools` 的拆分粒度合适；
 - `extraction` 命名和职责已统一；
 - 生产模型配置不再携带测试 backend/fixture，fixed adapter 只由测试注入；
 - 静态身份只配置 tenant/subject/scopes，owner 与审计 client 均由服务端派生；
 - `runtime_logging` 已收敛为直观的 `logging.py`；
-- Hook 是远程消费者，不应移入 Server；
+- Hook 已拆为独立 `memory-mcp-agent`，远程 Agent 不安装 Server；
+- Agent 包的最小 HTTP/MCP Client 只保留主动记忆需要的协议面，发行依赖边界有
+  自动化和隔离 wheel 测试；
 - PostgreSQL mapping/validation/schema 已分离；
 - Capture 候选处理和 Review 协调已从 facade 分离；
 - 不需要增加 `integrations`、`observability`、`agent-lab`、`api` 或
@@ -1431,7 +1476,8 @@ Agent/Server
 ```text
 docs/design.md          当前系统完整设计
 docs/config.md          所有配置
-docs/usage.md           启动和接入
+docs/agents.md          Agent 安装、Hook 合同和宿主配置
+docs/usage.md           Server 启动、真实模型和端到端使用
 docs/testing.md         测试与证据
 docs/logging.md         日志专项
 docs/deploy.md          部署操作

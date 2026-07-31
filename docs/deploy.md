@@ -68,15 +68,16 @@ sudo chmod 750 /etc/memory-mcp
 
 ```bash
 cd /opt/memory-mcp
-sudo -u memory-mcp uv sync --frozen --no-dev
+sudo -u memory-mcp uv sync --frozen --no-dev --package memory-mcp
 ```
 
 项目使用 Python 3.14。目标机器不必预先通过系统包安装同版本 Python，`uv` 可以
-按项目声明准备隔离环境。
+按项目声明准备隔离环境。必须指定 `--package memory-mcp`；workspace 默认可能
+包含其他 member，Server 生产环境不应安装 Agent 发行包。
 
 ## 5. 运行配置
 
-把 `.env.example` 复制为 `/etc/memory-mcp/memory-mcp.env`，只保留服务器实际需要
+把 `server/.env.example` 复制为 `/etc/memory-mcp/memory-mcp.env`，只保留服务器实际需要
 的值。示例：
 
 ```dotenv
@@ -195,8 +196,27 @@ MEMORY_MCP_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
 
 这个文件属于 Agent 部署，不应复制到 Memory MCP Server，也不应包含其他 Agent
 的 Token。`MEMORY_MCP_TOKEN` 必须匹配 Server Principal 映射中的一枚 key。
-scenario、owner、client/Agent ID、超时、预算和重试使用代码默认值，不要求普通
+`profile_id`、owner、client/Agent ID、超时、预算和重试使用代码默认值，不要求普通
 Agent 用户配置。
+
+主动 Hook 还要求 Agent Host 安装独立轻量发行物。推荐在发布机先构建：
+
+```bash
+uv build --package memory-mcp-agent --wheel
+```
+
+把生成的 `memory_mcp_agent-<version>-py3-none-any.whl` 作为版本化制品分发到
+Agent Host，再安装：
+
+```bash
+uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+command -v memory-mcp-hook
+```
+
+若使用组织 Python registry，则安装固定版本
+`uv tool install memory-mcp-agent==0.1.0`。Agent 包只要求 Python 3.11+，不会
+安装 `memory-mcp`、数据库 driver、LangChain、模型 Provider、ASGI Server 或
+migration 命令。不要为了得到 Hook 命令把整个 Server 仓库部署到 Agent Host。
 
 不同 MCP Host 的配置字段可能不同，概念配置如下：
 
@@ -226,9 +246,10 @@ AfterRun   → capture_completed_turn（仅成功完成的轮次）
 ```
 
 `memory-mcp-hook` 接受通用 BeforeRun/AfterRun 合同，并内置 Codex/Claude Code
-字段兼容，不需要复制客户端实现。Host 安装、标准合同、首批配置模板、信任步骤和
-手工闭环见[Agent 主动记忆接入](agents.md)。单进程 Agent Framework 可以直接使用
-`MemoryHookBridge`/`HookedAgentRunner`。
+字段兼容，不需要复制客户端实现。Codex 当前没有原生 HTTP Hook，因此跨机时也由
+这个本地轻量命令请求远端 Server；它不是本地 Server。Host 安装、标准合同、首批
+配置模板、信任步骤和手工闭环见[Agent 主动记忆接入](agents.md)。单进程 Agent
+Framework 可以直接使用 `MemoryHookBridge`/`HookedAgentRunner`。
 
 同一用户通过不同 Agent 接入时，可以配置不同 Token，但这些 Token 必须映射到同一
 tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作为工具参数。
@@ -238,15 +259,22 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 推荐发布顺序：
 
 1. 上传新代码；
-2. 执行 `uv sync --frozen --no-dev`；
+2. 执行 `uv sync --frozen --no-dev --package memory-mcp`；
 3. 运行 migration oneshot unit；
 4. 重启 MCP 服务；
 5. 检查本机健康接口；
 6. 从目标 Agent 网络使用真实 MCP Client 执行 `tools/list`；
 7. 执行一次跨 Agent 捕获、召回和跨用户负向测试。
 
-应用回滚时恢复上一个代码版本并重新同步锁定依赖。已经成功提交的向前兼容
-数据库 migration 不做破坏性降级；如果 migration 失败，新应用版本不得启动。
+`0003_profile_naming.sql` 是保留数据的命名迁移：把旧 profile 相关表和
+`scenario/policy_version` 列原地重命名为 `profile_id/profile_version`。不要修改
+`0001/0002` 历史文件，否则已部署数据库会因 checksum 不一致拒绝启动。由于 MCP
+DTO 同步改为 `profile_id`，Server 与主动记忆 Agent Client 应在同一发布窗口升级。
+
+Server 应用回滚时恢复上一个代码版本并重新同步锁定依赖。Agent Client 独立按
+wheel 版本升级或回滚，不要求与 Server 同机操作；发布前必须通过兼容性测试。
+已经成功提交的向前兼容数据库 migration 不做破坏性降级；如果 migration 失败，
+新应用版本不得启动。
 
 ## 11. 当前边界
 

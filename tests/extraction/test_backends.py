@@ -4,8 +4,6 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
 from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 from memory_mcp.core.ports import ExtractionRequest
 from memory_mcp.extraction import (
@@ -16,6 +14,7 @@ from memory_mcp.extraction import (
     create_configured_candidate_extractor,
 )
 from memory_mcp.extraction.backends import SCHEMA_VERSION
+from pydantic import ValidationError
 
 
 def _candidate(source: str = "以后项目周报默认用表格") -> dict[str, object]:
@@ -34,14 +33,14 @@ def _candidate(source: str = "以后项目周报默认用表格") -> dict[str, o
 
 def _request(content: str) -> ExtractionRequest:
     return ExtractionRequest(
-        scenario="general-work",
+        profile_id="general-work",
         conversation_id="conversation-1",
         source_turn_id="turn-1",
         content=content,
         observed_at=datetime(2026, 7, 30, tzinfo=UTC),
         allowed_memory_types=frozenset({"preference", "decision"}),
         capture_guidance="capture explicit durable preferences",
-        policy_version="general-work-v1",
+        profile_version="general-work-v1",
     )
 
 

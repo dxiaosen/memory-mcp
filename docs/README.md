@@ -10,6 +10,10 @@
 6. [日志规范](logging.md)：允许记录和禁止记录的字段；
 7. [部署指南](deploy.md)：systemd、RDS、私网和公网 HTTPS。
 
+发行边界只有两个：`memory-mcp` 是 Server，`memory-mcp-agent` 是远端 Agent
+Host 的轻量 Hook Client。仓库开发环境可以同时安装二者，生产部署不能据此把两端
+当成一个“全家桶”。
+
 ## 文档职责
 
 | 文件 | 回答的问题 |

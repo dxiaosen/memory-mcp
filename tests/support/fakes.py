@@ -16,33 +16,33 @@ from memory_mcp.core import (
 
 
 @dataclass(frozen=True, slots=True)
-class TestScenarioPolicy:
-    """只用于验证 Core 扩展边界的中性场景。"""
+class TestMemoryProfile:
+    """只用于验证 Core 扩展边界的中性记忆配置。"""
 
     __test__: ClassVar[bool] = False
 
-    scenario_id: str = "project-work"
+    profile_id: str = "project-work"
     memory_types: frozenset[str] = frozenset(
         {"preference", "ongoing_item", "stable_context"}
     )
     business_progress_values: frozenset[str] = frozenset({"open", "done"})
     allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = "Capture durable project-work context."
-    policy_version: str = "project-work-v1"
+    profile_version: str = "project-work-v1"
     relation_rules: dict[str, str] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
-class AlternateScenarioPolicy:
-    """用于证明 Core 不写死 project-work 类型的第二测试策略。"""
+class AlternateMemoryProfile:
+    """用于证明 Core 不写死 project-work 类型的第二测试配置。"""
 
-    scenario_id: str = "personal-notes"
+    profile_id: str = "personal-notes"
     memory_types: frozenset[str] = frozenset({"note", "commitment"})
     business_progress_values: frozenset[str] = frozenset()
     allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = "Capture durable personal notes."
-    policy_version: str = "personal-notes-v1"
+    profile_version: str = "personal-notes-v1"
     relation_rules: dict[str, str] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(default_factory=dict)
 
@@ -119,7 +119,7 @@ def project_preference_command(
     business_progress: str | None = None,
 ) -> CreateMemoryCommand:
     return CreateMemoryCommand(
-        scenario="project-work",
+        profile_id="project-work",
         subject="weekly-report",
         memory_type="preference",
         content="项目周报默认使用表格",

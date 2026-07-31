@@ -14,14 +14,14 @@ import httpx
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from pydantic import SecretStr
-
+from memory_mcp.app import create_memory_mcp_server
 from memory_mcp.core import AssertionKind, ExpressionBasis
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.scenarios import GeneralWorkPolicy
-from memory_mcp.server.app import create_memory_mcp_server
-from memory_mcp.server.settings import MemoryServerSettings
+from memory_mcp.profiles import GeneralWorkProfile
+from memory_mcp.settings import MemoryServerSettings
+from pydantic import SecretStr
+
 from tests.support.fakes import (
     FakeCandidateExtractor,
     candidate_proposal,
@@ -91,7 +91,7 @@ def _event(
     return {
         "event_id": event_id,
         "contract_version": contract_version,
-        "scenario": "general-work",
+        "profile_id": "general-work",
         "conversation_id": "conversation-1",
         "turn_id": "turn-1",
         "observed_at": _OBSERVED_AT,
@@ -145,7 +145,7 @@ def _running_server(
     settings = _settings(port)
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [GeneralWorkPolicy()],
+        [GeneralWorkProfile()],
         candidate_extractor=extractor,
     )
     mcp_server = create_memory_mcp_server(
@@ -368,7 +368,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     await session.call_tool(
                         "recall_memory",
                         arguments={
-                            "scenario": "general-work",
+                            "profile_id": "general-work",
                             "query": "周报 要点",
                             "subject": "weekly-report",
                         },
@@ -420,7 +420,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     await session.call_tool(
                         "recall_memory",
                         arguments={
-                            "scenario": "general-work",
+                            "profile_id": "general-work",
                             "query": "项目周报 表格",
                         },
                     )

@@ -2,7 +2,6 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
-
 from memory_mcp.core import (
     AdmissionDecision,
     AssertionKind,
@@ -18,10 +17,11 @@ from memory_mcp.core import (
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
+
 from tests.support.fakes import (
-    AlternateScenarioPolicy,
+    AlternateMemoryProfile,
     FakeCandidateExtractor,
-    TestScenarioPolicy,
+    TestMemoryProfile,
     candidate_proposal,
 )
 
@@ -69,7 +69,7 @@ def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> Non
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
@@ -86,7 +86,7 @@ def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> Non
     assert result.metadata.model_id == "fake-structured-model"
     assert result.metadata.prompt_version == "capture-prompt-v1"
     assert result.metadata.schema_version == "candidate-v1"
-    assert result.metadata.policy_version == "project-work-v1"
+    assert result.metadata.profile_version == "project-work-v1"
     assert extractor.requests[0].allowed_memory_types == {
         "preference",
         "ongoing_item",
@@ -132,7 +132,7 @@ def test_sensitive_text_is_redacted_before_model_and_never_persisted(
     repository = InMemoryMemoryRepository()
     service = create_memory_service(
         repository,
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
 
@@ -163,11 +163,11 @@ def test_subject_hint_is_redacted_before_extraction() -> None:
     extractor = FakeCandidateExtractor()
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     turn = TurnEnvelope(
-        scenario="project-work",
+        profile_id="project-work",
         conversation_id="conversation-1",
         source_turn_id="turn-1",
         content="这是一段安全输入。",
@@ -201,7 +201,7 @@ def test_capture_is_idempotent_without_duplicate_state() -> None:
     repository = InMemoryMemoryRepository()
     service = create_memory_service(
         repository,
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
 
@@ -229,7 +229,7 @@ def test_sensitive_model_output_is_blocked_before_persistence() -> None:
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
@@ -260,7 +260,7 @@ def test_sensitive_model_metadata_is_blocked_before_persistence(
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
@@ -282,11 +282,11 @@ def test_sensitive_source_metadata_is_blocked_before_persistence() -> None:
     extractor = FakeCandidateExtractor((candidate_proposal(source),))
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     turn = TurnEnvelope(
-        scenario="project-work",
+        profile_id="project-work",
         conversation_id="conversation-1",
         source_turn_id="turn-1",
         content=f"{source}。",
@@ -320,7 +320,7 @@ def test_backend_exception_message_is_not_logged(
 
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=FailingExtractor(),
     )
 
@@ -342,7 +342,7 @@ def test_retryable_failure_is_reprocessed_without_duplicates() -> None:
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
@@ -373,7 +373,7 @@ def test_invalid_model_type_fails_safely_and_is_not_reprocessed() -> None:
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
@@ -412,7 +412,7 @@ def test_pending_confirmation_and_rejection_are_owner_scoped() -> None:
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     analyst_a = PrincipalContext("analyst-a")
@@ -447,7 +447,7 @@ def test_pending_confirmation_and_rejection_are_owner_scoped() -> None:
     assert service.list_pending_reviews(analyst_a) == ()
 
 
-def test_two_scenario_policies_supply_different_extraction_contracts() -> None:
+def test_two_profile_profiles_supply_different_extraction_contracts() -> None:
     class RoutingExtractor(FakeCandidateExtractor):
         def extract(self, request):
             self.requests.append(request)
@@ -464,26 +464,26 @@ def test_two_scenario_policies_supply_different_extraction_contracts() -> None:
     extractor = RoutingExtractor()
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy(), AlternateScenarioPolicy()],
+        [TestMemoryProfile(), AlternateMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
 
     service.capture_turn(
         principal,
-        _turn("保存项目事项。", scenario="project-work", turn_id="turn-1"),
+        _turn("保存项目事项。", profile_id="project-work", turn_id="turn-1"),
     )
     service.capture_turn(
         principal,
-        _turn("保存个人承诺。", scenario="personal-notes", turn_id="turn-2"),
+        _turn("保存个人承诺。", profile_id="personal-notes", turn_id="turn-2"),
     )
 
-    assert extractor.requests[0].policy_version == "project-work-v1"
-    assert extractor.requests[1].policy_version == "personal-notes-v1"
+    assert extractor.requests[0].profile_version == "project-work-v1"
+    assert extractor.requests[1].profile_version == "personal-notes-v1"
     assert extractor.requests[0].allowed_memory_types != (
         extractor.requests[1].allowed_memory_types
     )
-    assert {record.item.scenario for record in service.list_memories(principal)} == {
+    assert {record.item.profile_id for record in service.list_memories(principal)} == {
         "project-work",
         "personal-notes",
     }
@@ -492,11 +492,11 @@ def test_two_scenario_policies_supply_different_extraction_contracts() -> None:
 def _turn(
     content: str,
     *,
-    scenario: str = "project-work",
+    profile_id: str = "project-work",
     turn_id: str = "turn-1",
 ) -> TurnEnvelope:
     return TurnEnvelope(
-        scenario=scenario,
+        profile_id=profile_id,
         conversation_id="conversation-1",
         source_turn_id=turn_id,
         content=content,

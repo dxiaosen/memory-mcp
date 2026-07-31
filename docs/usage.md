@@ -9,10 +9,12 @@
 
 ```text
 Agent Host
+  memory-mcp-agent (Python 3.11+)
   MEMORY_MCP_URL + MEMORY_MCP_TOKEN
        │ BeforeRun / AfterRun
        ▼
 Memory MCP Server
+  memory-mcp (Python 3.14+)
   MEMORY_MCP_DATABASE_*
   MEMORY_MCP_AUTH_*
   MEMORY_MCP_MODEL_*
@@ -22,7 +24,7 @@ Memory MCP Server
 PostgreSQL
 ```
 
-模型候选抽取属于 Server。Agent Host 只知道 MCP 地址和自己的 Token。scenario、
+模型候选抽取属于 Server。Agent Host 只知道 MCP 地址和自己的 Token。`profile_id`、
 Hook 预算、重试和 owner 都不要求用户配置。多个 Agent Host 使用相同的两个变量
 名，但由各自部署环境注入不同值；不存在运行时身份配置选择器。
 
@@ -37,16 +39,21 @@ Hook 预算、重试和 owner 都不要求用户配置。多个 Agent Host 使�
 - 破坏性测试使用名称包含 `test` 的专用可清空 database；
 - 真实模型 provider 的 API key 和 model ID。
 
-安装锁定依赖：
+仓库开发环境安装两个 workspace member 的锁定依赖：
 
 ```bash
-uv sync --frozen
+uv sync --all-packages --frozen
 ```
+
+生产 Server 使用
+`uv sync --frozen --no-dev --package memory-mcp`；远端 Agent Host 只安装
+`memory-mcp-agent` wheel。不要用仓库开发环境的共享 `.venv` 推断生产两端必须
+同机或必须安装同一套依赖。
 
 建立服务端本地配置：
 
 ```bash
-cp .env.example .env
+cp server/.env.example .env
 chmod 600 .env
 ```
 
@@ -56,7 +63,7 @@ chmod 600 .env
 建立一个 Agent Host 配置：
 
 ```bash
-cp examples/.env.example examples/agent.env
+cp agent/.env.example examples/agent.env
 chmod 600 examples/agent.env
 ```
 
@@ -86,6 +93,11 @@ PostgreSQL schema is up to date
 Memory PostgreSQL is healthy
 ```
 
+从旧 `scenario` 命名版本升级时，第一次命令会显示
+`Applied PostgreSQL migrations: 0003_profile_naming.sql`。该 migration 使用表、列
+和索引 rename 原地保留记忆数据；执行成功后工具字段统一为 `profile_id`，旧客户端
+如果仍提交 `scenario` 会被严格 DTO 拒绝，需要与 Server 一起升级。
+
 启动服务：
 
 ```bash
@@ -109,7 +121,8 @@ curl --fail http://127.0.0.1:8765/health
 ```
 
 源码移动、console script 变更或切换分支后，如果入口仍引用旧模块，执行
-`uv sync --frozen` 重建安装。服务支持 Ctrl+C 正常关闭 MCP manager 和数据库池。
+`uv sync --all-packages --frozen` 重建开发安装。服务支持 Ctrl+C 正常关闭 MCP
+manager 和数据库池。
 
 ## 4. 生产形态：真实模型闭环
 
@@ -210,9 +223,9 @@ User B Agent B -> user B / owner B / client agent-b
 自动派生，无需配置。然后分别复制三个文件：
 
 ```bash
-cp examples/.env.example examples/agent-a.env
-cp examples/.env.example examples/agent-b.env
-cp examples/.env.example examples/user-b-agent-b.env
+cp agent/.env.example examples/agent-a.env
+cp agent/.env.example examples/agent-b.env
+cp agent/.env.example examples/user-b-agent-b.env
 chmod 600 examples/agent-a.env examples/agent-b.env examples/user-b-agent-b.env
 ```
 
@@ -257,7 +270,7 @@ chmod 600 examples/agent-a.env examples/agent-b.env examples/user-b-agent-b.env
 
 1. 检查 capture receipt 是否 auto-save，而非 pending/discard/blocked；
 2. 省略 subject 再查询；
-3. 检查 scenario 和服务端 Token 的 tenant/subject 映射；
+3. 检查 `profile_id` 和服务端 Token 的 tenant/subject 映射；
 4. 用 `memories` 命令确认记忆仍为 active/current；
 5. 增加与记忆内容相关的 query/task intent；
 6. 检查 max items 和 token budget。
@@ -287,6 +300,14 @@ async def call_agent(
 一个 Agent 进程从自己的环境加载配置：
 
 ```python
+from memory_mcp_agent import (
+    HookContext,
+    HookedAgentRunner,
+    MemoryHookBridge,
+    MemoryHookSettings,
+    MemoryMcpClient,
+)
+
 settings = MemoryHookSettings()
 
 async with MemoryMcpClient(settings) as client:
@@ -294,7 +315,7 @@ async with MemoryMcpClient(settings) as client:
     runner = HookedAgentRunner(bridge, call_agent)
     result = await runner.run(
         HookContext(
-            scenario=settings.scenario,
+            profile_id=settings.profile_id,
             conversation_id=conversation_id,
             turn_id=unique_top_level_turn_id,
             subject=subject,
@@ -376,7 +397,7 @@ Key、provider 异常正文和敏感规则拦截的原文在任何模式下都�
 .venv/bin/python examples/client.py \
   --env-file examples/agent.env \
   recall \
-  --scenario general-work \
+  --profile-id general-work \
   --query '项目周报偏好'
 ```
 
@@ -400,15 +421,16 @@ systemd、migration、发布和回滚见[部署指南](deploy.md)。
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| console script import 已删除模块 | 执行 `uv sync --frozen` 重建 `.venv` 安装 |
+| 开发环境 console script 引用旧模块 | 执行 `uv sync --all-packages --frozen` 重建 `.venv` |
+| Agent Host 找不到 Hook 命令 | 只安装版本化 `memory-mcp-agent` wheel，并把 `uv tool dir --bin` 加入 `PATH` |
 | DSN host 前多出 `@` | 密码中的 `@` 未编码；改为 `%40` |
 | 服务启动提示 model name/key 缺失 | 生产 backend 是真实模型；补齐 `MEMORY_MCP_MODEL_*` |
-| `invalid_candidate_output` | 模型违反 schema、原文 Evidence 或场景类型 |
+| `invalid_candidate_output` | 模型违反 schema、原文 Evidence 或当前 profile 类型 |
 | `reprocess_required` | 模型或 Repository 暂时失败；故障恢复后可复用相同 event |
 | `not_authorized` / `forbidden` | Agent Token 未映射或 scope 不足 |
-| 同 owner 召回为 0 | 先去掉 subject，再检查 save/pending/scenario/query |
+| 同 owner 召回为 0 | 先去掉 subject，再检查 save/pending/profile_id/query |
 | 不同 owner 召回到数据 | 严重隔离问题；立即停止验收并检查 Principal 映射 |
-| run key reused conflict | 相同 scenario/conversation/turn 被不同 payload 复用；生成新 turn ID |
+| run key reused conflict | 相同 profile_id/conversation/turn 被不同 payload 复用；生成新 turn ID |
 | AfterRun 变慢 | 真实模型 capture 位于关键路径；可响应后调度，可靠投递需求再引入 durable queue |
 | 日志出现正文 | 检查 `MEMORY_MCP_LOG_CONTENT`；关闭并清理已有内容日志 |
 | 日志出现 Secret 或被拦截原文 | 违反日志契约；停止运行、轮换 Secret 并修复日志边界 |

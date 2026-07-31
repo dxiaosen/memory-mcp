@@ -1,0 +1,25 @@
+# Memory MCP Agent
+
+`memory-mcp-agent` 是远程 Memory MCP Server 的轻量主动记忆客户端。
+
+安装后只提供 `memory-mcp-hook` 和 `memory_mcp_agent` Python API，不包含服务端、
+PostgreSQL、LangChain、模型 Provider、ASGI Server 或数据库迁移命令。要求
+Python 3.11+，运行时只配置：
+
+```dotenv
+MEMORY_MCP_URL=https://memory.example.com/mcp
+MEMORY_MCP_TOKEN=<该 Agent Host 的 Bearer Token>
+```
+
+安装 wheel：
+
+```bash
+uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+command -v memory-mcp-hook
+```
+
+Python Framework 直接集成时安装同一个发行包，然后从 `memory_mcp_agent` 导入
+`MemoryMcpClient`、`MemoryHookBridge` 和 `HookedAgentRunner`。
+
+完整配置和 Codex、Claude Code、通用宿主接入步骤见源码仓库
+`docs/agents.md`。

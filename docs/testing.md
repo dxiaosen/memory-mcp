@@ -15,6 +15,7 @@
 | PostgreSQL contract | 真实 PostgreSQL | Fake | 部分无 | 专用测试库 |
 | PostgreSQL transport E2E | 真实 PostgreSQL | fixed | 真实 HTTP + MCP Client | 专用测试库 |
 | Agent Host adapter | InMemory/真实 MCP | Fake | 通用/Codex/Claude Hook JSON + 真实 HTTP | 无 |
+| Agent distribution | 无 | 无 | Python 3.11 隔离 wheel/console smoke | 无 |
 | real-model E2E | 真实 PostgreSQL | 真实 provider | 真实服务 + 独立 Agent 配置 | 测试库 + 模型 API |
 
 重要边界：
@@ -29,6 +30,7 @@
 ## 2. 日常本地检查
 
 ```bash
+uv sync --all-packages --frozen
 .venv/bin/python -m pytest -q
 uv run ruff format --check .
 uv run ruff check .
@@ -41,13 +43,13 @@ openspec-cn validate add-agent-active-memory --strict
 而不是读取 `.env` 后静默清库。2026-07-31 主动记忆实现后的本地结果为：
 
 ```text
-105 passed, 6 skipped
+109 passed, 6 skipped
 ```
 
 ## 3. PostgreSQL 安全前置检查
 
 外部测试会迁移数据库并执行
-`TRUNCATE TABLE memory_scenarios CASCADE`。必须满足：
+`TRUNCATE TABLE memory_profiles CASCADE`。必须满足：
 
 1. database 名称明确包含 `test`；
 2. 是允许清空的专用测试库；
@@ -62,8 +64,9 @@ openspec-cn validate add-agent-active-memory --strict
 .venv/bin/memory-mcp-db health
 ```
 
-若刚修改过 console script、移动模块或切换分支，先执行 `uv sync --frozen`，否则
-`.venv/bin/memory-mcp*` 可能仍引用旧安装产物。
+若刚修改过 console script、移动模块或切换分支，先执行
+`uv sync --all-packages --frozen`，否则 `.venv/bin/memory-mcp*` 可能仍引用旧
+安装产物。该命令明确同步 Server 与 Agent 两个 workspace member。
 
 测试代码只识别 `MEMORY_MCP_TEST_DATABASE_URL`。如果 `.env` 的
 `MEMORY_MCP_DATABASE_URL` 本身就是专用测试库，可用 Python 在同一进程安全映射，
@@ -100,7 +103,8 @@ health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭
 - replacement revision、current 唯一性、history 和 inactive 状态；
 - pending confirm/reject 的 owner 隔离和原子状态变化；
 - reprocess-required 后使用相同 event 继续处理；
-- schema migration 顺序、checksum、必需表和约束健康检查；
+- schema migration 顺序、checksum、必需表和约束健康检查，包括保留历史 checksum
+  的 `0003_profile_naming.sql`；
 - 进程重启后记忆仍可召回。
 
 ### 4.2 MCP transport
@@ -145,6 +149,39 @@ health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭
 - Hook 首选两个 `MEMORY_MCP_*` 连接变量并兼容旧名称，不从根目录 `.env`
   隐式加载其他 Agent 凭据；
 - 内置 Codex/Claude Code 配置模板只注册顶层事件且不包含地址或 Token。
+
+### 4.5 发行包隔离
+
+自动化依赖守卫会扫描两个源码树：
+
+- `server/src/memory_mcp` 不得导入 `memory_mcp_agent`；
+- `agent/src/memory_mcp_agent` 的第三方 import 只允许 `httpx`、
+  `pydantic` 和 `pydantic_settings`；
+- Server console scripts 只有 `memory-mcp`、`memory-mcp-db`；
+- Agent console script 只有 `memory-mcp-hook`；
+- Server production dependencies 不包含 Agent distribution。
+
+发布前还要构建真实 wheel 并在空 Python 3.11 环境安装：
+
+```bash
+uv build --package memory-mcp-agent --wheel
+uv venv /tmp/memory-mcp-agent-wheel --python 3.11
+uv pip install \
+  --python /tmp/memory-mcp-agent-wheel/bin/python \
+  dist/memory_mcp_agent-0.1.0-py3-none-any.whl
+```
+
+隔离环境必须满足：
+
+- `import memory_mcp_agent` 成功；
+- `memory-mcp-hook` 可执行；
+- `memory-mcp` 和 `memory-mcp-db` 不存在；
+- `memory_mcp`、`mcp`、`psycopg`、`langchain_core` 均不可导入；
+- 安装闭包只有 Agent wheel 及 HTTP/Pydantic 的传递依赖。
+
+真实 HTTP transport 用例再从该逻辑 Client 调用 Server，验证 initialize、认证、
+`recall_memory`、`capture_completed_turn`、Codex/Claude 字段归一化和 owner 隔离。
+这两类证据共同避免“wheel 看起来轻量，但运行仍偷用仓库 Server”的假隔离。
 
 ## 5. fixed 注入的自动化 PostgreSQL E2E
 
@@ -204,7 +241,7 @@ named `tool_choice`。该行为有单元测试，且本轮已用真实 API 验�
 
 - 返回值能解析为 `CandidateBatch`；
 - 每个 `source_expression` 是输入的连续子串；
-- memory type 属于场景允许集合；
+- memory type 属于当前记忆配置允许集合；
 - capture 为 completed/reprocess-required 等已知状态；
 - auto-save/pending/discard/blocked 符合保守准入边界；
 - owner 共享和隔离结果正确；

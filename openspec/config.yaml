@@ -4,7 +4,7 @@ context: |
   Product: platform-independent, owner-scoped long-term memory MCP service.
   Stack: Python 3.14, uv, MCP Python SDK, Pydantic, psycopg, PostgreSQL.
   Package: memory_mcp; Memory Core lives under memory_mcp.core and the
-  authenticated transport/composition boundary lives under memory_mcp.server.
+  authenticated transport/composition boundary lives under memory_mcp.
   Architecture: domain/application/ports do not depend on MCP, HTTP, database
   drivers, Agent SDKs, or runtime settings. PostgreSQL is the deployed authority;
   the SQLite prototype was removed after contract acceptance.

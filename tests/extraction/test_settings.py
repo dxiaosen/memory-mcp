@@ -1,7 +1,6 @@
 import pytest
-from pydantic import ValidationError
-
 from memory_mcp.extraction.settings import ExtractionSettings
+from pydantic import ValidationError
 
 
 def _valid_settings(**overrides: object) -> ExtractionSettings:

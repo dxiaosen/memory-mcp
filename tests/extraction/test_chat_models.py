@@ -1,6 +1,5 @@
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
-
 from memory_mcp.extraction.chat_models import create_chat_model
 from memory_mcp.extraction.settings import ExtractionSettings
 

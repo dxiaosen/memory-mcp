@@ -14,13 +14,13 @@ import pytest
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from pydantic import SecretStr
-
+from memory_mcp.app import create_memory_mcp_server
 from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 from memory_mcp.core.ports import CandidateExtractor
 from memory_mcp.extraction.backends import SCHEMA_VERSION, FixedCandidateBackend
-from memory_mcp.server.app import create_memory_mcp_server
-from memory_mcp.server.settings import MemoryServerSettings
+from memory_mcp.settings import MemoryServerSettings
+from pydantic import SecretStr
+
 from tests.support.fakes import FakeCandidateExtractor, candidate_proposal
 
 _DATABASE_ENV = "MEMORY_MCP_TEST_DATABASE_URL"
@@ -61,7 +61,7 @@ def _event() -> dict[str, object]:
     return {
         "event_id": "postgresql-event-1",
         "contract_version": "1",
-        "scenario": "general-work",
+        "profile_id": "general-work",
         "conversation_id": "postgresql-conversation",
         "turn_id": "postgresql-turn-1",
         "observed_at": datetime(2026, 7, 30, 10, tzinfo=UTC).isoformat(),
@@ -201,7 +201,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
                         await session.call_tool(
                             "recall_memory",
                             arguments={
-                                "scenario": "general-work",
+                                "profile_id": "general-work",
                                 "query": "项目周报 表格",
                                 "subject": "weekly-report",
                             },
@@ -219,7 +219,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
                         await session.call_tool(
                             "recall_memory",
                             arguments={
-                                "scenario": "general-work",
+                                "profile_id": "general-work",
                                 "query": "项目周报 表格",
                             },
                         )
@@ -244,7 +244,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
                         await session.call_tool(
                             "recall_memory",
                             arguments={
-                                "scenario": "general-work",
+                                "profile_id": "general-work",
                                 "query": "项目周报 表格",
                                 "subject": "weekly-report",
                             },
@@ -269,7 +269,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
             pytest.fail(f"{_DATABASE_ENV} must select a disposable test database")
 
     from memory_mcp.core.adapters.postgresql.schema import apply_migrations
-    from memory_mcp.hooks import (
+    from memory_mcp_agent import (
         HookContext,
         HookedAgentRunner,
         MemoryHookBridge,
@@ -324,7 +324,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
             ),
         )
 
-    async def scenario(url: str) -> None:
+    async def profile_id(url: str) -> None:
         first_client, first_runner = runner(url, _OWNER_A_AGENT_A_TOKEN)
         async with first_client:
             first = await first_runner.run(
@@ -371,11 +371,11 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
             database_url,
             fixed_candidates_payload=fixed_candidates_payload,
         ) as url:
-            anyio.run(scenario, url)
+            anyio.run(profile_id, url)
     finally:
         _truncate(database_url)
 
 
 def _truncate(database_url: SecretStr) -> None:
     with _connect_safely(database_url) as connection:
-        connection.execute("TRUNCATE TABLE memory_scenarios CASCADE")
+        connection.execute("TRUNCATE TABLE memory_profiles CASCADE")

@@ -1,7 +1,6 @@
 from datetime import UTC, datetime
 
 import pytest
-
 from memory_mcp.core import (
     AssertionKind,
     CandidateDurability,
@@ -89,12 +88,12 @@ def test_sensitive_guard_redacts_configured_prohibited_content(
 
 def _request() -> ExtractionRequest:
     return ExtractionRequest(
-        scenario="project-work",
+        profile_id="project-work",
         conversation_id="conversation-1",
         source_turn_id="turn-1",
         content="以后项目周报默认用表格",
         observed_at=datetime(2026, 7, 29, tzinfo=UTC),
         allowed_memory_types=frozenset({"preference"}),
         capture_guidance="Capture durable preference.",
-        policy_version="policy-v1",
+        profile_version="profile-v1",
     )

@@ -1,0 +1,18 @@
+[project]
+name = "memory-mcp-agent"
+version = "0.1.0"
+description = "Lightweight active-memory Hook client for remote Memory MCP servers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.5,<3",
+]
+
+[project.scripts]
+memory-mcp-hook = "memory_mcp_agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"

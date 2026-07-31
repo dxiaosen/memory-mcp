@@ -3,7 +3,7 @@
 ### Requirement: Accept completed turns through MCP
 The system SHALL expose a versioned `capture_completed_turn` MCP tool for Agent
 AfterRun Hooks. The tool MUST accept an explicit contract version, stable event
-identifier, scenario, conversation, turn, observation time, and role-labeled message
+identifier, `profile_id`, conversation, turn, observation time, and role-labeled message
 blocks. The tool MUST NOT accept a memory owner identifier.
 
 #### Scenario: Agent Hook submits a successful turn
@@ -48,7 +48,7 @@ user view.
 ### Requirement: Discover atomic durable candidates
 The system SHALL inspect each submitted completed turn for atomic information with
 plausible value beyond the current task. Candidate discovery MUST use the active
-ScenarioPolicy and MUST NOT require the user to say “remember this”.
+MemoryProfile and MUST NOT require the user to say “remember this”.
 
 #### Scenario: One turn contains multiple durable items
 - **WHEN** a user clearly states a stable project convention, a durable preference, and an ongoing item in one turn
@@ -88,7 +88,7 @@ or `blocked`. Ambiguous statements, system inferences, unclear conflicts, and un
 replacement MUST remain pending and MUST NOT be recalled before confirmation.
 
 #### Scenario: Clear durable user statement
-- **WHEN** a user clearly states a durable preference or ongoing matter allowed by the active scenario
+- **WHEN** a user clearly states a durable preference or ongoing matter allowed by the active MemoryProfile
 - **THEN** the system may save it as active memory
 - **AND** the capture receipt reports an auto-save outcome
 
@@ -142,7 +142,7 @@ results, exception messages, or logs.
 - **AND** neither storage nor operational logs contain the prohibited text
 
 ### Requirement: Process completed-turn events idempotently
-Reprocessing the same owner, scenario, event identifier, and policy version with the
+Reprocessing the same owner, `profile_id`, event identifier, and `profile_version` with the
 same payload MUST return the original logical result without creating duplicate
 memories, evidence, or pending items. Reusing the event identifier with a different
 payload MUST fail with `idempotency_conflict`.
@@ -153,7 +153,7 @@ payload MUST fail with `idempotency_conflict`.
 - **AND** no duplicate state is created
 
 #### Scenario: Two retries overlap in time
-- **WHEN** two requests for the same owner, scenario, event, policy version, and payload overlap
+- **WHEN** two requests for the same owner, `profile_id`, event, `profile_version`, and payload overlap
 - **THEN** at most one request performs candidate extraction and commits the logical result
 - **AND** both callers observe the committed result rather than a database-constraint error
 
@@ -168,7 +168,7 @@ payload MUST fail with `idempotency_conflict`.
 - **AND** it does not submit a second ambiguous event
 
 ### Requirement: Run AfterRun asynchronously without requiring a queue
-The Hook SDK SHALL expose AfterRun as an asynchronous operation so network I/O does not
+The Agent Hook Client SHALL expose AfterRun as an asynchronous operation so network I/O does not
 block the Agent event loop. The default Runner MUST await the structured capture receipt
 before declaring its wrapped run complete. The single-process MVP MUST NOT require an
 external message queue; a Host MAY schedule the coroutine after emitting the final user
@@ -186,7 +186,7 @@ event identifier.
 - **AND** documentation states that an in-process background task is not a durable queue
 
 ### Requirement: Return a structured capture receipt
-The capture tool SHALL return capture status, replay state, policy version, decision
+The capture tool SHALL return capture status, replay state, `profile_version`, decision
 counts, created memory identifiers, pending review identifiers, and a stable failure
 code when applicable. Discarded and blocked outcomes MUST NOT expose candidate content.
 

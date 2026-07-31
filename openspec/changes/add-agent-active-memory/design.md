@@ -33,6 +33,8 @@ Codex 当前只执行 command 类型 Hook；Claude Code 虽支持直接 `mcp_too
 
 - 一个 `memory-mcp-hook` 命令处理通用顶层轮次合同，并自动归一化首批两个宿主的
   command Hook 字段。
+- Hook Client 作为独立轻量发行物安装，不把数据库、模型或 Server 运行依赖带到
+  Agent Host。
 - 宿主输入解析、主动记忆执行和宿主输出渲染彼此分离，使后续 Agent 只新增薄映射。
 - Agent 使用者只必须提供 `MEMORY_MCP_URL` 与 `MEMORY_MCP_TOKEN`。
 - Before 阶段在模型请求前完成召回和安全上下文注入。
@@ -47,7 +49,7 @@ Codex 当前只执行 command 类型 Hook；Claude Code 虽支持直接 `mcp_too
 - 不引入消息队列、后台 worker、数据库表或 migration。
 - 不解析不稳定的 Codex/Claude transcript 格式。
 - 不支持会继续主轮次的其他 `Stop` Hook 与本 Hook 之间的跨 Hook 协调。
-- 不把 scenario 变成按提示分类的模型推断结果。
+- 不把 `profile_id` 变成按提示分类的模型推断结果。
 
 ## Decisions
 
@@ -100,7 +102,7 @@ MEMORY_MCP_TOKEN
 
 `MemoryHookSettings` 使用显式环境别名兼容现有
 `MEMORY_HOOK_MCP_URL`/`MEMORY_HOOK_BEARER_TOKEN`。其余参数继续保留代码默认值，
-只作为高级调优项，不进入快速开始配置。scenario 固定默认
+只作为高级调优项，不进入快速开始配置。`profile_id` 固定默认
 `general-work`；MCP 工具参数也提供同一默认值。
 
 服务端 `MEMORY_MCP_*` 配置与 Agent Host 在不同进程中加载。服务端 settings
@@ -144,7 +146,7 @@ MEMORY_MCP_TOKEN
 HookContext(
   conversation_id=session_id,
   turn_id=turn_id 或 prompt_id,
-  scenario=general-work
+  profile_id=general-work
 )
 ```
 
@@ -192,6 +194,39 @@ Before 有记忆时输出：
 stderr/日志文件。配置错误与非 fail-open 错误由 CLI 转换为不含内容或 Secret 的
 `systemMessage`，但默认不阻止 Agent 主任务。
 
+### 8. Server 与 Agent 使用两个发行包
+
+仓库使用一个 uv workspace 管理两个独立 Python distribution：
+
+```text
+server/
+└── memory-mcp              # memory_mcp：Core、transport、storage、extraction
+
+agent/
+└── memory-mcp-agent        # memory_mcp_agent：client、bridge、hosts、state、cli
+```
+
+`memory-mcp-agent` 只依赖 HTTP Client、Pydantic 和 Pydantic Settings，并独立
+提供 `memory-mcp-hook`。它内置仅覆盖 `initialize`、`notifications/initialized`
+与 `tools/call` 的最小 MCP Streamable HTTP JSON-RPC 客户端；该客户端和 Server
+固定启用的 JSON response 模式一起做真实 HTTP 集成测试，不引入包含 ASGI Server、
+OAuth/JWT 等服务端能力的完整 MCP SDK。它不得依赖或导入
+LangChain、模型 Provider、psycopg、Server settings、数据库 migration 或 Memory
+Core。Server 发行包不再提供 Hook CLI，也不把 Agent 包作为生产依赖。
+
+不发布的根 virtual workspace 通过开发依赖引用两个 member，使统一测试仍可覆盖 Server 与 Agent
+真实 HTTP/MCP 集成。发布和部署必须按发行物选择：
+
+- Server：安装 `memory-mcp`；
+- Agent Host：只安装 `memory-mcp-agent`；
+- 开发仓库：`uv sync --all-packages` 同步两个 member。
+
+选择独立 distribution 而不是 root package extra，是因为 extra 仍会把服务端模块
+和无效的 Server console scripts 安装到 Agent 环境，并容易让操作者误以为 Agent
+需要数据库配置。选择 Python 包而不是立即冻结单文件二进制，是为了保留跨平台
+安装、依赖安全更新和可调试性；后续可以在不改变 CLI 合同的前提下额外发布二进制
+或宿主插件。
+
 ## Risks / Trade-offs
 
 - **[本地状态短暂包含用户 prompt]** → 权限收紧、摘要文件名、原子写入、成功后
@@ -207,16 +242,20 @@ stderr/日志文件。配置错误与非 fail-open 错误由 CLI 转换为不含
   block/continue 决策。
 - **[新旧环境变量并存且值冲突]** → 新名称优先，测试覆盖优先级，日志只报告
   配置来源类别而不报告值。
+- **[workspace 拆包后 import 或发布漂移]** → Agent 单元测试从独立包导入，构建
+  wheel 后在隔离环境检查依赖元数据、console script 和禁止的服务端模块。
 
 ## Migration Plan
 
-1. 发布包含 `memory-mcp-hook` 的 Python 包，服务端可先于宿主配置部署。
+1. 先发布 Server 包，再构建并发布独立 `memory-mcp-agent` 包。
 2. Agent 进程设置 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；现有
    `MEMORY_HOOK_*` 配置无需立即迁移。
-3. 在 Codex 或 Claude Code 中注册相同命令，检查 Hook 信任/加载状态。
+3. Agent Host 只安装 `memory-mcp-agent`，注册其提供的相同命令并检查
+   Hook 信任/加载状态。
 4. 先用一个测试 owner 完成“偏好声明 → 下一轮召回”闭环，再逐步启用其他用户。
 5. 回滚只需移除/禁用宿主 Hook；手工 MCP 工具和服务端数据保持可用。
 
 ## Open Questions
 
-无阻塞问题。跨宿主插件式自动安装和可靠异步 After 属于后续独立变更。
+无阻塞问题。跨宿主插件式自动安装、单文件二进制和可靠异步 After 属于后续独立
+变更。

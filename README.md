@@ -12,6 +12,7 @@ PostgreSQL 持久化由服务端统一负责。
 - 七个带认证和 scope 的 MCP 工具；
 - owner-first recall 和安全 rendered context；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
+- 独立轻量 `memory-mcp-agent` 发行包，Agent Host 不安装数据库、模型或 Server；
 - 真实 OpenAI-compatible/DeepSeek 结构化抽取，以及测试注入的确定性候选；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
@@ -21,13 +22,17 @@ PostgreSQL 持久化由服务端统一负责。
 
 ## 快速开始
 
-项目要求 Python 3.14 和 [uv](https://docs.astral.sh/uv/)。
+Server 开发环境要求 Python 3.14 和 [uv](https://docs.astral.sh/uv/)；独立 Agent
+发行包只要求 Python 3.11+。
 
 ```bash
-uv sync --frozen
-cp .env.example .env
+uv sync --all-packages --frozen
+cp server/.env.example .env
 chmod 600 .env
 ```
+
+`--all-packages` 只用于仓库开发和完整测试，会把 Server 与 Agent 两个 workspace
+member 同步到同一个 `.venv`。生产 Server 与远端 Agent 应分别安装各自的发行物。
 
 编辑服务端 `.env`，至少替换：
 
@@ -38,14 +43,25 @@ chmod 600 .env
 再为一个 Agent Host 建立独立配置：
 
 ```bash
-cp examples/.env.example examples/agent.env
+cp agent/.env.example examples/agent.env
 chmod 600 examples/agent.env
 ```
 
 Agent Host 只填写 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；Token 必须与服务端
-Token 映射中的一枚 key 完全相同。scenario、owner、超时、预算和重试无需用户
+Token 映射中的一枚 key 完全相同。`profile_id`、owner、超时、预算和重试无需用户
 配置。生产部署应通过 Secret Manager、systemd
 `EnvironmentFile` 或编排平台注入，而不是长期保留在项目目录。
+
+Agent 不与 Server 同机时，只需安装轻量 Agent wheel：
+
+```bash
+uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+command -v memory-mcp-hook
+```
+
+该环境只有 Hook Client 及 HTTP/配置依赖，不包含 `memory-mcp`、
+`memory-mcp-db`、PostgreSQL、LangChain 或模型 Provider。构建 wheel 和各宿主配置
+见[Agent 主动记忆接入](docs/agents.md)。
 
 然后：
 
@@ -92,7 +108,8 @@ PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身
 要让 Agent 每轮自动召回和捕获，而不是等待模型自行选择 MCP 工具，请继续阅读
 [Agent 主动记忆接入](docs/agents.md)。`memory-mcp-hook` 接受通用
 BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置示例位于
-`examples/agents/`。
+`examples/agents/`。MCP Server 不能远程安装宿主 Hook；Agent Host 仍要一次性安装
+轻量命令并注册 Hook，但运行配置始终只有地址和 Token。
 
 ## MCP 工具
 

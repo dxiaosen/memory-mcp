@@ -13,9 +13,10 @@ from memory_mcp.logging import (
     log_event,
     stable_reference,
 )
+
 from tests.support.fakes import (
     FakeCandidateExtractor,
-    TestScenarioPolicy,
+    TestMemoryProfile,
     candidate_proposal,
 )
 
@@ -92,7 +93,7 @@ def test_content_logging_is_explicit_and_traces_capture_and_recall(
         assert content_logging_enabled() is True
         service = create_memory_service(
             InMemoryMemoryRepository(),
-            [TestScenarioPolicy()],
+            [TestMemoryProfile()],
             candidate_extractor=FakeCandidateExtractor(
                 (
                     candidate_proposal(
@@ -106,7 +107,7 @@ def test_content_logging_is_explicit_and_traces_capture_and_recall(
         service.capture_turn(
             principal,
             TurnEnvelope(
-                scenario="project-work",
+                profile_id="project-work",
                 conversation_id="run-a",
                 source_turn_id="run-a-1",
                 content=f"密码是 {secret}。{safe_expression}。",
@@ -116,7 +117,7 @@ def test_content_logging_is_explicit_and_traces_capture_and_recall(
         service.recall_memory(
             principal,
             RecallQuery(
-                scenario="project-work",
+                profile_id="project-work",
                 query=f"密码是 {secret}。项目周报 表格",
                 subject="weekly-report",
             ),

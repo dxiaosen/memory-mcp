@@ -3,29 +3,29 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
-
 from memory_mcp.core import (
+    InvalidMemoryProfileError,
     InvalidMemoryTypeError,
-    InvalidScenarioPolicyError,
-    InvalidScenarioProgressError,
+    InvalidProfileProgressError,
     LifecycleStatus,
     MemoryNotFoundError,
     MemoryService,
     PrincipalContext,
-    ScenarioNotRegisteredError,
-    ScenarioRegistry,
+    ProfileNotRegisteredError,
+    ProfileRegistry,
     SensitiveContentBlockedError,
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.composition import create_memory_service
-from tests.support.fakes import TestScenarioPolicy, project_preference_command
+
+from tests.support.fakes import TestMemoryProfile, project_preference_command
 
 
 def _service():
     return create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
     )
 
 
@@ -37,7 +37,7 @@ def test_manual_create_preserves_owner_source_kind_and_current_state() -> None:
 
     assert isinstance(record.item.memory_id, UUID)
     assert record.item.owner_id == "analyst-a"
-    assert record.item.scenario == "project-work"
+    assert record.item.profile_id == "project-work"
     assert record.item.memory_type == "preference"
     assert record.current_revision.content == "项目周报默认使用表格"
     assert record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
@@ -89,7 +89,7 @@ def test_repository_rejects_record_owned_by_a_different_principal() -> None:
         project_preference_command(),
     )
     repository = InMemoryMemoryRepository()
-    repository.register_scenario(TestScenarioPolicy())
+    repository.register_profile(TestMemoryProfile())
 
     with pytest.raises(ValueError, match="trusted principal"):
         repository.add(analyst_b, record)
@@ -111,13 +111,13 @@ def test_current_list_excludes_inactive_memory_but_history_can_include_it() -> N
     assert history[0].current_revision.lifecycle_status is LifecycleStatus.SUPERSEDED
 
 
-def test_unregistered_scenario_and_invalid_type_fail_safely() -> None:
+def test_unregistered_profile_and_invalid_type_fail_safely() -> None:
     service = _service()
     principal = PrincipalContext("analyst-a")
     unregistered = project_preference_command()
-    object.__setattr__(unregistered, "scenario", "missing")
+    object.__setattr__(unregistered, "profile_id", "missing")
 
-    with pytest.raises(ScenarioNotRegisteredError):
+    with pytest.raises(ProfileNotRegisteredError):
         service.create_memory(principal, unregistered)
 
     invalid_type = project_preference_command()
@@ -126,11 +126,11 @@ def test_unregistered_scenario_and_invalid_type_fail_safely() -> None:
         service.create_memory(principal, invalid_type)
 
 
-def test_invalid_business_progress_is_rejected_by_scenario() -> None:
+def test_invalid_business_progress_is_rejected_by_profile() -> None:
     service = _service()
     principal = PrincipalContext("analyst-a")
 
-    with pytest.raises(InvalidScenarioProgressError):
+    with pytest.raises(InvalidProfileProgressError):
         service.create_memory(
             principal,
             project_preference_command(business_progress="unsupported"),
@@ -149,29 +149,29 @@ def test_manual_create_cannot_bypass_sensitive_persistence_guard() -> None:
     assert service.list_memories(principal) == ()
 
 
-def test_malformed_scenario_policy_is_rejected_before_use() -> None:
+def test_malformed_profile_policy_is_rejected_before_use() -> None:
     service = create_memory_service(InMemoryMemoryRepository(), [])
 
-    with pytest.raises(InvalidScenarioPolicyError):
-        service.register_scenario(TestScenarioPolicy(scenario_id=" project-work "))
+    with pytest.raises(InvalidMemoryProfileError):
+        service.register_profile(TestMemoryProfile(profile_id=" project-work "))
 
 
 def test_repository_registration_failure_does_not_mutate_registry() -> None:
-    class FailingScenarioRepository(InMemoryMemoryRepository):
-        def register_scenario(self, policy: TestScenarioPolicy) -> None:
+    class FailingProfileRepository(InMemoryMemoryRepository):
+        def register_profile(self, profile: TestMemoryProfile) -> None:
             raise RuntimeError("database unavailable")
 
-    registry = ScenarioRegistry()
+    registry = ProfileRegistry()
     service = MemoryService(
-        FailingScenarioRepository(),
+        FailingProfileRepository(),
         registry,
         sensitive_guard=RegexSensitiveContentGuard(),
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
-        service.register_scenario(TestScenarioPolicy())
+        service.register_profile(TestMemoryProfile())
 
-    assert registry.scenario_ids == frozenset()
+    assert registry.profile_ids == frozenset()
 
 
 def test_record_without_source_evidence_is_invalid() -> None:
@@ -212,11 +212,11 @@ def test_created_timestamps_are_timezone_aware() -> None:
     repository = InMemoryMemoryRepository()
     service = MemoryService(
         repository,
-        ScenarioRegistry(),
+        ProfileRegistry(),
         sensitive_guard=RegexSensitiveContentGuard(),
         clock=lambda: fixed_now,
     )
-    service.register_scenario(TestScenarioPolicy())
+    service.register_profile(TestMemoryProfile())
 
     record = service.create_memory(
         PrincipalContext("analyst-a"),

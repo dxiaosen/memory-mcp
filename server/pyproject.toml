@@ -1,0 +1,27 @@
+[project]
+name = "memory-mcp"
+version = "0.1.0"
+description = "An owner-scoped long-term memory service exposed through MCP"
+readme = "README.md"
+authors = [
+    { name = "duanxiaosen", email = "duanxiaosen@chinaamc.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "langchain-core>=1.5.1",
+    "langchain-deepseek>=1.1.0",
+    "langchain-openai>=1.4.1",
+    "mcp==1.29.0",
+    "psycopg[binary,pool]>=3.3.4,<4",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+memory-mcp = "memory_mcp.app:main"
+memory-mcp-db = "memory_mcp.db:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"

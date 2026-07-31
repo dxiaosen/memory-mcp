@@ -14,7 +14,7 @@ _FORBIDDEN_CORE_DEPENDENCIES = {
     "starlette",
     "uvicorn",
     "memory_mcp.extraction",
-    "memory_mcp.server",
+    "memory_mcp",
 }
 _FORBIDDEN_CORE_TYPE_CONSTANTS = {
     "hypothesis",
@@ -26,7 +26,7 @@ _FORBIDDEN_CORE_TYPE_CONSTANTS = {
 }
 
 
-def test_memory_core_does_not_import_formal_scenarios() -> None:
+def test_memory_core_does_not_import_formal_profiles() -> None:
     imported_modules: set[str] = set()
     for path in _MEMORY_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -43,7 +43,7 @@ def test_memory_core_does_not_import_formal_scenarios() -> None:
     )
 
 
-def test_memory_core_does_not_define_formal_scenario_type_constants() -> None:
+def test_memory_core_does_not_define_formal_profile_type_constants() -> None:
     string_constants: set[str] = set()
     for path in _MEMORY_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -88,6 +88,6 @@ def test_infrastructure_adapters_do_not_import_server_composition() -> None:
                 imported_modules.add(node.module)
 
     assert not any(
-        module == "memory_mcp.server" or module.startswith("memory_mcp.server.")
+        module == "memory_mcp" or module.startswith("memory_mcp.")
         for module in imported_modules
     )

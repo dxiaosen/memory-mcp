@@ -23,3 +23,11 @@
 - [x] 4.1 更新 Agent 配置模板和配置参考，使快速开始只要求地址与 Token
 - [x] 4.2 编写通用 Agent 合同及 Codex/Claude Code 内置配置、版本要求、信任步骤、端到端手工测试和故障排查
 - [x] 4.3 更新整体设计、测试、部署、README 和文档索引，并复查命名、目录结构、回滚与限制说明
+
+## 5. 轻量 Agent 发行包
+
+- [x] 5.1 新增 `agent` 的 `memory-mcp-agent` workspace 发行包，把 Hook Client、公共 API 和 `memory-mcp-hook` 从 Server 包迁出
+- [x] 5.2 调整 virtual workspace、两个 member、示例和测试导入，确保 Server 与 Agent 生产依赖互不反向引用
+- [x] 5.3 构建 Agent wheel 并在隔离环境验证依赖闭包、console script、禁止模块与远程 MCP 调用
+- [x] 5.4 更新 README、配置、设计、部署、使用、测试和 Agent 接入文档，明确普通 MCP、主动 Hook、安装与运行配置边界
+- [x] 5.5 运行全量 pytest、ruff、build、依赖检查、文档冲突检索和 OpenSpec strict validation

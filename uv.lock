@@ -2,6 +2,20 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "memory-mcp",
+    "memory-mcp-agent",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "memory-mcp", editable = "server" },
+    { name = "memory-mcp-agent", editable = "agent" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.16.0" },
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -475,9 +489,8 @@ wheels = [
 [[package]]
 name = "memory-mcp"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "server" }
 dependencies = [
-    { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-deepseek" },
     { name = "langchain-openai" },
@@ -488,15 +501,8 @@ dependencies = [
     { name = "python-dotenv" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain-core", specifier = ">=1.5.1" },
     { name = "langchain-deepseek", specifier = ">=1.1.0" },
     { name = "langchain-openai", specifier = ">=1.4.1" },
@@ -507,10 +513,21 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
 
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.16.0" },
+[[package]]
+name = "memory-mcp-agent"
+version = "0.1.0"
+source = { editable = "agent" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pydantic", specifier = ">=2.11,<3" },
+    { name = "pydantic-settings", specifier = ">=2.5,<3" },
 ]
 
 [[package]]

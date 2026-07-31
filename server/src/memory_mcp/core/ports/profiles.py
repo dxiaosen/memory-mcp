@@ -1,0 +1,159 @@
+"""记忆配置契约和进程内注册表。"""
+
+from collections.abc import Mapping
+from typing import Protocol
+
+from memory_mcp.core.exceptions import (
+    InvalidMemoryProfileError,
+    InvalidMemoryTypeError,
+    InvalidProfileProgressError,
+    ProfileAlreadyRegisteredError,
+    ProfileNotRegisteredError,
+)
+
+
+class MemoryProfile(Protocol):
+    """一套记忆配置只能通过该接口向 Core 声明业务差异。"""
+
+    @property
+    def profile_id(self) -> str:
+        """返回全局唯一的记忆配置标识。"""
+
+        ...
+
+    @property
+    def memory_types(self) -> frozenset[str]:
+        """返回当前配置允许的原子记忆类型。"""
+
+        ...
+
+    @property
+    def business_progress_values(self) -> frozenset[str]:
+        """返回当前配置允许的业务进展值；可为空。"""
+
+        ...
+
+    @property
+    def allowed_relations(self) -> frozenset[str]:
+        """返回当前配置允许建立的业务关系；可为空。"""
+
+        ...
+
+    @property
+    def capture_guidance(self) -> str:
+        """返回捕获阶段使用的配置说明。"""
+
+        ...
+
+    @property
+    def profile_version(self) -> str:
+        """返回当前配置捕获规则的稳定版本。"""
+
+        ...
+
+    @property
+    def relation_rules(self) -> Mapping[str, str]:
+        """返回后续关系判断阶段使用的规则说明。"""
+
+        ...
+
+    @property
+    def recall_priorities(self) -> Mapping[str, int]:
+        """返回后续召回阶段使用的类型优先级。"""
+
+        ...
+
+
+class ProfileRegistry:
+    """显式注册并校验记忆配置，不提供隐式默认配置。"""
+
+    def __init__(self) -> None:
+        self._profiles: dict[str, MemoryProfile] = {}
+
+    def validate_registration(self, profile: MemoryProfile) -> None:
+        """在不改变注册表的情况下校验一项新配置。"""
+
+        profile_id = profile.profile_id
+        if not isinstance(profile_id, str) or profile_id != profile_id.strip():
+            raise InvalidMemoryProfileError("profile_id must not be empty")
+        if not profile_id:
+            raise InvalidMemoryProfileError("profile_id must not be empty")
+        if not _contains_only_normalized_text(profile.memory_types):
+            raise InvalidMemoryProfileError(
+                "memory_types must contain non-empty values"
+            )
+        if not profile.memory_types:
+            raise InvalidMemoryProfileError("memory_types must not be empty")
+        if not _contains_only_normalized_text(profile.business_progress_values):
+            raise InvalidMemoryProfileError(
+                "business_progress_values must contain non-empty values"
+            )
+        if not _contains_only_normalized_text(profile.allowed_relations):
+            raise InvalidMemoryProfileError(
+                "allowed_relations must contain non-empty values"
+            )
+        if (
+            not isinstance(profile.capture_guidance, str)
+            or not profile.capture_guidance
+            or profile.capture_guidance != profile.capture_guidance.strip()
+        ):
+            raise InvalidMemoryProfileError("capture_guidance must not be empty")
+        if (
+            not isinstance(profile.profile_version, str)
+            or not profile.profile_version
+            or profile.profile_version != profile.profile_version.strip()
+        ):
+            raise InvalidMemoryProfileError("profile_version must not be empty")
+        if profile_id in self._profiles:
+            raise ProfileAlreadyRegisteredError(
+                f"profile_id already registered: {profile_id}"
+            )
+
+    def register(self, profile: MemoryProfile) -> None:
+        """校验并将配置加入当前进程注册表。"""
+
+        self.validate_registration(profile)
+        profile_id = profile.profile_id
+        self._profiles[profile_id] = profile
+
+    def get(self, profile_id: str) -> MemoryProfile:
+        try:
+            return self._profiles[profile_id]
+        except KeyError as exc:
+            raise ProfileNotRegisteredError(
+                f"profile_id is not registered: {profile_id}"
+            ) from exc
+
+    def validate_memory_type(self, profile_id: str, memory_type: str) -> None:
+        profile = self.get(profile_id)
+        if memory_type not in profile.memory_types:
+            raise InvalidMemoryTypeError(
+                f"memory type is not allowed by profile_id {profile_id}: {memory_type}"
+            )
+
+    def validate_business_progress(
+        self,
+        profile_id: str,
+        business_progress: str | None,
+    ) -> None:
+        if business_progress is None:
+            return
+        profile = self.get(profile_id)
+        if business_progress not in profile.business_progress_values:
+            raise InvalidProfileProgressError(
+                "business progress is not allowed by profile_id "
+                f"{profile_id}: {business_progress}"
+            )
+
+    @property
+    def profile_ids(self) -> frozenset[str]:
+        """返回已注册标识的不可变快照。"""
+
+        return frozenset(self._profiles)
+
+
+def _contains_only_normalized_text(values: frozenset[str]) -> bool:
+    return all(
+        isinstance(value, str) and bool(value) and value == value.strip()
+        for value in values
+    )

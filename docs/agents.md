@@ -6,6 +6,8 @@ Memory MCP Server、PostgreSQL 和模型抽取部署见[部署指南](deploy.md)
 
 Codex 和 Claude Code 是当前提供可复制配置的首批宿主，不是实现边界。其他 Agent
 只要能提供稳定的会话/轮次生命周期，就可以使用同一个命令或通用 Python API。
+Hook 命令来自独立的 `memory-mcp-agent` 发行包，不要求 Agent Host 安装 Server、
+PostgreSQL、模型 Provider 或数据库 migration。
 
 ## 1. 连接 MCP 不等于主动调用
 
@@ -52,7 +54,7 @@ MEMORY_MCP_TOKEN=<该 Agent Host 自己的 Bearer Token>
 本地可以复制模板：
 
 ```bash
-cp examples/.env.example examples/agent.env
+cp agent/.env.example examples/agent.env
 chmod 600 examples/agent.env
 set -a
 source examples/agent.env
@@ -71,7 +73,7 @@ client_id 或 agent_id。同一用户的不同 Agent 可以使用不同 Token，
 
 | 项目 | 默认值 |
 | --- | --- |
-| scenario | `general-work` |
+| `profile_id` | `general-work` |
 | MCP 超时 | 15 秒 |
 | fail-open | 开启 |
 | recall | 最多 5 条、600 token |
@@ -97,19 +99,54 @@ Agent Host 的 URL/Token 应同时供 MCP 连接和 Hook 进程使用，但不�
 项；已有同名 Memory Hook 时只保留一份，避免重复召回和捕获。
 
 “只配置地址和 Token”指运行值只有两个；MCP 协议不能远程改写宿主本地配置，所以
-每种 Host 仍需完成一次静态 Hook 注册。
+每种 Host 仍需一次性安装轻量 Agent 包并完成静态 Hook 注册。
 
 ## 3. 安装 Hook 命令
 
-在本仓库开发环境中：
+### 3.1 正式 Agent Host
+
+推荐把 Agent wheel 作为版本化发布制品交付，然后用 `uv tool` 建立独立工具环境：
 
 ```bash
-uv sync --frozen
-command -v .venv/bin/memory-mcp-hook
+uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+command -v memory-mcp-hook
 ```
 
-如果 Agent 在另一台机器，需要在 Agent Host 安装本项目的 Python 包。Agent Host
-不需要数据库 DSN、模型 API Key 或服务端 `.env`。
+如果包已发布到组织 Python registry，可以把 wheel 路径换成固定版本
+`memory-mcp-agent==0.1.0`。不要在生产命令中省略版本。
+
+当前仓库构建 wheel：
+
+```bash
+uv build --package memory-mcp-agent --wheel
+```
+
+从源码 checkout 安装也只指向 Agent 子包：
+
+```bash
+uv tool install ./agent
+```
+
+以上方式都不会安装根发行包 `memory-mcp`。Agent Host 只得到：
+
+- `memory-mcp-hook`；
+- `memory_mcp_agent` Python API；
+- HTTP、配置和数据校验所需的轻量依赖。
+
+不会得到 `memory-mcp`、`memory-mcp-db`、PostgreSQL driver、LangChain、模型
+Provider、ASGI Server 或数据库配置。Agent 包要求 Python 3.11+，Server 的
+Python 3.14 要求不会传递到 Agent Host。
+
+### 3.2 仓库开发环境
+
+统一开发和全量测试需要两个 workspace member：
+
+```bash
+uv sync --all-packages --frozen
+test -x .venv/bin/memory-mcp-hook
+```
+
+这里共享 `.venv` 只是开发便利，不是生产部署拓扑。
 
 配置推荐使用 `command -v memory-mcp-hook` 返回的绝对路径。示例为便于复制写成
 `memory-mcp-hook`，要求命令位于 Agent 进程的 `PATH`。
@@ -198,8 +235,17 @@ warning_code)` 映射为宿主格式，主动记忆执行层无需改动。
 command Hook 或跨进程状态文件：
 
 ```python
+from memory_mcp_agent import (
+    HookContext,
+    HookedAgentRunner,
+    MemoryHookBridge,
+    MemoryHookSettings,
+    MemoryMcpClient,
+)
+
+settings = MemoryHookSettings()
 context = HookContext(
-    scenario="general-work",
+    profile_id="general-work",
     conversation_id=conversation_id,
     turn_id=turn_id,
 )
@@ -235,6 +281,11 @@ async with MemoryMcpClient(settings) as client:
 
 Codex 原生支持 `UserPromptSubmit` 和 `Stop` command Hook。官方参考：
 [Codex Hooks](https://learn.chatgpt.com/docs/hooks)。
+
+Codex 当前只执行 `type: "command"` 的 Hook；`async` 虽可被解析但尚不执行，
+也没有原生 HTTP Hook。因此即使 Memory MCP 在另一台服务器，Codex 所在机器仍
+需要安装轻量 `memory-mcp-agent` 命令。该命令才负责向远端 MCP URL 发起 HTTP
+请求，不要求安装 Server 代码。
 
 配置位置二选一：
 
@@ -388,6 +439,7 @@ curl --fail "${MEMORY_MCP_URL%/mcp}/health"
 ## 10. 当前限制与回滚
 
 - MCP Server 不能自动修改 Agent 的本地 Hook 配置；
+- Codex 当前没有原生 HTTP Hook，跨机接入仍由本地轻量 command Client 转发；
 - 不要与会在 Stop 阶段要求同一轮继续执行的其他 Hook 组合；
 - 当前不需要队列；如果要求 Host 崩溃后仍保证投递，应另行设计 durable
   outbox/queue worker；

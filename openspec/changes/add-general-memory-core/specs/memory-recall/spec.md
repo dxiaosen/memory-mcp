@@ -7,7 +7,7 @@ model receives the current task; recall MUST NOT depend solely on the model choo
 to call a memory tool.
 
 #### Scenario: Agent begins a new task
-- **WHEN** an authenticated Agent Hook submits the current scenario, query, and optional subject
+- **WHEN** an authenticated Agent Hook submits the current `profile_id`, query, and optional subject
 - **THEN** the MCP Server returns a structured current-memory context before model execution
 
 #### Scenario: BeforeRun uses asynchronous transport
@@ -56,10 +56,10 @@ if present in existing or future data.
 - **THEN** it remains absent from automatic recall until confirmation
 
 ### Requirement: Return a bounded relevant set
-Recall SHALL consider scenario, subject, task intent, memory type priority, validity,
+Recall SHALL consider `profile_id`, subject, task intent, memory type priority, validity,
 and text relevance. The server MUST enforce a relevance threshold, maximum item count,
 and token budget. It MUST return an empty set rather than fill the result with unrelated
-memory. When supplied, subject MUST narrow the owner/scenario candidate set before
+memory. When supplied, subject MUST narrow the owner/profile_id candidate set before
 ranking; when omitted, recall MUST NOT invent a subject filter.
 
 #### Scenario: Relevant current memories exist
@@ -73,7 +73,7 @@ ranking; when omitted, recall MUST NOT invent a subject filter.
 
 #### Scenario: Caller does not have a canonical subject
 - **WHEN** an Agent submits a relevant query without a subject
-- **THEN** the system searches eligible current memory across that owner and scenario
+- **THEN** the system searches eligible current memory across that owner and `profile_id`
 - **AND** ranks results using query, task intent, type priority, and text relevance
 
 ### Requirement: Preserve epistemic labels and source summaries

@@ -27,7 +27,7 @@ and command Hook JSON rendering MUST remain separate boundaries.
 
 ### Requirement: Keep Agent configuration minimal
 An Agent Host SHALL require only `MEMORY_MCP_URL` and `MEMORY_MCP_TOKEN` to use the
-default active-memory flow after its static Hook command is registered. Scenario,
+default active-memory flow after its static Hook command is registered. Profile ID,
 recall budget, timeout, retry, state location, owner, client, and Agent identifiers
 MUST NOT be required user configuration. Existing
 `MEMORY_HOOK_MCP_URL` and `MEMORY_HOOK_BEARER_TOKEN` variables SHALL remain accepted as
@@ -41,12 +41,35 @@ compatibility aliases, with the new names taking precedence.
 #### Scenario: Authenticated owner is established
 - **WHEN** an Agent invokes recall or capture with its configured Token
 - **THEN** the server derives the owner from the authenticated Token mapping
-- **AND** no Hook input, scenario, session, turn, client, or Agent field can override that owner
+- **AND** no Hook input, `profile_id`, session, turn, client, or Agent field can override that owner
 
 #### Scenario: Legacy Agent variables remain deployed
 - **WHEN** only the two existing `MEMORY_HOOK_*` connection variables are present
 - **THEN** the Hook continues to connect with the same values
 - **AND** no Secret value is written to stdout or operational logs
+
+### Requirement: Ship the Hook Client as a lightweight Agent distribution
+The system SHALL provide `memory-mcp-agent` as a separately installable distribution
+that owns `memory-mcp-hook` and the public Agent Hook API. Installing the Agent
+distribution MUST NOT install or import the Memory MCP Server, PostgreSQL driver,
+LangChain, model-provider adapters, database migration command, or server command.
+The Server distribution MUST NOT require the Agent distribution at runtime.
+
+#### Scenario: Operator installs an Agent Host
+- **WHEN** the operator installs only the `memory-mcp-agent` release artifact
+- **THEN** `memory-mcp-hook` is available on that Host
+- **AND** its dependency metadata contains only Hook runtime dependencies
+- **AND** neither `memory-mcp` nor `memory-mcp-db` is installed
+
+#### Scenario: Operator installs the Server
+- **WHEN** the operator installs only the `memory-mcp` Server distribution
+- **THEN** the Server, database, and model extraction entry points remain available
+- **AND** `memory-mcp-hook` is not provided by the Server distribution
+
+#### Scenario: Maintainer validates the workspace
+- **WHEN** the repository test environment installs all workspace members
+- **THEN** unit and real HTTP/MCP integration tests exercise the separately packaged Agent Client
+- **AND** a built Agent wheel passes an isolated dependency and console-script smoke test
 
 ### Requirement: Recall before the model processes each top-level prompt
 On a normalized `before_run` event from `UserPromptSubmit` or canonical `BeforeRun`, the
@@ -116,18 +139,18 @@ operational logs.
 
 ### Requirement: Keep general-work as an internal default
 The public `recall_memory` and `capture_completed_turn` MCP tools SHALL use
-`general-work` when scenario is omitted. Callers MAY explicitly select another
-registered scenario for future specialized integrations, but the system MUST NOT infer
-or switch scenario from conversation text.
+`general-work` when `profile_id` is omitted. Callers MAY explicitly select another
+registered profile for future specialized integrations, but the system MUST NOT infer
+or switch `profile_id` from conversation text.
 
-#### Scenario: Direct Agent tool call omits scenario
-- **WHEN** an authenticated caller invokes recall or capture without a scenario
+#### Scenario: Direct Agent tool call omits profile_id
+- **WHEN** an authenticated caller invokes recall or capture without `profile_id`
 - **THEN** the server validates and executes the request under `general-work`
 
-#### Scenario: Caller explicitly selects an unknown scenario
-- **WHEN** a caller supplies a scenario that is not registered
-- **THEN** the server returns `scenario_not_registered`
-- **AND** it does not silently fall back or create memory under another scenario
+#### Scenario: Caller explicitly selects an unknown profile_id
+- **WHEN** a caller supplies a `profile_id` that is not registered
+- **THEN** the server returns `profile_not_registered`
+- **AND** it does not silently fall back or create memory under another `profile_id`
 
 ### Requirement: Preserve fail-open Agent behavior without a queue
 The default active-memory command SHALL execute bounded asynchronous MCP I/O inside

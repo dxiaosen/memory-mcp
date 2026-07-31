@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from memory_mcp.hooks import (
+from memory_mcp_agent import (
     HookContext,
     HookedAgentRunner,
     MemoryHookBridge,
@@ -26,7 +26,7 @@ async def _agent(user_input: str, memory_context: str | None) -> str:
 async def _run(args: argparse.Namespace) -> None:
     settings = MemoryHookSettings(_env_file=args.env_file)
     context = HookContext(
-        scenario=settings.scenario,
+        profile_id=settings.profile_id,
         conversation_id=args.conversation_id,
         turn_id=args.turn_id,
         subject=args.subject,

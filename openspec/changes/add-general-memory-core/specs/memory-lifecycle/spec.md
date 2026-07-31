@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Maintain one traceable current record
-Every active memory MUST identify its owner scope, scenario, subject, memory type,
+Every active memory MUST identify its owner scope, `profile_id`, subject, memory type,
 assertion kind, current content, formation time, save rationale, and at least one
 traceable source. The MCP Server MUST preserve the same logical memory across calls
 from different Agent clients acting for the same owner.
@@ -12,7 +12,7 @@ from different Agent clients acting for the same owner.
 - **AND** its source still identifies the original Agent turn
 
 ### Requirement: Reinforce duplicate statements without creating copies
-Within the same owner, scenario, subject, and compatible memory type, the system SHALL
+Within the same owner, `profile_id`, subject, and compatible memory type, the system SHALL
 treat equivalent durable content as duplicate reinforcement. It MUST retain one current
 logical memory and attach the later source evidence.
 
@@ -61,11 +61,11 @@ explicit history request and MUST be labeled with status and source.
 - **THEN** the system may return current and superseded versions
 - **AND** every version is labeled as current or historical
 
-### Requirement: Keep scenario variation behind policy
-The system SHALL allow ScenarioPolicy to define legal memory types, capture guidance,
-policy version, optional business-progress values, optional relation declarations, and
+### Requirement: Keep profile variation behind MemoryProfile
+The system SHALL allow MemoryProfile to define legal memory types, capture guidance,
+`profile_version`, optional business-progress values, optional relation declarations, and
 recall priorities without changing common ownership, provenance, admission,
-idempotency, or lifecycle semantics. A scenario that does not use progress or relations
+idempotency, or lifecycle semantics. A MemoryProfile that does not use progress or relations
 MUST be able to declare empty values without removing those extension points.
 
 #### Scenario: General-work policy is registered
@@ -74,7 +74,7 @@ MUST be able to declare empty values without removing those extension points.
 - **AND** the Memory Core does not hard-code Agent-specific behavior
 
 ### Requirement: Preserve lifecycle invariants in PostgreSQL
-The PostgreSQL repository MUST enforce registered scenario types, owner-consistent
+The PostgreSQL repository MUST enforce registered profile IDs and types, owner-consistent
 references, one current revision per memory, and atomic review resolution independently
 of application checks. Repository behavior MUST conform to the common domain contract
 verified by the in-memory unit suite and PostgreSQL contract suite.

@@ -2,15 +2,15 @@ import json
 
 import anyio
 import pytest
-from pydantic import SecretStr, ValidationError
-
+from memory_mcp.app import _run_server, create_memory_mcp_server
+from memory_mcp.auth import StaticTokenVerifier
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.server.app import _run_server, create_memory_mcp_server
-from memory_mcp.server.auth import StaticTokenVerifier
-from memory_mcp.server.schemas import CompletedTurnEventV1
-from memory_mcp.server.settings import MemoryServerSettings
-from tests.support.fakes import FakeCandidateExtractor, TestScenarioPolicy
+from memory_mcp.schemas import CompletedTurnEventV1
+from memory_mcp.settings import MemoryServerSettings
+from pydantic import SecretStr, ValidationError
+
+from tests.support.fakes import FakeCandidateExtractor, TestMemoryProfile
 
 _TOKEN_A = "analyst-a-primary-token-000000000001"
 
@@ -40,7 +40,7 @@ def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
     payload = {
         "contract_version": "1",
         "event_id": "event-1",
-        "scenario": "project-work",
+        "profile_id": "project-work",
         "conversation_id": "conversation-1",
         "turn_id": "turn-1",
         "observed_at": "2026-07-30T10:00:00+08:00",
@@ -73,7 +73,7 @@ def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
 def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
     service = create_memory_service(
         InMemoryMemoryRepository(),
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=FakeCandidateExtractor(),
     )
     server = create_memory_mcp_server(
@@ -98,11 +98,11 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
     assert "owner_key" not in serialized_schema
     assert "tenant_id" not in serialized_schema
     assert capture.inputSchema.get("additionalProperties") is False
-    assert "scenario" not in capture.inputSchema["required"]
-    assert capture.inputSchema["properties"]["scenario"]["default"] == "general-work"
+    assert "profile_id" not in capture.inputSchema["required"]
+    assert capture.inputSchema["properties"]["profile_id"]["default"] == "general-work"
     recall = next(tool for tool in tools if tool.name == "recall_memory")
-    assert "scenario" not in recall.inputSchema["required"]
-    assert recall.inputSchema["properties"]["scenario"]["default"] == "general-work"
+    assert "profile_id" not in recall.inputSchema["required"]
+    assert recall.inputSchema["properties"]["profile_id"]["default"] == "general-work"
 
 
 def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:

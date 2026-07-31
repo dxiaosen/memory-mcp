@@ -1,0 +1,52 @@
+"""Memory MCP 边界暴露的稳定、无正文错误。"""
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class ErrorCode(StrEnum):
+    """所有 Memory MCP 工具共用的公开业务错误码。"""
+
+    UNAUTHENTICATED = "unauthenticated"
+    PERMISSION_DENIED = "permission_denied"
+    PROFILE_NOT_REGISTERED = "profile_not_registered"
+    INVALID_EVENT = "invalid_event"
+    UNSUPPORTED_CONTRACT_VERSION = "unsupported_contract_version"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    MEMORY_UNAVAILABLE = "memory_unavailable"
+    REVIEW_UNAVAILABLE = "review_unavailable"
+    CAPTURE_NOT_CONFIGURED = "capture_not_configured"
+    TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryMcpBoundaryError(Exception):
+    """具有安全公开表示的预期边界错误。"""
+
+    code: ErrorCode
+    public_message: str
+    retryable: bool = False
+
+
+class UnauthenticatedError(MemoryMcpBoundaryError):
+    def __init__(self) -> None:
+        super().__init__(
+            ErrorCode.UNAUTHENTICATED,
+            "A valid Memory MCP access token is required.",
+        )
+
+
+class PermissionDeniedError(MemoryMcpBoundaryError):
+    def __init__(self, required_scope: str) -> None:
+        super().__init__(
+            ErrorCode.PERMISSION_DENIED,
+            f"The authenticated client lacks required scope: {required_scope}.",
+        )
+
+
+class UnsupportedContractVersionError(MemoryMcpBoundaryError):
+    def __init__(self, version: str) -> None:
+        super().__init__(
+            ErrorCode.UNSUPPORTED_CONTRACT_VERSION,
+            f"Completed-turn contract version is not supported: {version}.",
+        )

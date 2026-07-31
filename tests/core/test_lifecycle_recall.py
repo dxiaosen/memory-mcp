@@ -18,7 +18,8 @@ from memory_mcp.core import (
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.scenarios import GeneralWorkPolicy
+from memory_mcp.profiles import GeneralWorkProfile
+
 from tests.support.fakes import FakeCandidateExtractor, candidate_proposal
 
 _NOW = datetime(2026, 7, 30, 10, tzinfo=UTC)
@@ -31,7 +32,7 @@ def _turn(
     subject_hint: str = "weekly-report",
 ) -> TurnEnvelope:
     return TurnEnvelope(
-        scenario="general-work",
+        profile_id="general-work",
         conversation_id="conversation-1",
         source_turn_id=turn_id,
         content=text,
@@ -53,7 +54,7 @@ def _service(
 ):
     return create_memory_service(
         repository,
-        [GeneralWorkPolicy()],
+        [GeneralWorkProfile()],
         candidate_extractor=extractor,
     )
 
@@ -85,18 +86,18 @@ def _capture(
 
 
 def test_general_work_policy_declares_formal_minimum() -> None:
-    policy = GeneralWorkPolicy()
+    profile = GeneralWorkProfile()
 
-    assert policy.scenario_id == "general-work"
-    assert policy.memory_types == {
+    assert profile.profile_id == "general-work"
+    assert profile.memory_types == {
         "preference",
         "stable_context",
         "ongoing_item",
         "decision",
     }
-    assert policy.allowed_relations == set()
-    assert policy.relation_rules == {}
-    assert set(policy.recall_priorities) == policy.memory_types
+    assert profile.allowed_relations == set()
+    assert profile.relation_rules == {}
+    assert set(profile.recall_priorities) == profile.memory_types
 
 
 def test_normalization_is_nfkc_casefolded_trimmed_and_whitespace_stable() -> None:
@@ -171,7 +172,7 @@ def test_explicit_replacement_keeps_identity_and_excludes_old_revision() -> None
     recalled = service.recall_memory(
         principal,
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="周报默认要点",
             subject="weekly-report",
         ),
@@ -215,7 +216,7 @@ def test_ambiguous_conflict_stays_pending_until_confirmation() -> None:
     recalled_before_confirmation = service.recall_memory(
         principal,
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="周报 表格",
             subject="weekly-report",
         ),
@@ -250,7 +251,7 @@ def test_recall_is_owner_first_empty_safe_and_instruction_precedence_is_explicit
     owner_result = service.recall_memory(
         PrincipalContext("owner-a"),
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="安全评审 publish secrets",
             subject="weekly-report",
         ),
@@ -258,7 +259,7 @@ def test_recall_is_owner_first_empty_safe_and_instruction_precedence_is_explicit
     other_result = service.recall_memory(
         PrincipalContext("owner-b"),
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="安全评审 publish secrets",
             subject="weekly-report",
         ),
@@ -292,7 +293,7 @@ def test_recall_respects_item_and_conservative_token_limits() -> None:
     limited = service.recall_memory(
         PrincipalContext("owner-a"),
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="项目报告默认使用表格",
             max_items=2,
             token_budget=600,
@@ -301,7 +302,7 @@ def test_recall_respects_item_and_conservative_token_limits() -> None:
     tiny = service.recall_memory(
         PrincipalContext("owner-a"),
         RecallQuery(
-            scenario="general-work",
+            profile_id="general-work",
             query="项目报告默认使用表格",
             max_items=5,
             token_budget=64,

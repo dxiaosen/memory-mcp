@@ -48,7 +48,7 @@
   引用，不再维护含义重复的 agent_id。
 - 统一源码开发者注释和 docstring 的中文表达；外部协议字段、MCP 工具说明、
   模型提示、错误码和第三方标识继续保留其稳定英文形式。
-- 复用已经完成的通用记忆卡片、来源、场景策略、四类准入、敏感拦截、幂等捕获
+- 复用已经完成的通用记忆卡片、来源、记忆配置、四类准入、敏感拦截、幂等捕获
   和 pending 流程，在其外增加 MCP transport、协议 DTO 和 Agent Hook adapter。
 - 将 `TurnEnvelope` 演进为框架无关的完成轮次事件，区分用户输入、Agent 输出和
   可选工具观察；只有可信来源块能够成为自动保存的用户表达证据。
@@ -62,7 +62,7 @@
   策略版本和关系扩展等有长期价值的语义继续保留；本期只激活演示闭环实际需要的
   子集，不以删字段伪装范围收敛。
 - 从本期 P0 实现范围移出复杂向量检索、通用关系图、自动过期调度、完整删除抑制、
-  第二正式业务场景、大规模对比评测和重型管理界面；保留相应端口或数据语义的
+  第二套正式记忆配置、大规模对比评测和重型管理界面；保留相应端口或数据语义的
   演进位置，但不为未验证需求预建运行时。
 
 ## Capabilities
@@ -73,7 +73,7 @@
   原子候选发现、四类准入、幂等处理和待确认分流。
 - `memory-lifecycle`：服务端维护跨 Agent 共享的当前记忆、来源、重复强化、明确
   替代和历史排除，不把生命周期决策下放给 Agent。
-- `memory-recall`：Agent Hook 在任务开始前通过 MCP 按可信用户、场景、对象和
+- `memory-recall`：Agent Hook 在任务开始前通过 MCP 按可信用户、记忆配置、对象和
   当前任务召回少量当前有效记忆，并获得可注入模型上下文的结构化结果。
 - `memory-governance`：服务端统一执行可信身份映射、跨用户隔离、敏感持久化
   边界、待确认项管理、调用方审计和原型身份能力声明。
@@ -87,19 +87,25 @@
 - `memory_mcp.core.domain`、`application` 和 `ports` 继续作为 MCP 服务内部
   核心，前两阶段领域实现不推翻；SQLite Repository 作为已完成阶段的原型实现，
   在 PostgreSQL 契约与迁移测试通过后退出正式运行路径。
-- 项目与 Python 包统一使用 `memory-mcp` / `memory_mcp`，核心位于 `core`，
-  认证后的 MCP transport 与组合根位于 `server`，避免继续保留已经退出产品边界
-  的 `agent-lab` 总称和 `memory_mcp.memory_mcp` 式重复命名。
-- 新增 MCP Server 入口、MCP 协议 DTO、认证上下文适配器和远程 Hook Client；
-  演示客户端只保留验证跨 Agent 接入所需的最小代码。
+- 仓库使用不发布的根 uv workspace 管理两个对称发行模块：Server 位于
+  `server/src/memory_mcp`，Agent Client 位于 `agent/src/memory_mcp_agent`。
+  `memory_mcp` 包根直接承载 MCP transport 与组合入口，不再保留重复的包内
+  `server/` 层，也不再使用已退出产品边界的 `agent-lab` 总称。
+- **BREAKING**：将持久化规则集合统一命名为 Memory profile；公开 DTO、领域对象
+  和 PostgreSQL 使用 `profile_id/profile_version`，默认值仍为
+  `general-work/general-work-v1`。已部署数据库通过向前 migration 原地重命名并
+  保留数据，不修改既有 migration checksum。
+- 新增 MCP Server 入口、MCP 协议 DTO、认证上下文适配器和独立轻量远程 Agent
+  Client；演示客户端只保留验证跨 Agent 接入所需的最小代码。
 - 旧 Knowledge Agent、知识库索引、Chroma/Embedding、RAG CLI 和对应依赖不再是
   本课题产品能力；在 MCP Server 与最小演示客户端接管入口后删除。结构化抽取仍
   需要的通用模型工厂先提取到独立 adapter，避免随旧产品线误删。
 - `PrincipalContext` 的构造边界从本地调用方移动到服务端认证适配器；内部
   `owner_id` 继续作为存储隔离键，但不得直接信任 MCP 入参。
-- 项目增加官方 MCP Python SDK、PostgreSQL 驱动和连接池依赖。Linux 云服务器
-  直接通过 Python 环境与 systemd 运行，不要求 Docker 或 Nginx；公网 HTTPS
-  由云负载均衡器终止。
+- Server 增加官方 MCP Python SDK、PostgreSQL 驱动和连接池依赖；Agent Client
+  不安装这些 Server 依赖，只保留 HTTP/Pydantic 运行面。Linux 云服务器直接通过
+  Python 环境与 systemd 运行，不要求 Docker 或 Nginx；公网 HTTPS 由云负载
+  均衡器终止。
 - PostgreSQL 是部署环境的唯一权威存储；Embedding、向量数据库和搜索引擎仍不
   属于本期。任何未来二级检索索引都不得成为身份授权或生命周期状态的事实源。
 - 自动化测试和现场演示改为围绕“Agent A 捕获、Agent B 召回、Agent C/另一用户

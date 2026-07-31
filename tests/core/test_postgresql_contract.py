@@ -7,7 +7,6 @@ from threading import Event
 
 import psycopg
 import pytest
-
 from memory_mcp.core import MemoryNotFoundError, PrincipalContext
 from memory_mcp.core.adapters.postgresql import (
     PostgreSQLMemoryRepository,
@@ -19,9 +18,10 @@ from memory_mcp.core.adapters.postgresql.schema import (
     validate_schema,
 )
 from memory_mcp.core.composition import create_memory_service
+
 from tests.support.fakes import (
     FakeCandidateExtractor,
-    TestScenarioPolicy,
+    TestMemoryProfile,
     project_preference_command,
 )
 
@@ -51,6 +51,7 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     assert [migration.version for migration in migrations] == [
         "0001_memory_core.sql",
         "0002_lifecycle_recall.sql",
+        "0003_profile_naming.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -66,10 +67,20 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     ):
         assert required_fragment in sql
 
+    profile_migration = migrations[2].sql
+    for required_fragment in (
+        "memory_profiles",
+        "memory_profile_types",
+        "profile_id",
+        "profile_version",
+        "RENAME COLUMN scenario TO profile_id",
+    ):
+        assert required_fragment in profile_migration
+
 
 def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
     required_methods = {
-        "register_scenario",
+        "register_profile",
         "add",
         "get",
         "list",
@@ -139,7 +150,7 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
     database_url = postgresql_test_database.url
     pool = create_pool(database_url, min_size=1, max_size=3)
     repository = PostgreSQLMemoryRepository(pool)
-    service = create_memory_service(repository, [TestScenarioPolicy()])
+    service = create_memory_service(repository, [TestMemoryProfile()])
     owner_a = PrincipalContext("owner-a")
     owner_b = PrincipalContext("owner-b")
     created = service.create_memory(owner_a, project_preference_command())
@@ -159,7 +170,7 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
     try:
         reopened_service = create_memory_service(
             reopened,
-            [TestScenarioPolicy()],
+            [TestMemoryProfile()],
         )
         assert reopened_service.get_memory(owner_a, created.item.memory_id) == created
     finally:
@@ -177,6 +188,7 @@ def test_real_postgresql_source_turn_idempotency_and_review_resolution(
         TurnEnvelope,
         TurnMessage,
     )
+
     from tests.support.fakes import candidate_proposal
 
     text = "我可能更喜欢周报要点"
@@ -195,12 +207,12 @@ def test_real_postgresql_source_turn_idempotency_and_review_resolution(
     try:
         service = create_memory_service(
             repository,
-            [TestScenarioPolicy()],
+            [TestMemoryProfile()],
             candidate_extractor=extractor,
         )
         principal = PrincipalContext("owner-a")
         turn = TurnEnvelope(
-            scenario="project-work",
+            profile_id="project-work",
             conversation_id="conversation-1",
             source_turn_id="turn-1",
             content=text,
@@ -236,7 +248,7 @@ def test_real_postgresql_source_turn_idempotency_and_review_resolution(
     try:
         reopened_service = create_memory_service(
             reopened_repository,
-            [TestScenarioPolicy()],
+            [TestMemoryProfile()],
         )
         assert reopened_service.get_review(principal, review_id).status is (
             ReviewStatus.CONFIRMED
@@ -253,6 +265,7 @@ def test_real_postgresql_overlapping_event_retry_and_service_restart(
     postgresql_test_database: PostgreSQLTestDatabase,
 ) -> None:
     from memory_mcp.core import MessageRole, TurnEnvelope, TurnMessage
+
     from tests.support.fakes import candidate_proposal
 
     text = "以后周报默认用表格"
@@ -274,12 +287,12 @@ def test_real_postgresql_overlapping_event_retry_and_service_restart(
     repository = PostgreSQLMemoryRepository(pool)
     service = create_memory_service(
         repository,
-        [TestScenarioPolicy()],
+        [TestMemoryProfile()],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("owner-a")
     turn = TurnEnvelope(
-        scenario="project-work",
+        profile_id="project-work",
         conversation_id="conversation-event",
         source_turn_id="turn-event",
         content=text,
@@ -318,7 +331,7 @@ def test_real_postgresql_overlapping_event_retry_and_service_restart(
     try:
         reopened_service = create_memory_service(
             reopened_repository,
-            [TestScenarioPolicy()],
+            [TestMemoryProfile()],
             candidate_extractor=replay_extractor,
         )
         replay = reopened_service.capture_turn(principal, turn)
@@ -330,4 +343,4 @@ def test_real_postgresql_overlapping_event_retry_and_service_restart(
 
 def _truncate_memory_tables(database_url: str) -> None:
     with _connect_safely(database_url) as connection:
-        connection.execute("TRUNCATE TABLE memory_scenarios CASCADE")
+        connection.execute("TRUNCATE TABLE memory_profiles CASCADE")

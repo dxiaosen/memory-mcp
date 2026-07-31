@@ -7,24 +7,29 @@
 
 Memory MCP 有两个独立部署单元，不能共用一份“全家桶”配置：
 
-| 部署单元 | 模板 | 前缀 | 内容 |
+| 部署单元 | 发行包 | 模板 | 内容 |
 | --- | --- | --- | --- |
-| Memory MCP Server | 根目录 `.env.example` | `MEMORY_MCP_` | 数据库、HTTP、认证、抽取、日志 |
-| 一个 Agent Host | `examples/.env.example` | `MEMORY_MCP_URL/TOKEN` | MCP URL、该 Agent 的 Token |
+| Memory MCP Server | `memory-mcp` | `server/.env.example` | 数据库、HTTP、认证、抽取、日志 |
+| 一个 Agent Host | `memory-mcp-agent` | `agent/.env.example` | MCP URL、该 Agent 的 Token |
 
 一个 Server 可以认证多个 Agent，但一个 Agent 进程只应持有自己的
 地址和 Token。多 Agent 部署需要复制多份 Agent 配置，分别注入各自进程；不应让
-Agent A 的进程读取 Agent B 的凭据。scenario、owner、client/Agent ID、Hook
+Agent A 的进程读取 Agent B 的凭据。`profile_id`、owner、client/Agent ID、Hook
 预算和重试不要求普通用户配置。
 
-根目录 `.env.example` 是生产形态的服务端模板，因此：
+两个发行包的生产依赖相互独立。Server 不提供 `memory-mcp-hook`；Agent 包只提供
+Hook 命令和 `memory_mcp_agent` API，不安装数据库、LangChain、模型 Provider、
+ASGI Server 或 migration 命令。仓库开发时才通过 uv workspace 把二者装进同一个
+`.venv`。
+
+`server/.env.example` 是生产形态的服务端模板，因此：
 
 - 只包含真实模型抽取配置；
 - 只展示一个正式 Principal，不内置三身份测试矩阵；
 - 不包含模型 backend 选择器或 fixed candidate fixture；
 - 不包含 Agent Hook 配置或测试数据库配置。
 
-`examples/.env.example` 只展示一个 Agent Host。多身份验收所需的额外身份、测试
+`agent/.env.example` 只展示一个 Agent Host。多身份验收所需的额外身份、测试
 候选和测试数据库均由测试代码显式创建，不能混入生产配置。
 
 ## 2. 加载顺序与 Secret
@@ -48,9 +53,9 @@ Pydantic Settings 的有效优先级为：
 本地文件至少限制为当前用户可读：
 
 ```bash
-cp .env.example .env
+cp server/.env.example .env
 chmod 600 .env
-cp examples/.env.example examples/agent.env
+cp agent/.env.example examples/agent.env
 chmod 600 examples/agent.env
 ```
 
@@ -66,14 +71,14 @@ PostgreSQL URI 的用户名或密码若包含保留字符必须 percent-encode�
 | 类别 | 当前性质 | 说明 |
 | --- | --- | --- |
 | Core 领域规则与四类准入 | 代码固定 | owner-first、Evidence、revision、pending、敏感拦截和幂等不能由环境变量绕过 |
-| `GeneralWorkPolicy` | 代码固定 | 场景、memory type、捕获规则、policy version 和召回优先级 |
+| `GeneralWorkProfile` | 代码固定 | `profile_id`、memory type、捕获规则、`profile_version` 和召回优先级 |
 | MCP 工具与 DTO v1 | 代码固定 | 七个工具；capture contract version 为 `1` |
 | PostgreSQL schema | migration 管理 | 通过独立命令升级，不在服务启动时动态拼表 |
 | Server 地址、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | Principal 映射 | 静态环境配置 | 当前正式认证入口；可替换为 OAuth/OIDC 适配器 |
 | 抽取 provider/model | 环境可配置 | 生产始终使用真实模型，不提供 fixed 运行时开关 |
 | Agent 连接 | 每个 Agent 独立配置 | 只要求 URL 和 Token |
-| Agent Hook 策略 | 代码默认 | scenario、超时、fail-open、召回预算、capture 重试和状态 TTL |
+| Agent Hook 策略 | 代码默认 | `profile_id`、超时、fail-open、召回预算、capture 重试和状态 TTL |
 | In-memory Repository、fake/fixed extractor | 仅自动化测试 | 通过依赖注入使用，不属于部署路径 |
 
 PostgreSQL MCP 端到端测试会在测试代码里注入确定性 fixed extractor；它只替代
@@ -176,8 +181,8 @@ revoke/delete、轮换编排或 OAuth/OIDC federation。它适合受控环境和
 生产进程始终构造真实模型 extractor。缺少 model 或 API key 时服务在启动阶段
 失败，不会静默退化为测试替身。运行时没有 backend 选择器和固定候选 JSON。
 
-真实模型只接收脱敏后的场景、subject hint、时间和本轮正文，不接收 owner、Token
-或 DSN。输出还必须经过结构 schema、原文 Evidence、场景类型、敏感边界和准入规则
+真实模型只接收脱敏后的记忆配置、subject hint、时间和本轮正文，不接收 owner、Token
+或 DSN。输出还必须经过结构 schema、原文 Evidence、配置类型、敏感边界和准入规则
 的二次校验。
 
 DeepSeek V4 默认 thinking 与 LangChain 的强制 schema tool choice 不兼容，当前
@@ -203,7 +208,18 @@ journal。
 
 ## 5. Agent Host 配置
 
-### 5.1 普通用户配置
+### 5.1 安装与协议边界
+
+正式 Agent Host 只安装版本化 `memory-mcp-agent` wheel，或从组织 registry 安装
+固定版本。它以最小 JSON-RPC Client 调用 Memory MCP Server 固定启用的
+Streamable HTTP JSON response，不依赖完整 MCP SDK。这个实现只覆盖主动记忆所需
+的 initialize 和 tool call；Agent 宿主原有的普通 MCP 连接仍由宿主自身负责。
+
+服务端与 Agent 的兼容性通过真实 HTTP/MCP 集成测试验证。若未来改变 Server
+transport 或关闭 JSON response，必须先升级并验证 Agent Client，不能把它当成
+任意 MCP Server 的通用 SDK。
+
+### 5.2 普通用户配置
 
 每个 Agent 进程只配置两个值，配置值和 Secret 相互独立：
 
@@ -216,11 +232,11 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 或 settings 日志。若需要同一用户跨 Agent 共享记忆，服务端为两枚不同 Token 配置
 相同 tenant/subject identity；Agent 配置本身不包含 owner。
 
-### 5.2 代码默认值
+### 5.3 代码默认值
 
 | 项目 | 默认值 | 用户是否需要配置 |
 | --- | --- | --- |
-| scenario | `general-work` | 否 |
+| `profile_id` | `general-work` | 否 |
 | HTTP 超时 | 15 秒 | 否 |
 | fail-open | `true` | 否 |
 | recall 最大条数 | 5 | 否 |
@@ -251,18 +267,18 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 显式设置 `MEMORY_MCP_TEST_DATABASE_URL`，保留人为安全确认。固定候选直接写在
 测试用例中，不进入 `.env`，也不能在生产服务启动时选择。
 
-## 7. 固定场景值
+## 7. 固定记忆配置
 
-`GeneralWorkPolicy` 当前固定：
+`GeneralWorkProfile` 当前固定：
 
 | 项目 | 值 |
 | --- | --- |
-| scenario | `general-work` |
+| `profile_id` | `general-work` |
 | memory types | `preference`, `stable_context`, `ongoing_item`, `decision` |
-| policy version | `general-work-v1` |
+| `profile_version` | `general-work-v1` |
 | recall priority | preference 40, decision 35, ongoing_item 30, stable_context 20 |
 
-policy version 表示“哪一版场景规则做出了本次抽取与准入决定”，用于审计、回放和
+`profile_version` 表示“哪一版记忆配置做出了本次抽取与准入决定”，用于审计、回放和
 未来规则升级后的差异识别；它不是模型版本，也不是每次请求动态递增的计数器。
 
 `subject` 是可选的精确预过滤条件。通用查询应省略 subject；只有 Agent Host 能

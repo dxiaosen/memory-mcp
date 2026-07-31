@@ -11,7 +11,7 @@ PostgreSQL 持久化。
 - 四类互斥准入、敏感边界、pending 用户确认和 event 幂等；
 - 七个带认证与 scope 的 MCP 工具；
 - PostgreSQL migration、连接池、Repository 和重启恢复；
-- `general-work` 场景、duplicate Evidence、明确 replacement 和 owner-first
+- `general-work` 记忆配置、duplicate Evidence、明确 replacement 和 owner-first
   recall；
 - 框架无关 BeforeRun/AfterRun Hook、三份独立 Agent 配置、真实模型抽取与测试
   注入的确定性 fixed adapter；
@@ -34,7 +34,8 @@ PostgreSQL 持久化。
 
 ### 约束
 
-- Python 3.14、uv、官方 MCP Python SDK、Pydantic、psycopg、PostgreSQL；
+- Server 使用 Python 3.14、官方 MCP Python SDK、Pydantic、psycopg 和
+  PostgreSQL；独立 Agent Client 使用 Python 3.11+、HTTP Client 和 Pydantic；
 - `core.domain/application/ports` 不依赖 MCP、HTTP、数据库驱动、Agent SDK、
   LangChain 或运行配置；
 - PostgreSQL 是部署环境唯一权威存储；
@@ -67,9 +68,9 @@ PostgreSQL 持久化。
 - Agent 编排、Agent 间消息总线或共享任务调度；
 - 生产 OAuth 授权服务器、组织目录、团队共享记忆或数据库级 RLS；
 - Redis/Kafka、durable queue、多 worker 自动伸缩或高并发容量承诺；
-- Embedding、向量数据库、HNSW、复杂关系图和通用场景 DSL；
+- Embedding、向量数据库、HNSW、复杂关系图和通用 profile DSL；
 - 自动过期、完整 revoke/delete/suppression 和合规级审计；
-- 第二个正式业务场景、Web 管理后台、MCP Apps；
+- 第二套正式记忆配置、Web 管理后台、MCP Apps；
 - Docker、Kubernetes、Nginx 或特定 Agent 平台运行依赖；
 - 真实敏感数据接入或对用户陈述进行事实验证。
 
@@ -104,8 +105,8 @@ MCP transport 是 Core 的外层 adapter，但只有通过 MCP 暴露的能力�
 ### 2. Core 使用内向依赖，基础设施实现端口
 
 ```text
-server ──────────────┐
-scenarios ───────────┼──> core.application ──> core.domain / core.ports
+app / tools ─────────┐
+profiles ────────────┼──> core.application ──> core.domain / core.ports
 postgresql adapter ──┘                               ▲
 extraction adapter ──────────────────────────────────┘
 
@@ -113,7 +114,7 @@ hooks ──> remote MCP only
 ```
 
 `core.domain`、`core.application` 和 `core.ports` 不读取环境变量，也不导入 MCP、
-HTTP、LangChain 或 psycopg。`server` 是组合根；`hooks` 是远程消费者，
+HTTP、LangChain 或 psycopg。包根 `app.py` 是组合根；Agent 是远程消费者，
 不能导入 Repository。
 
 理由是让领域契约能用 InMemory/Fake 快速测试，同时通过同一端口验证 PostgreSQL
@@ -189,7 +190,7 @@ AfterRun 提交 `CompletedTurnEventV1`：
 ```text
 contract_version = "1"
 event_id
-scenario
+profile_id
 conversation_id
 turn_id
 observed_at
@@ -228,7 +229,7 @@ Agent。
 
 所有工具使用严格 Pydantic DTO、拒绝额外字段、返回结构化 receipt 和稳定错误码。
 跨 owner identifier 与不存在必须不可区分。暂不增加 correction/revoke/delete、
-usage report 或场景管理工具，因为它们不阻塞当前跨 Agent 闭环。
+usage report 或 profile 管理工具，因为它们不阻塞当前跨 Agent 闭环。
 
 具体 MUST/SHALL 与场景只在四份 capability spec 中维护。
 
@@ -252,7 +253,7 @@ BeforeRun/AfterRun 均只触发一次。AfterRun 的时机是一次顶层用户�
 不是内部每次 LLM/tool/sub-agent 调用结束，也不是整个 conversation 关闭。
 取消、异常或没有 final output 时不执行成功捕获。
 
-Bridge 以 `(scenario, conversation_id, turn_id)` 作为 run key：
+Bridge 以 `(profile_id, conversation_id, turn_id)` 作为 run key：
 
 - 相同 key 和相同 payload 复用同一执行结果；
 - 相同 key 和不同 payload 立即报 typed conflict；
@@ -286,7 +287,7 @@ Host 可以在发出 final response 后调度 AfterRun，但普通 `create_task`
 - 自动化测试：通过 `candidate_extractor` 依赖注入使用精确匹配
   `source_expression` 的 `FixedCandidateBackend`，不读取运行时环境。
 
-模型输入只包含脱敏后的完成轮次和当前 ScenarioPolicy，不包含 owner、Token、
+模型输入只包含脱敏后的完成轮次和当前 MemoryProfile，不包含 owner、Token、
 DSN 或 API Key。模型可以建议 subject、memory type、assertion kind、durability、
 内容和理由；程序决定 owner、来源、观察时间、准入、生命周期目标和权限。
 
@@ -295,7 +296,7 @@ DSN 或 API Key。模型可以建议 subject、memory type、assertion kind、du
 ```text
 Pydantic schema
 → 原文 evidence 检查
-→ 场景 memory type 检查
+→ profile memory type 检查
 → 所有持久化文本敏感检查
 → 确定性准入
 → PostgreSQL 事务
@@ -313,7 +314,7 @@ extraction adapter 固定关闭 thinking；抽取不依赖 chain-of-thought。
 | --- | --- |
 | `auto_save` | 明确、持久、允许且有可信用户证据 |
 | `pending` | 弱推断、含糊冲突或不确定替代，需要用户确认 |
-| `discard` | 临时、无长期价值或不符合场景 |
+| `discard` | 临时、无长期价值或不符合当前 profile |
 | `blocked` | 命中敏感/禁止持久化边界 |
 
 pending 与 blocked 内容不能进入普通召回。敏感检测在模型调用前和持久化前各执行
@@ -325,7 +326,7 @@ pending 与 blocked 内容不能进入普通召回。敏感检测在模型调用
 
 ### 11. PostgreSQL event 与事务提供最终一致性
 
-Capture 以 `(owner, event_id, payload fingerprint, policy version)` 建立幂等边界：
+Capture 以 `(owner, event_id, payload fingerprint, profile_version)` 建立幂等边界：
 
 - 相同 event、相同 payload 返回原逻辑 receipt，并标记 replay；
 - 相同 event、不同 payload 返回 `idempotency_conflict`；
@@ -343,7 +344,7 @@ replay receipt 与 payload conflict 的区别。
 
 PostgreSQL 保存：
 
-- registered scenario/type；
+- registered profile_id/type；
 - owner-scoped MemoryItem、revision 和 Evidence；
 - capture event、fingerprint 和无正文 outcome；
 - pending review 和原子 resolution；
@@ -378,7 +379,7 @@ Replacement 目标由程序在可信 owner scope 内选择，不接受模型提�
 ```text
 authenticated owner
 → active/current
-→ scenario
+→ profile_id
 → optional exact subject
 → query + task intent relevance
 → memory type priority
@@ -399,20 +400,20 @@ Host 只有能稳定生成规范 subject 时才应传入，否则依赖 query/ta
 本期采用可解释文本相关性，不引入 Embedding。只有真实失败案例证明结构化召回
 不足时，才评估 PostgreSQL 内部或可重建的二级语义索引。
 
-### 15. 场景差异封装在 ScenarioPolicy
+### 15. 记忆配置差异封装在 MemoryProfile
 
-唯一正式场景 `general-work` 注册：
+默认正式 profile `general-work` 注册：
 
 - `preference`
 - `stable_context`
 - `ongoing_item`
 - `decision`
 
-ScenarioPolicy 声明合法类型、capture guidance、policy version、召回优先级和可选
-进展/关系配置。Core 不硬编码正式场景词表。当前不使用的 progress/relations 可
+MemoryProfile 声明合法类型、capture guidance、profile_version、召回优先级和可选
+进展/关系配置。Core 不硬编码正式 profile 词表。当前不使用的 progress/relations 可
 返回空集合，但扩展位置保留。
 
-第二正式场景必须由真实需求和失败案例驱动，不能仅为了证明可扩展性预建。
+第二套正式 profile 必须由真实需求和失败案例驱动，不能仅为了证明可扩展性预建。
 
 ### 16. 配置和 Secret 只在组合边界读取
 
@@ -428,7 +429,7 @@ Memory MCP Server 与 Agent Host 是两个独立部署单元，不共享配置�
 - Logging：级别、文件轮转和独立内容日志开关；
 
 Agent Host 使用独立模板，普通使用者只提供该进程的 `MEMORY_MCP_URL` 和
-`MEMORY_MCP_TOKEN`。scenario、预算、重试和 fail-open 使用代码默认值；旧
+`MEMORY_MCP_TOKEN`。profile_id、预算、重试和 fail-open 使用代码默认值；旧
 `MEMORY_HOOK_*` 连接变量仅作为迁移别名。多个 Agent 由多个环境或
 EnvironmentFile 表达，不通过动态身份前缀把其他 Agent 的凭据装入同一进程。
 
@@ -451,7 +452,7 @@ DSN、Token 和模型 Key 不得进入仓库、systemd unit、命令行参数、
 
 - request/capture/event 的稳定摘要；
 - owner/client 的稳定假名引用；
-- tool、scenario、policy version；
+- tool、profile_id、profile_version；
 - status、error code、数量、耗时和 retry/replay。
 
 `MEMORY_MCP_LOG_CONTENT=false` 是代码和模板默认值。设置为 `true` 后，以独立的
@@ -474,22 +475,32 @@ DSN、Token 和模型 Key 不得进入仓库、systemd unit、命令行参数、
 ### 18. 目录按语义包拆分，不按每个类建层
 
 ```text
-src/memory_mcp/
-├── core/
-│   ├── domain/
-│   ├── application/
-│   ├── ports/
-│   └── adapters/postgresql/
-├── extraction/
-├── scenarios/
+memory-mcp/
+├── pyproject.toml              # virtual workspace
 ├── server/
-│   └── tools/
-├── hooks/
-├── db.py
-└── logging.py
+│   ├── pyproject.toml
+│   └── src/memory_mcp/
+│       ├── core/
+│       │   ├── domain/
+│       │   ├── application/
+│       │   ├── ports/
+│       │   └── adapters/postgresql/
+│       ├── extraction/
+│       ├── profiles/
+│       ├── tools/
+│       ├── app.py
+│       ├── auth.py
+│       ├── settings.py
+│       ├── schemas.py
+│       ├── errors.py
+│       ├── db.py
+│       └── logging.py
+└── agent/
+    ├── pyproject.toml
+    └── src/memory_mcp_agent/
 ```
 
-`server/tools` 按 capture/memory/recall/review 拆分；其余 Server 文件职责单一且体量
+`tools` 按 capture/memory/recall/review 拆分；其余 Server 文件职责单一且体量
 有限，不再增加 `api/transport/mcp` 等重复目录。`extraction` 统一真实/固定模型
 适配能力，但运行时 factory 只组合真实模型；fixed backend 保留在同一契约层供
 测试注入。settings、provider factory、backend/schema 和 composition 分文件。
@@ -521,7 +532,7 @@ prompt、SQL 和第三方 API 参数。这些字符串属于协议、运行数�
   在受控手工环境开启，使用完立即关闭并清理日志。
 - **[同用户多 Agent 映射错误]** → Server 由已校验 tenant/subject 唯一派生
   owner，并保留 A/Agent A、A/Agent B、B/Agent B 矩阵测试。
-- **[模型产生无效或敏感候选]** → schema、原文证据、场景和敏感检查全部在程序
+- **[模型产生无效或敏感候选]** → schema、原文证据、profile 和敏感检查全部在程序
   边界执行；失败不保存半成品。
 - **[Hook 重试造成重复]** → 稳定 event、payload fingerprint、进程内去重和
   PostgreSQL 幂等共同保护。
@@ -547,8 +558,11 @@ prompt、SQL 和第三方 API 参数。这些字符串属于协议、运行数�
 3. 用 MCP Server 和最小客户端替代旧 RAG/CLI 产品入口；
 4. 将仍需的模型能力收敛到 `extraction`；
 5. 以 PostgreSQL migration/Repository 替换 SQLite 运行路径；
-6. 增加生命周期、owner-first recall 和 Hook SDK；
-7. 增加 systemd、配置、测试和端到端文档。
+6. 增加生命周期、owner-first recall 和独立轻量 Agent Client；
+7. 增加 systemd、配置、测试和端到端文档；
+8. 将两个发行包整理为对称的 `server/agent` workspace，并用
+   `0003_profile_naming.sql` 原地把旧 schema 命名升级为
+   `profile_id/profile_version`，保留已有数据与历史 migration checksum。
 
 这些步骤不迁移真实用户数据；SQLite 原型只提供历史行为证据，已退出运行路径。
 
@@ -580,5 +594,5 @@ prompt、SQL 和第三方 API 参数。这些字符串属于协议、运行数�
 2. 哪类真实召回失败足以触发 subject 规范化或语义索引；
 3. 何种吞吐、可靠投递或多进程需求触发 durable outbox/queue；
 4. 是否需要 correction/revoke/delete 与更完整的生命周期治理工具；
-5. 第二正式场景及其 memory types、progress 和 relation 规则；
+5. 第二套正式 profile 及其 memory types、progress 和 relation 规则；
 6. 多 worker 前是否先增加数据库级 RLS、分布式限流和更细审计。

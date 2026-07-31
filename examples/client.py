@@ -9,8 +9,7 @@ from typing import Any
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-
-from memory_mcp.hooks import MemoryHookSettings
+from memory_mcp_agent import MemoryHookSettings
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=("tools", "memories", "pending", "recall"),
         help="Read-only operation to execute",
     )
-    parser.add_argument("--scenario", default="general-work")
+    parser.add_argument("--profile-id", default="general-work")
     parser.add_argument("--query", default="当前任务相关的用户偏好和上下文")
     parser.add_argument("--subject")
     return parser
@@ -47,7 +46,7 @@ async def _run(
     token: str,
     command: str,
     *,
-    scenario: str,
+    profile_id: str,
     query: str,
     subject: str | None,
 ) -> None:
@@ -75,7 +74,7 @@ async def _run(
                     result = await session.call_tool(
                         "recall_memory",
                         arguments={
-                            "scenario": scenario,
+                            "profile_id": profile_id,
                             "query": query,
                             "subject": subject,
                         },
@@ -100,7 +99,7 @@ def main() -> None:
             str(settings.mcp_url),
             settings.token_value(),
             args.command,
-            scenario=args.scenario,
+            profile_id=args.profile_id,
             query=args.query,
             subject=args.subject,
         )
