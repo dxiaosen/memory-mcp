@@ -5,6 +5,9 @@ from memory_mcp.core.domain import (
     LifecycleStatus,
     MemoryRecord,
     PrincipalContext,
+    RelationOrigin,
+    RelationScope,
+    RelationStatus,
     ReviewItem,
     ReviewStatus,
 )
@@ -23,6 +26,7 @@ def validate_capture_write(
         or write.reviews
         or write.duplicate_evidence
         or write.replacements
+        or write.relations
     ):
         raise ValueError("failed capture cannot persist candidate content")
     memory_ids = {record.item.memory_id for record in write.memories}
@@ -31,10 +35,13 @@ def validate_capture_write(
         for operation in (*write.duplicate_evidence, *write.replacements)
     }
     review_ids = {review.review_id for review in write.reviews}
+    relation_ids = {relation.relation_id for relation in write.relations}
     if len(memory_ids) != len(write.memories):
         raise ValueError("capture contains duplicate memory ids")
     if len(review_ids) != len(write.reviews):
         raise ValueError("capture contains duplicate review ids")
+    if len(relation_ids) != len(write.relations):
+        raise ValueError("capture contains duplicate relation ids")
     if len(lifecycle_ids) != (len(write.duplicate_evidence) + len(write.replacements)):
         raise ValueError("capture contains conflicting lifecycle writes")
     if memory_ids & lifecycle_ids:
@@ -47,6 +54,24 @@ def validate_capture_write(
             raise ValueError("review owner must match trusted principal")
         if review.status is not ReviewStatus.PENDING:
             raise ValueError("new review must be pending")
+    for relation in write.relations:
+        provenance = relation.provenance
+        if relation.owner_id != principal.owner_id:
+            raise ValueError("relation owner must match trusted principal")
+        if (
+            relation.status is not RelationStatus.ACTIVE
+            or relation.revoked_at is not None
+            or relation.stale_at is not None
+            or relation.origin is not RelationOrigin.AUTOMATIC
+            or relation.scope is not RelationScope.REVISION
+            or provenance is None
+            or provenance.capture_id != result.capture_id
+            or provenance.conversation_id != result.conversation_id
+            or provenance.source_turn_id != result.source_turn_id
+        ):
+            raise ValueError(
+                "new capture relation must be active automatic revision provenance"
+            )
     for duplicate in write.duplicate_evidence:
         if (
             duplicate.evidence.owner_id != principal.owner_id

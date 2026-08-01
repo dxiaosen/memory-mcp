@@ -12,6 +12,9 @@ from memory_mcp.schemas import (
     ErrorResponse,
     MemoryDetailReceipt,
     MemoryListReceipt,
+    MemoryRelationReceipt,
+    MemoryRelationSummaryView,
+    MemoryRelationView,
     MemoryRevisionView,
     MemoryRevocationReceipt,
     MemorySummaryView,
@@ -124,12 +127,25 @@ class MemoryTools(ToolSupport):
                     if include_history
                     else ()
                 )
+                relations = await asyncio.to_thread(
+                    self._service.list_memory_relations,
+                    principal.to_core(),
+                    identifier,
+                    include_inactive=include_history,
+                )
                 receipt = MemoryDetailReceipt(
                     request_id=current_request_id,
                     item=MemoryView.from_record(record),
                     history_included=include_history,
                     history=tuple(
                         MemoryRevisionView.from_entry(entry) for entry in history
+                    ),
+                    relations=tuple(
+                        MemoryRelationSummaryView.from_summary(
+                            summary,
+                            include_provenance=include_history,
+                        )
+                        for summary in relations
                     ),
                 )
                 self._log_completed(
@@ -195,5 +211,108 @@ class MemoryTools(ToolSupport):
                 return self._error_response(
                     current_request_id,
                     "revoke_memory",
+                    exc,
+                )
+
+        @server.tool(
+            name="link_memories",
+            description=(
+                "Create one directed relation between two owned active memories. "
+                "The relation type and direction must be allowed by their profile."
+            ),
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        async def link_memories(
+            source_memory_id: str,
+            target_memory_id: str,
+            relation_type: str,
+            ctx: Context,
+        ) -> MemoryRelationReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.WRITE)
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "link_memories",
+                )
+                relation = await asyncio.to_thread(
+                    self._service.link_memories,
+                    principal.to_core(),
+                    UUID(source_memory_id),
+                    UUID(target_memory_id),
+                    relation_type,
+                )
+                receipt = MemoryRelationReceipt(
+                    request_id=current_request_id,
+                    relation=MemoryRelationView.from_relation(relation),
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "link_memories",
+                    started_at,
+                    status=relation.status.value,
+                    result_count=1,
+                    relation_id=relation.relation_id,
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "link_memories",
+                    exc,
+                )
+
+        @server.tool(
+            name="revoke_memory_relation",
+            description="Revoke one owned memory relation without deleting history.",
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        async def revoke_memory_relation(
+            relation_id: str,
+            ctx: Context,
+        ) -> MemoryRelationReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.REVIEW)
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "revoke_memory_relation",
+                )
+                relation = await asyncio.to_thread(
+                    self._service.revoke_memory_relation,
+                    principal.to_core(),
+                    UUID(relation_id),
+                )
+                receipt = MemoryRelationReceipt(
+                    request_id=current_request_id,
+                    relation=MemoryRelationView.from_relation(relation),
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "revoke_memory_relation",
+                    started_at,
+                    status=relation.status.value,
+                    result_count=1,
+                    relation_id=relation.relation_id,
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "revoke_memory_relation",
                     exc,
                 )

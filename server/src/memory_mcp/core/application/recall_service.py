@@ -3,17 +3,20 @@
 import json
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime
+from uuid import UUID
 
 from memory_mcp.core.domain import (
     MemoryRecord,
+    MemoryRelationSummary,
     PrincipalContext,
     RecalledMemory,
     RecallQuery,
     RecallResult,
     RecallSourceSummary,
+    RelationDirection,
     normalize_memory_text,
 )
 from memory_mcp.core.ports import (
@@ -31,6 +34,7 @@ _SAFE_CONTEXT_HEADER = (
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _WORD = re.compile(r"\w+", re.UNICODE)
 _RELEVANCE_THRESHOLD = 0.18
+_RELATION_BOOST = 0.12
 
 
 class RecallService:
@@ -64,21 +68,39 @@ class RecallService:
             token_budget=query.token_budget,
         )
         profile = self._profile_registry.get(query.profile_id)
+        effective_at = self._clock()
         candidates = self._repository.find_current(
             principal,
             profile_id=query.profile_id,
             subject=query.subject,
-            effective_at=self._clock(),
+            effective_at=effective_at,
         )
+        candidate_ids = frozenset(record.item.memory_id for record in candidates)
+        relation_summaries = self._repository.list_relations(
+            principal,
+            memory_ids=tuple(candidate_ids),
+            active_only=True,
+            effective_at=effective_at,
+        )
+        relations_by_memory = _group_relations(relation_summaries, candidate_ids)
+        base_scores = {
+            record.item.memory_id: _score_record(
+                record,
+                query,
+                profile.recall_priorities,
+            )
+            for record in candidates
+        }
         ranked = tuple(
             sorted(
                 (
                     (
-                        _score_record(
-                            record,
-                            query,
-                            profile.recall_priorities,
+                        _relation_aware_score(
+                            record.item.memory_id,
+                            base_scores,
+                            relations_by_memory,
                         ),
+                        base_scores[record.item.memory_id],
                         record,
                     )
                     for record in candidates
@@ -86,10 +108,10 @@ class RecallService:
                 key=lambda value: (
                     value[0],
                     profile.recall_priorities.get(
-                        value[1].item.memory_type,
+                        value[2].item.memory_type,
                         0,
                     ),
-                    value[1].current_revision.observed_at.timestamp(),
+                    value[2].current_revision.observed_at.timestamp(),
                 ),
                 reverse=True,
             )
@@ -101,12 +123,14 @@ class RecallService:
                     "score": score,
                     "memory": asdict(record),
                 }
-                for score, record in ranked
+                for score, _, record in ranked
             ),
             profile_id=query.profile_id,
         )
         relevant = tuple(
-            (score, record) for score, record in ranked if score >= _RELEVANCE_THRESHOLD
+            (score, record)
+            for score, base_score, record in ranked
+            if base_score >= _RELEVANCE_THRESHOLD
         )
         if not relevant:
             return _traced_result(_empty_result(query.token_budget))
@@ -131,10 +155,27 @@ class RecallService:
             if len(selected) >= query.max_items:
                 truncated = True
                 break
-            recalled = _to_recalled_memory(record, score)
-            line = _render_item(recalled)
+            recalled = _to_recalled_memory(
+                record,
+                score,
+                relations_by_memory.get(record.item.memory_id, ()),
+            )
+            already_selected_ids = frozenset(item.memory_id for item in selected)
+            line = _render_item(recalled, already_selected_ids)
             prospective = "\n".join((_SAFE_CONTEXT_HEADER, *rendered_lines, line))
             prospective_tokens = _estimate_tokens(prospective)
+            if (
+                prospective_tokens > query.token_budget
+                and already_selected_ids
+                and any(
+                    relation.related_memory_id in already_selected_ids
+                    for relation in recalled.relations
+                )
+            ):
+                line = _render_item(recalled, frozenset())
+                prospective = "\n".join((_SAFE_CONTEXT_HEADER, *rendered_lines, line))
+                prospective_tokens = _estimate_tokens(prospective)
+                truncated = True
             if prospective_tokens > query.token_budget:
                 truncated = True
                 continue
@@ -266,6 +307,7 @@ def _character_pairs(value: str) -> set[str]:
 def _to_recalled_memory(
     record: MemoryRecord,
     score: float,
+    relations: Sequence[MemoryRelationSummary] = (),
 ) -> RecalledMemory:
     revision = record.current_revision
     return RecalledMemory(
@@ -301,12 +343,16 @@ def _to_recalled_memory(
             )
             for source in record.evidence[-3:]
         ),
+        relations=tuple(relations),
         relevance_score=score,
     )
 
 
-def _render_item(item: RecalledMemory) -> str:
-    return (
+def _render_item(
+    item: RecalledMemory,
+    already_selected_ids: frozenset[UUID],
+) -> str:
+    rendered = (
         "- memory "
         f"(revision_id={item.revision_id}, "
         f"type={json.dumps(item.memory_type, ensure_ascii=False)}, "
@@ -318,6 +364,56 @@ def _render_item(item: RecalledMemory) -> str:
         f"valid_from={item.valid_from.isoformat()}, "
         f"valid_until={item.valid_until.isoformat() if item.valid_until else 'open'}): "
         f"{json.dumps(item.content, ensure_ascii=False)}"
+    )
+    visible_relations = tuple(
+        relation
+        for relation in item.relations
+        if relation.related_memory_id in already_selected_ids
+    )
+    if not visible_relations:
+        return rendered
+    relation_text = ", ".join(
+        "("
+        f"type={json.dumps(summary.relation.relation_type)}, "
+        f"direction={summary.direction.value}, "
+        f"related_memory_id={summary.related_memory_id}"
+        ")"
+        for summary in visible_relations
+    )
+    return f"{rendered}; relations=[{relation_text}]"
+
+
+def _group_relations(
+    relations: Sequence[MemoryRelationSummary],
+    candidate_ids: frozenset[UUID],
+) -> dict[UUID, tuple[MemoryRelationSummary, ...]]:
+    grouped: dict[UUID, list[MemoryRelationSummary]] = {}
+    for summary in relations:
+        if summary.related_memory_id not in candidate_ids:
+            continue
+        current_memory_id = (
+            summary.relation.source_memory_id
+            if summary.direction is RelationDirection.OUTGOING
+            else summary.relation.target_memory_id
+        )
+        grouped.setdefault(current_memory_id, []).append(summary)
+    return {memory_id: tuple(values) for memory_id, values in grouped.items()}
+
+
+def _relation_aware_score(
+    memory_id: UUID,
+    base_scores: Mapping[UUID, float],
+    relations_by_memory: Mapping[UUID, Sequence[MemoryRelationSummary]],
+) -> float:
+    base = base_scores[memory_id]
+    if base < _RELEVANCE_THRESHOLD:
+        return base
+    has_relevant_neighbor = any(
+        base_scores.get(summary.related_memory_id, 0.0) >= _RELEVANCE_THRESHOLD
+        for summary in relations_by_memory.get(memory_id, ())
+    )
+    return round(
+        min(base + (_RELATION_BOOST if has_relevant_neighbor else 0.0), 1.0), 6
     )
 
 

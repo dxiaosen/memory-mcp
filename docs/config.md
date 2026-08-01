@@ -71,8 +71,8 @@ PostgreSQL URI 的用户名或密码若包含保留字符必须 percent-encode�
 | 类别 | 当前性质 | 说明 |
 | --- | --- | --- |
 | Core 领域规则与四类准入 | 代码固定 | owner-first、Evidence、revision、pending、敏感拦截和幂等不能由环境变量绕过 |
-| 内置 MemoryProfile | 代码固定 | `general-work` 与 `investment-research` 的类型、捕获规则、版本、优先级和元数据策略 |
-| MCP 工具与 DTO v1 | 代码固定 | 八个工具；capture contract version 为 `1` |
+| 内置 MemoryProfile | 代码固定 | `general-work` 与 `investment-research` 的类型、捕获规则、版本、优先级、元数据和关系策略 |
+| MCP 工具与 DTO v1 | 代码固定 | 十个工具；capture contract version 为 `1` |
 | PostgreSQL schema | migration 管理 | 通过独立命令升级，不在服务启动时动态拼表 |
 | Server 地址、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | Principal 映射 | 静态环境配置 | 当前正式认证入口；可替换为 OAuth/OIDC 适配器 |
@@ -178,12 +178,16 @@ revoke/delete、轮换编排或 OAuth/OIDC federation。它适合受控环境和
 | `MEMORY_MCP_MODEL_TIMEOUT_SECONDS` | `60` | 否 | 单次模型调用超时，最大 300 秒 |
 | `MEMORY_MCP_MODEL_MAX_RETRIES` | `2` | 否 | provider 层重试，范围 0–10 |
 
-生产进程始终构造真实模型 extractor。缺少 model 或 API key 时服务在启动阶段
-失败，不会静默退化为测试替身。运行时没有 backend 选择器和固定候选 JSON。
+生产进程从同一个 ChatModel 构造候选和关系两个严格 extractor，共享 provider、
+model、API key、base URL、temperature、timeout 和 retry；两者使用独立 prompt/schema
+版本。缺少 model 或 API key 时服务在启动阶段失败，不会静默退化为测试替身。
+运行时没有 backend 选择器、固定候选 JSON 或独立关系模型配置。
 
-真实模型只接收脱敏后的记忆配置、subject hint、时间和本轮正文，不接收 owner、Token
-或 DSN。输出还必须经过结构 schema、原文 Evidence、配置类型、敏感边界和准入规则
-的二次校验。
+候选模型只接收脱敏后的记忆配置、subject hint、时间和本轮正文。关系模型仅在当前
+Profile 存在关系策略且有合法端点组合时额外调用一次，最多接收 40 个 owned、同
+Profile、current/active/effective 的端点摘要，并最多返回 20 条建议。两次调用都不
+接收 owner、Token 或 DSN；输出还必须经过严格 schema、原文 Evidence、配置类型、
+敏感边界和准入规则的二次校验。
 
 DeepSeek V4 默认 thinking 与 LangChain 的强制 schema tool choice 不兼容，当前
 DeepSeek extraction adapter 固定关闭 thinking。OpenAI provider 不应用该参数。
@@ -258,6 +262,7 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 | `MEMORY_MCP_TEST_DATABASE_URL` | PostgreSQL pytest | 必须显式设置并指向名称含 `test` 的可清空 database |
 | `InMemoryMemoryRepository` | 单元/transport 测试 | 快速替身，不验证 SQL 或 migration |
 | `FakeCandidateExtractor` | Core/transport 测试 | 返回确定候选，不调用网络 |
+| `FakeRelationExtractor` | Core/PostgreSQL contract 测试 | 只引用请求中的可信端点，验证自动关系而不调用网络 |
 | `_StructuredModel` | extraction 单元测试 | 验证结构化输出边界 |
 | `FixedCandidateBackend` | 自动化 PostgreSQL MCP 闭环 | 测试代码构造并通过 `candidate_extractor` 注入 |
 | `examples/hook_runner.py` 的 Agent callable | 手工接线 | 回显处理结果，不是业务大模型 Agent |
@@ -278,6 +283,7 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 | `profile_version` | `general-work-v1` |
 | recall priority | preference 40, decision 35, ongoing_item 30, stable_context 20 |
 | metadata policy | 全部 `confidential`，不自动过期 |
+| relation policy | 空；通用工作不默认解释业务关系 |
 
 `InvestmentResearchProfile` 当前固定：
 
@@ -291,6 +297,24 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 | `catalyst` | `internal` | 90 天 |
 | `ongoing_research` | `confidential` | 365 天 |
 | `research_decision` | `confidential` | 无 |
+
+投研关系也是代码固定策略，不通过环境变量注入：
+
+| relation type | source type | target type |
+| --- | --- | --- |
+| `supports` / `challenges` | `evidence_claim` | `thesis` |
+| `threatens` | `risk` | `thesis` |
+| `could_catalyze` | `catalyst` | `thesis` |
+| `addresses` | `ongoing_research` | `research_question` |
+| `resolves` | `research_decision` | `research_question` |
+
+方向属于策略合同，反向连接会得到 `invalid_relation`。关系只连接同 owner、同
+Profile 的两个有效 MemoryItem；不增加任何 Server 或 Agent 环境变量。AfterRun 会
+自动保存命中用户原文、`expression_basis=explicit`、confidence 不低于 `0.90` 且端点
+唯一的关系；Assistant/Tool 自述、低置信、推断、歧义、pending 或 blocked 端点直接
+跳过。自动边固定为 `automatic/revision` 并保存 provenance，replacement 后转为
+stale；显式工具边固定为 `manual/item`。这些行为和评估阈值都不增加运行环境变量。
+`general-work` 关系策略为空，因此不发生第二次模型调用。
 
 投研 Profile 的 `profile_id` 为 `investment-research`，版本为
 `investment-research-v1`。Server 启动会同时注册两套内置 Profile，但 MCP 工具和

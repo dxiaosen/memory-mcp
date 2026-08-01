@@ -39,14 +39,18 @@ openspec-cn validate add-general-memory-core --strict
 openspec-cn validate add-agent-active-memory --strict
 openspec-cn validate enhance-memory-metadata --strict
 openspec-cn validate add-investment-research-profile --strict
+openspec-cn validate add-memory-relations --strict
+openspec-cn validate automate-memory-relations --strict
+openspec-cn validate harden-memory-relations --strict
+.venv/bin/python -m evals.runner
 ```
 
-未显式提供 `MEMORY_MCP_TEST_DATABASE_URL` 时，6 个 PostgreSQL 外部用例应 skip，
+未显式提供 `MEMORY_MCP_TEST_DATABASE_URL` 时，9 个 PostgreSQL 外部用例应 skip，
 而不是读取 `.env` 后静默清库。当前提交的精确测试数以本页最后一次验收记录为准，
 不要把 skip 描述成已验证数据库。
 
 ```text
-117 passed, 6 skipped
+151 passed, 9 skipped
 ```
 
 ## 3. PostgreSQL 安全前置检查
@@ -91,10 +95,11 @@ raise SystemExit(pytest.main([
 '
 ```
 
-2026-08-01 已在当前 RDS 配置上成功应用元数据与回滚兼容 migration，随后
-`memory-mcp-db health` 通过。该数据库名称不满足测试库的 `test` 防误删条件，因此
-本轮没有在它上面运行会 truncate 的 6 个 PostgreSQL pytest；需要完整 SQL 写入回归
-时，应另建名称包含 `test` 的可清空数据库再运行本节命令。
+2026-08-01 已在当前 RDS 配置上同步最终 `0007` 关系约束和 checksum；随后再次执行
+`memory-mcp-db migrate` 显示 schema 已是最新，`memory-mcp-db health` 通过。该数据库
+名称不满足测试库的 `test` 防误删条件，因此本轮没有在它上面运行会 truncate 的 9 个
+PostgreSQL pytest；需要完整 SQL 写入回归时，应另建名称包含 `test` 的可清空数据库再
+运行本节命令。
 
 ## 4. 自动化覆盖清单
 
@@ -110,28 +115,51 @@ raise SystemExit(pytest.main([
 - reprocess-required 后使用相同 event 继续处理；
 - schema migration 顺序、checksum、必需表和约束健康检查，包括保留历史 checksum
   的 `0003_profile_naming.sql`、新增元数据约束的 `0004_memory_metadata.sql`，以及
-  保证旧版短期回滚写入的 `0005_metadata_rollback_compat.sql`；
+  保证旧版短期回滚写入的 `0005_metadata_rollback_compat.sql`、增加 owner/Profile
+  端点约束和活动唯一性的 `0006_memory_relations.sql`，以及增加 provenance、revision
+  外键和 stale 状态的 `0007_relation_provenance.sql`；
 - revision confidence、verification、sensitivity、validity 的领域不变量和 SQL 映射；
 - Evidence document/web/tool citation 字段的消息归属、敏感阻断和持久化往返；
 - 到期 revision 在 owner-scoped Repository 查询阶段被排除，但详情/history 保留；
 - `revoke_memory` 的 owner 隔离、幂等、立即停止召回和 Evidence 保留；
+- 关系 policy 方向、同 owner/Profile/有效端点、并发幂等、撤销 history、人工
+  item-scoped replacement 稳定性和一跳召回加权；
+- 自动 revision-scoped 关系的完整 provenance、replacement stale、重新建边、历史
+  可见性和事务回滚；
+- 自动关系严格 schema、额外身份字段/未知 ID/伪造原文拒绝、40 端点和 20 建议上限；
+- `general-work` 零额外调用，投研同轮/既有端点建边，pending/blocked/跨 owner 排除；
+- 用户原文 + explicit + confidence `0.90` 准入，Assistant 自述/低置信/推断跳过，
+  批内和已有活动关系幂等；
+- 关系 Provider 中断进入 reprocess-required，完成事件 replay 不重复调用两个 extractor；
+- InMemory/PostgreSQL CaptureWrite 中新记忆与关系共同提交或共同回滚；
 - `general-work` 与 `investment-research` 的完整 Profile 注册和 Core 依赖边界；
 - 投研 thesis/evidence 共存、同原子论点冲突 pending、期限策略、交易内容阻断与非法
   progress 安全失败；
 - 进程重启后记忆仍可召回。
 
-### 4.2 MCP transport
+### 4.2 质量评估
+
+- `evals/cases.json` 使用严格 schema、唯一 case ID，禁止额外 owner/Token 字段；
+- 默认 runner 不创建模型客户端，不访问网络或数据库；
+- candidate/relation precision 与 recall、Recall@K、安全负例通过率确定性计分；
+- 误保存或误建边会降低 precision 并令阈值检查返回非零；
+- `--live-model` 才读取 `MEMORY_MCP_MODEL_*`，并通过进程内 Repository 执行真实候选
+  和关系准入。
+
+### 4.3 MCP transport
 
 - 未认证请求为 401；
 - Token 只在服务端映射为 Principal；
-- 八个工具的输入 schema 禁止额外字段和 owner 参数；
+- 十个工具的输入 schema 禁止额外字段和 owner 参数；
+- `link_memories` / `revoke_memory_relation` 的 write/review scope、稳定错误码、跨 owner
+  隔离和严格参数；
 - read/write/review scope 分离；
 - DTO `contract_version=1`、稳定 fingerprint 和字符上限；
 - 服务错误转换为稳定、无敏感正文的错误码；
 - `/health` 验证 PostgreSQL，异常时返回 503；
 - 同 owner Agent A/B 共享、不同 owner 隔离。
 
-### 4.3 Hook 生命周期
+### 4.4 Hook 生命周期
 
 - 同一 run key 并发或重复 BeforeRun 只访问服务一次；
 - 同一 run key 重复 AfterRun 只提交一次；
@@ -152,18 +180,20 @@ raise SystemExit(pytest.main([
 - 第三方标准 BeforeRun/AfterRun 不修改 Bridge、状态或 Core 即可完成闭环；
 - 真实 HTTP/MCP 中 Codex 写入后 Claude/通用 Agent 可跨 Agent 召回，不同 owner 隔离。
 
-### 4.4 生产配置边界
+### 4.5 生产配置边界
 
 - 服务端模板不包含 `MEMORY_HOOK_*`、fixed candidate 或测试数据库；
 - Agent 模板只包含 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；
 - 真实抽取缺少 model/API key 时拒绝构造；
+- 候选与关系 extractor 共享同一个 ChatModel 和 `MEMORY_MCP_MODEL_*` 配置，但使用
+  独立严格 schema；
 - 运行配置不接受 fixed backend 或候选 JSON；
 - 静态 Token 少于 32 字符时拒绝服务启动；
 - Hook 首选两个 `MEMORY_MCP_*` 连接变量并兼容旧名称，不从根目录 `.env`
   隐式加载其他 Agent 凭据；
 - 内置 Codex/Claude Code 配置模板只注册顶层事件且不包含地址或 Token。
 
-### 4.5 发行包隔离
+### 4.6 发行包隔离
 
 自动化依赖守卫会扫描两个源码树：
 

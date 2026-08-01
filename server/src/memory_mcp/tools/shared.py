@@ -17,7 +17,9 @@ from memory_mcp.auth import (
 from memory_mcp.core import (
     CaptureNotConfiguredError,
     IdempotencyConflictError,
+    InvalidMemoryRelationError,
     MemoryNotFoundError,
+    MemoryRelationNotFoundError,
     MemoryService,
     ProfileNotRegisteredError,
     ReviewNotFoundError,
@@ -163,6 +165,14 @@ def _map_error(error: Exception) -> tuple[ErrorCode, str, bool]:
         )
     if isinstance(error, MemoryNotFoundError):
         return ErrorCode.MEMORY_UNAVAILABLE, "Memory is unavailable.", False
+    if isinstance(error, InvalidMemoryRelationError):
+        return ErrorCode.INVALID_RELATION, "The memory relation is invalid.", False
+    if isinstance(error, MemoryRelationNotFoundError):
+        return (
+            ErrorCode.RELATION_UNAVAILABLE,
+            "Memory relation is unavailable.",
+            False,
+        )
     if isinstance(error, ReviewNotFoundError):
         return ErrorCode.REVIEW_UNAVAILABLE, "Review is unavailable.", False
     if isinstance(error, CaptureNotConfiguredError):

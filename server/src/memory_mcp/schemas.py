@@ -21,6 +21,8 @@ from memory_mcp.core import (
     EvidenceSourceType,
     MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRelation,
+    MemoryRelationSummary,
     MessageRole,
     RecallResult,
     ReviewItem,
@@ -287,6 +289,102 @@ def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
     }
 
 
+class RelationProvenanceView(StrictDto):
+    capture_id: UUID
+    conversation_id: str
+    source_turn_id: str
+    source_expression: str
+    confidence: float
+    expression_basis: str
+    model_id: str
+    prompt_version: str
+    schema_version: str
+
+
+class MemoryRelationView(StrictDto):
+    relation_id: UUID
+    profile_id: str
+    source_memory_id: UUID
+    target_memory_id: UUID
+    relation_type: str
+    origin: str
+    scope: str
+    source_revision_id: UUID | None
+    target_revision_id: UUID | None
+    status: str
+    created_at: datetime
+    revoked_at: datetime | None
+    stale_at: datetime | None
+    stale_reason: str | None
+    provenance: RelationProvenanceView | None = None
+
+    @classmethod
+    def from_relation(
+        cls,
+        relation: MemoryRelation,
+        *,
+        include_provenance: bool = True,
+    ) -> Self:
+        provenance = relation.provenance
+        return cls(
+            relation_id=relation.relation_id,
+            profile_id=relation.profile_id,
+            source_memory_id=relation.source_memory_id,
+            target_memory_id=relation.target_memory_id,
+            relation_type=relation.relation_type,
+            origin=relation.origin.value,
+            scope=relation.scope.value,
+            source_revision_id=relation.source_revision_id,
+            target_revision_id=relation.target_revision_id,
+            status=relation.status.value,
+            created_at=relation.created_at,
+            revoked_at=relation.revoked_at,
+            stale_at=relation.stale_at,
+            stale_reason=relation.stale_reason,
+            provenance=(
+                RelationProvenanceView(
+                    capture_id=provenance.capture_id,
+                    conversation_id=provenance.conversation_id,
+                    source_turn_id=provenance.source_turn_id,
+                    source_expression=provenance.source_expression,
+                    confidence=provenance.confidence,
+                    expression_basis=provenance.expression_basis.value,
+                    model_id=provenance.model_id,
+                    prompt_version=provenance.prompt_version,
+                    schema_version=provenance.schema_version,
+                )
+                if include_provenance and provenance is not None
+                else None
+            ),
+        )
+
+
+class MemoryRelationSummaryView(MemoryRelationView):
+    direction: str
+    related_memory_id: UUID
+    related_subject: str
+    related_memory_type: str
+
+    @classmethod
+    def from_summary(
+        cls,
+        summary: MemoryRelationSummary,
+        *,
+        include_provenance: bool = False,
+    ) -> Self:
+        relation = summary.relation
+        return cls(
+            **MemoryRelationView.from_relation(
+                relation,
+                include_provenance=include_provenance,
+            ).model_dump(),
+            direction=summary.direction.value,
+            related_memory_id=summary.related_memory_id,
+            related_subject=summary.related_subject,
+            related_memory_type=summary.related_memory_type,
+        )
+
+
 class MemoryListReceipt(StrictDto):
     ok: Literal[True] = True
     request_id: str
@@ -300,6 +398,7 @@ class MemoryDetailReceipt(StrictDto):
     item: MemoryView
     history_included: bool = False
     history: tuple[MemoryRevisionView, ...] = ()
+    relations: tuple[MemoryRelationSummaryView, ...] = ()
 
 
 class MemoryRevisionView(StrictDto):
@@ -396,6 +495,7 @@ class RecalledMemoryView(StrictDto):
     valid_until: datetime | None
     last_verified_at: datetime | None
     sources: tuple[RecallSourceView, ...]
+    relations: tuple[MemoryRelationSummaryView, ...]
     relevance_score: float
 
 
@@ -445,6 +545,10 @@ class RecallReceipt(StrictDto):
                             citation_locator=source.citation_locator,
                         )
                         for source in item.sources
+                    ),
+                    relations=tuple(
+                        MemoryRelationSummaryView.from_summary(summary)
+                        for summary in item.relations
                     ),
                     relevance_score=item.relevance_score,
                 )
@@ -510,6 +614,12 @@ class MemoryRevocationReceipt(StrictDto):
     ok: Literal[True] = True
     request_id: str
     memory: MemoryView
+
+
+class MemoryRelationReceipt(StrictDto):
+    ok: Literal[True] = True
+    request_id: str
+    relation: MemoryRelationView
 
 
 def encode_cursor(offset: int) -> str:

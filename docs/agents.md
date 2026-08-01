@@ -90,6 +90,15 @@ Token；Server 和 Hook 都不会根据对话正文猜测场景。仓库手工�
 `MEMORY_HOOK_PROFILE_ID=investment-research`，它属于集成调试，不应做成每轮用户
 选择项。
 
+投研关系能力不会增加 Agent 环境变量。AfterRun 仍只提交一次完成轮次，关系识别在
+Server 的 Capture 流程内自动发生：先完成候选准入，再从本轮 auto-save 和同 owner/
+Profile 的有效记忆中选择有界端点，最后只保存显式、高置信且符合 Profile 方向的
+关系。关系原文必须命中用户消息；Assistant/Tool 自己得出的关系、pending、blocked
+和歧义关系不会自动建边。`link_memories` 继续作为治理和修正工具，不是普通用户
+必须调用的步骤。自动边绑定当时两端 revision，后续 replacement 会在 Server 事务内
+把旧边转为 stale，不需要 Agent 补发关系生命周期事件；普通用户侧仍只配置 URL 和
+Token。
+
 ### 配置职责不要混合
 
 一个完整接入包含三类配置，它们不是同一个文件：

@@ -11,6 +11,8 @@ from memory_mcp.core.domain import (
     Evidence,
     MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRelation,
+    MemoryRelationSummary,
     MemoryRevision,
     PrincipalContext,
     ReviewItem,
@@ -28,6 +30,7 @@ class CaptureWrite:
     reviews: tuple[ReviewItem, ...] = ()
     duplicate_evidence: tuple[DuplicateEvidenceWrite, ...] = ()
     replacements: tuple[ReplacementWrite, ...] = ()
+    relations: tuple[MemoryRelation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,40 @@ class MemoryRepository(Protocol):
         memory_id: UUID,
     ) -> MemoryRecord | None:
         """幂等撤销 owned current revision；越权与不存在都返回 ``None``。"""
+
+        ...
+
+    def link_relation(
+        self,
+        principal: PrincipalContext,
+        relation: MemoryRelation,
+        *,
+        effective_at: datetime,
+    ) -> MemoryRelation:
+        """幂等建立一条已通过 Profile 校验的活动关系。"""
+
+        ...
+
+    def revoke_relation(
+        self,
+        principal: PrincipalContext,
+        relation_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> MemoryRelation | None:
+        """幂等撤销 owned 关系；越权与不存在都返回 ``None``。"""
+
+        ...
+
+    def list_relations(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        active_only: bool,
+        effective_at: datetime | None = None,
+    ) -> Sequence[MemoryRelationSummary]:
+        """批量返回当前 owner 指定记忆的一跳关系摘要。"""
 
         ...
 

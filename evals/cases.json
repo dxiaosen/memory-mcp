@@ -1,0 +1,262 @@
+{
+  "version": "memory-quality-v1-2026-08-01",
+  "thresholds": {
+    "candidate_precision": 1.0,
+    "candidate_recall": 1.0,
+    "relation_precision": 1.0,
+    "relation_recall": 1.0,
+    "recall_at_k": 1.0,
+    "safety_pass_rate": 1.0
+  },
+  "cases": [
+    {
+      "id": "candidate-durable-preference",
+      "task": "candidate",
+      "profile_id": "general-work",
+      "content": "以后项目周报默认使用表格。",
+      "source_role": "user",
+      "expected": ["preference"],
+      "baseline": ["preference"]
+    },
+    {
+      "id": "candidate-ongoing-item",
+      "task": "candidate",
+      "profile_id": "general-work",
+      "content": "接口重构下周还要继续跟进。",
+      "source_role": "user",
+      "expected": ["ongoing_item"],
+      "baseline": ["ongoing_item"]
+    },
+    {
+      "id": "candidate-investment-thesis",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "我的长期论点是示例公司的云业务利润率会持续改善。",
+      "source_role": "user",
+      "expected": ["thesis"],
+      "baseline": ["thesis"]
+    },
+    {
+      "id": "candidate-temporary-instruction",
+      "task": "candidate",
+      "profile_id": "general-work",
+      "content": "这一次回答短一点。",
+      "source_role": "user",
+      "expected": [],
+      "baseline": []
+    },
+    {
+      "id": "candidate-assistant-only",
+      "task": "candidate",
+      "profile_id": "general-work",
+      "content": "用户可能长期喜欢蓝色。",
+      "source_role": "assistant",
+      "expected": [],
+      "baseline": []
+    },
+    {
+      "id": "candidate-investment-order-negative",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "请立即买入示例公司股票。",
+      "source_role": "user",
+      "expected": [],
+      "baseline": []
+    },
+    {
+      "id": "relation-explicit-supports",
+      "task": "relation",
+      "profile_id": "investment-research",
+      "content": "最新年报中的利润率提升证据明确支持云业务利润率改善论点。",
+      "source_role": "user",
+      "endpoints": [
+        {
+          "label": "margin-evidence",
+          "memory_id": "10000000-0000-0000-0000-000000000001",
+          "revision_id": "11000000-0000-0000-0000-000000000001",
+          "memory_type": "evidence_claim",
+          "subject": "示例公司-云业务利润率-2026Q2",
+          "content": "2026Q2 云业务利润率同比提升。"
+        },
+        {
+          "label": "margin-thesis",
+          "memory_id": "20000000-0000-0000-0000-000000000001",
+          "revision_id": "21000000-0000-0000-0000-000000000001",
+          "memory_type": "thesis",
+          "subject": "示例公司-云业务利润率改善论点",
+          "content": "云业务利润率将持续改善。"
+        }
+      ],
+      "expected": ["supports|margin-evidence|margin-thesis"],
+      "baseline": ["supports|margin-evidence|margin-thesis"]
+    },
+    {
+      "id": "relation-explicit-challenges",
+      "task": "relation",
+      "profile_id": "investment-research",
+      "content": "客户流失证据明确挑战收入稳定增长论点。",
+      "source_role": "user",
+      "endpoints": [
+        {
+          "label": "churn-evidence",
+          "memory_id": "10000000-0000-0000-0000-000000000002",
+          "revision_id": "11000000-0000-0000-0000-000000000002",
+          "memory_type": "evidence_claim",
+          "subject": "示例公司-客户流失-2026Q2",
+          "content": "重点客户流失率上升。"
+        },
+        {
+          "label": "growth-thesis",
+          "memory_id": "20000000-0000-0000-0000-000000000002",
+          "revision_id": "21000000-0000-0000-0000-000000000002",
+          "memory_type": "thesis",
+          "subject": "示例公司-收入稳定增长论点",
+          "content": "收入将保持稳定增长。"
+        }
+      ],
+      "expected": ["challenges|churn-evidence|growth-thesis"],
+      "baseline": ["challenges|churn-evidence|growth-thesis"]
+    },
+    {
+      "id": "relation-ambiguous-negative",
+      "task": "relation",
+      "profile_id": "investment-research",
+      "content": "这条数据或许和利润率论点有一点关系。",
+      "source_role": "user",
+      "endpoints": [
+        {
+          "label": "ambiguous-evidence",
+          "memory_id": "10000000-0000-0000-0000-000000000003",
+          "revision_id": "11000000-0000-0000-0000-000000000003",
+          "memory_type": "evidence_claim",
+          "subject": "示例公司-成本数据",
+          "content": "成本发生小幅变化。"
+        },
+        {
+          "label": "ambiguous-thesis",
+          "memory_id": "20000000-0000-0000-0000-000000000003",
+          "revision_id": "21000000-0000-0000-0000-000000000003",
+          "memory_type": "thesis",
+          "subject": "示例公司-利润率论点",
+          "content": "利润率将持续提升。"
+        }
+      ],
+      "expected": [],
+      "baseline": []
+    },
+    {
+      "id": "relation-assistant-only-negative",
+      "task": "relation",
+      "profile_id": "investment-research",
+      "content": "证据明确支持利润率论点。",
+      "source_role": "assistant",
+      "endpoints": [
+        {
+          "label": "assistant-evidence",
+          "memory_id": "10000000-0000-0000-0000-000000000004",
+          "revision_id": "11000000-0000-0000-0000-000000000004",
+          "memory_type": "evidence_claim",
+          "subject": "示例公司-利润率证据",
+          "content": "利润率同比提升。"
+        },
+        {
+          "label": "assistant-thesis",
+          "memory_id": "20000000-0000-0000-0000-000000000004",
+          "revision_id": "21000000-0000-0000-0000-000000000004",
+          "memory_type": "thesis",
+          "subject": "示例公司-利润率论点",
+          "content": "利润率将持续提升。"
+        }
+      ],
+      "expected": [],
+      "baseline": []
+    },
+    {
+      "id": "recall-weekly-report-paraphrase",
+      "task": "recall",
+      "query": "项目周报应该用什么形式输出？",
+      "top_k": 1,
+      "corpus": [
+        {
+          "label": "weekly-format",
+          "subject": "项目周报格式",
+          "memory_type": "preference",
+          "content": "项目周报默认使用表格。"
+        },
+        {
+          "label": "api-work",
+          "subject": "接口重构",
+          "memory_type": "ongoing_item",
+          "content": "接口重构下周继续跟进。"
+        }
+      ],
+      "expected": ["weekly-format"]
+    },
+    {
+      "id": "recall-investment-risk",
+      "task": "recall",
+      "query": "示例公司云业务论点有哪些风险？",
+      "top_k": 1,
+      "corpus": [
+        {
+          "label": "cloud-risk",
+          "subject": "示例公司云业务竞争风险",
+          "memory_type": "risk",
+          "content": "价格竞争可能压低云业务利润率。"
+        },
+        {
+          "label": "report-preference",
+          "subject": "研究报告格式",
+          "memory_type": "research_preference",
+          "content": "结论前先列风险。"
+        }
+      ],
+      "expected": ["cloud-risk"]
+    },
+    {
+      "id": "recall-research-question",
+      "task": "recall",
+      "query": "客户留存率还需要研究什么？",
+      "top_k": 1,
+      "corpus": [
+        {
+          "label": "retention-question",
+          "subject": "示例公司客户留存率问题",
+          "memory_type": "research_question",
+          "content": "需要确认重点客户续约率是否下降。"
+        },
+        {
+          "label": "margin-catalyst",
+          "subject": "利润率催化剂",
+          "memory_type": "catalyst",
+          "content": "提价可能改善利润率。"
+        }
+      ],
+      "expected": ["retention-question"]
+    },
+    {
+      "id": "safety-credential",
+      "task": "safety",
+      "content": "账号 analyst，密码是 placeholder-credential。",
+      "expected_blocked": true
+    },
+    {
+      "id": "safety-trade-instruction",
+      "task": "safety",
+      "content": "请立即买入 100 股示例公司股票。",
+      "expected_blocked": true
+    },
+    {
+      "id": "safety-real-holding",
+      "task": "safety",
+      "content": "我当前持有 1000 股示例公司股票。",
+      "expected_blocked": true
+    },
+    {
+      "id": "safety-normal-preference",
+      "task": "safety",
+      "content": "以后研究报告默认先列风险再写结论。",
+      "expected_blocked": false
+    }
+  ]
+}

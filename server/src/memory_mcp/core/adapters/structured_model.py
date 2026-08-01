@@ -1,20 +1,30 @@
-"""把任意结构化模型后端适配为 CandidateExtractor。"""
+"""把任意结构化模型后端适配为候选与关系 Extractor。"""
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from memory_mcp.core.domain import (
     AssertionKind,
     CandidateDurability,
     CandidateProposal,
     ExpressionBasis,
+    RelationProposal,
 )
 from memory_mcp.core.exceptions import InvalidModelOutputError
-from memory_mcp.core.ports import ExtractionRequest
+from memory_mcp.core.ports import (
+    MAX_RELATION_PROPOSALS,
+    ExtractionRequest,
+    RelationExtractionRequest,
+)
 
 StructuredModelBackend = Callable[
     [ExtractionRequest],
+    Sequence[Mapping[str, Any]],
+]
+StructuredRelationBackend = Callable[
+    [RelationExtractionRequest],
     Sequence[Mapping[str, Any]],
 ]
 
@@ -62,6 +72,51 @@ class StructuredCandidateExtractor:
         except (TypeError, ValueError, KeyError) as exc:
             raise InvalidModelOutputError(
                 "structured candidate output is invalid"
+            ) from exc
+
+
+class StructuredRelationExtractor:
+    """解析结构化关系输出，不依赖具体模型 SDK。"""
+
+    def __init__(
+        self,
+        backend: StructuredRelationBackend,
+        *,
+        model_id: str,
+        prompt_version: str,
+        schema_version: str = "relation-v1",
+    ) -> None:
+        self._backend = backend
+        self._model_id = _required_text(model_id, "model_id")
+        self._prompt_version = _required_text(prompt_version, "prompt_version")
+        self._schema_version = _required_text(schema_version, "schema_version")
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def prompt_version(self) -> str:
+        return self._prompt_version
+
+    @property
+    def schema_version(self) -> str:
+        return self._schema_version
+
+    def extract(
+        self,
+        request: RelationExtractionRequest,
+    ) -> tuple[RelationProposal, ...]:
+        try:
+            payload = self._backend(request)
+            if len(payload) > MAX_RELATION_PROPOSALS:
+                raise InvalidModelOutputError("relation proposal limit exceeded")
+            return tuple(_parse_relation(item) for item in payload)
+        except InvalidModelOutputError:
+            raise
+        except (TypeError, ValueError, KeyError) as exc:
+            raise InvalidModelOutputError(
+                "structured relation output is invalid"
             ) from exc
 
 
@@ -130,6 +185,45 @@ def _parse_candidate(payload: Mapping[str, Any]) -> CandidateProposal:
     )
 
 
+def _parse_relation(payload: Mapping[str, Any]) -> RelationProposal:
+    if not isinstance(payload, Mapping):
+        raise InvalidModelOutputError("relation must be an object")
+    expected_fields = {
+        "source_memory_id",
+        "target_memory_id",
+        "relation_type",
+        "source_expression",
+        "confidence",
+        "expression_basis",
+    }
+    if set(payload) != expected_fields:
+        raise InvalidModelOutputError("relation fields do not match the schema")
+    return RelationProposal(
+        source_memory_id=_uuid_value(
+            payload.get("source_memory_id"),
+            "source_memory_id",
+        ),
+        target_memory_id=_uuid_value(
+            payload.get("target_memory_id"),
+            "target_memory_id",
+        ),
+        relation_type=_required_text(
+            payload.get("relation_type"),
+            "relation_type",
+        ),
+        source_expression=_required_text(
+            payload.get("source_expression"),
+            "source_expression",
+        ),
+        confidence=_confidence(payload.get("confidence")),
+        expression_basis=_enum_value(
+            ExpressionBasis,
+            payload.get("expression_basis"),
+            "expression_basis",
+        ),
+    )
+
+
 def _required_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidModelOutputError(f"{field_name} must be non-empty text")
@@ -149,6 +243,17 @@ def _confidence(value: object) -> float:
     if not 0.0 <= confidence <= 1.0:
         raise InvalidModelOutputError("confidence must be between 0 and 1")
     return confidence
+
+
+def _uuid_value(value: object, field_name: str) -> UUID:
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return UUID(value)
+        except ValueError as exc:
+            raise InvalidModelOutputError(f"{field_name} must be a UUID") from exc
+    raise InvalidModelOutputError(f"{field_name} must be a UUID")
 
 
 def _optional_datetime(value: object, field_name: str) -> datetime | None:

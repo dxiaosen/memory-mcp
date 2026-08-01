@@ -30,6 +30,8 @@ Host 的轻量 Hook Client。仓库开发环境可以同时安装二者，生产
 
 ## OpenSpec 职责
 
+- [当前状态与归档顺序](../openspec/README.md)
+
 OpenSpec 是规范与变更管理区，不是第二套使用手册：
 
 | 制品 | 唯一职责 |
@@ -69,6 +71,32 @@ OpenSpec 是规范与变更管理区，不是第二套使用手册：
 - [OpenSpec Design](../openspec/changes/add-investment-research-profile/design.md)
 - [Tasks](../openspec/changes/add-investment-research-profile/tasks.md)
 - [Investment Research Spec](../openspec/changes/add-investment-research-profile/specs/investment-research-memory/spec.md)
+
+通用记忆关系：
+
+- [Proposal](../openspec/changes/add-memory-relations/proposal.md)
+- [OpenSpec Design](../openspec/changes/add-memory-relations/design.md)
+- [Tasks](../openspec/changes/add-memory-relations/tasks.md)
+- [Memory Relations Spec](../openspec/changes/add-memory-relations/specs/memory-relations/spec.md)
+
+自动记忆关系：
+
+- [Proposal](../openspec/changes/automate-memory-relations/proposal.md)
+- [OpenSpec Design](../openspec/changes/automate-memory-relations/design.md)
+- [Tasks](../openspec/changes/automate-memory-relations/tasks.md)
+- [Automatic Relations Spec](../openspec/changes/automate-memory-relations/specs/automatic-memory-relations/spec.md)
+
+关系证据链与质量评估：
+
+- [Proposal](../openspec/changes/harden-memory-relations/proposal.md)
+- [OpenSpec Design](../openspec/changes/harden-memory-relations/design.md)
+- [Tasks](../openspec/changes/harden-memory-relations/tasks.md)
+- [Relation Provenance Spec](../openspec/changes/harden-memory-relations/specs/relation-provenance/spec.md)
+- [Memory Quality Evaluation Spec](../openspec/changes/harden-memory-relations/specs/memory-quality-evaluation/spec.md)
+
+上述目录是尚未归档的变更历史：`add-general-memory-core` 仍保留部署/现场交付任务，
+其余变更的实现任务已经完成。完成状态只看各自 `tasks.md`，当前运行语义统一以
+`docs/design.md` 为准；不因代码完成而伪造公网验收、现场脚本或录屏证据。
 
 规范性需求以 capability specs 为准，完成状态只看 tasks，当前实现解释以
 `docs/design.md` 为准。

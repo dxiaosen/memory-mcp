@@ -18,12 +18,14 @@ _REQUIRED_TABLES = frozenset(
     {
         "memory_schema_migrations",
         "memory_profiles",
+        "memory_profile_relations",
         "memory_profile_types",
         "memory_items",
         "memory_revisions",
         "memory_evidence",
         "memory_capture_runs",
         "memory_review_items",
+        "memory_relations",
         "memory_capture_outcomes",
     }
 )

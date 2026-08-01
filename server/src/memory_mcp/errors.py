@@ -14,6 +14,8 @@ class ErrorCode(StrEnum):
     UNSUPPORTED_CONTRACT_VERSION = "unsupported_contract_version"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
     MEMORY_UNAVAILABLE = "memory_unavailable"
+    INVALID_RELATION = "invalid_relation"
+    RELATION_UNAVAILABLE = "relation_unavailable"
     REVIEW_UNAVAILABLE = "review_unavailable"
     CAPTURE_NOT_CONFIGURED = "capture_not_configured"
     TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"

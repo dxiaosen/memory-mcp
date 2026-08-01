@@ -9,6 +9,7 @@ from memory_mcp.core.ports import (
     MemoryProfile,
     MemoryRepository,
     ProfileRegistry,
+    RelationExtractor,
     SensitiveContentGuard,
 )
 
@@ -18,6 +19,7 @@ def create_memory_service(
     profiles: Iterable[MemoryProfile],
     *,
     candidate_extractor: CandidateExtractor | None = None,
+    relation_extractor: RelationExtractor | None = None,
     sensitive_guard: SensitiveContentGuard | None = None,
 ) -> MemoryService:
     """创建服务并显式注册全部记忆配置。"""
@@ -26,6 +28,7 @@ def create_memory_service(
         repository,
         ProfileRegistry(),
         candidate_extractor=candidate_extractor,
+        relation_extractor=relation_extractor,
         sensitive_guard=sensitive_guard or RegexSensitiveContentGuard(),
     )
     for profile in profiles:

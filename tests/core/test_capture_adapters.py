@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from memory_mcp.core import (
@@ -7,9 +8,15 @@ from memory_mcp.core import (
     ExpressionBasis,
     ExtractionRequest,
     InvalidModelOutputError,
+    MemoryRelationPolicy,
+    RelationEndpoint,
+    RelationExtractionRequest,
 )
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
-from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
+from memory_mcp.core.adapters.structured_model import (
+    StructuredCandidateExtractor,
+    StructuredRelationExtractor,
+)
 
 
 def test_structured_model_adapter_parses_candidates_and_exposes_versions() -> None:
@@ -65,6 +72,83 @@ def test_structured_model_adapter_rejects_invalid_payload() -> None:
         extractor.extract(_request())
 
 
+def test_structured_relation_adapter_parses_only_exact_schema() -> None:
+    source_id = UUID("11111111-1111-1111-1111-111111111111")
+    target_id = UUID("22222222-2222-2222-2222-222222222222")
+    extractor = StructuredRelationExtractor(
+        lambda request: [
+            {
+                "source_memory_id": str(source_id),
+                "target_memory_id": str(target_id),
+                "relation_type": "supports",
+                "source_expression": request.content,
+                "confidence": 0.96,
+                "expression_basis": "explicit",
+            }
+        ],
+        model_id="offline-relation-model",
+        prompt_version="relation-prompt-v1",
+    )
+
+    proposals = extractor.extract(_relation_request(source_id, target_id))
+
+    assert proposals[0].source_memory_id == source_id
+    assert proposals[0].target_memory_id == target_id
+    assert proposals[0].expression_basis is ExpressionBasis.EXPLICIT
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"owner_id": "forged-owner"},
+        {"source_memory_id": "not-a-uuid"},
+    ),
+)
+def test_structured_relation_adapter_rejects_extra_identity_and_invalid_id(
+    mutation: dict[str, str],
+) -> None:
+    source_id = UUID("11111111-1111-1111-1111-111111111111")
+    target_id = UUID("22222222-2222-2222-2222-222222222222")
+    payload = {
+        "source_memory_id": str(source_id),
+        "target_memory_id": str(target_id),
+        "relation_type": "supports",
+        "source_expression": "证据明确支持论点",
+        "confidence": 0.96,
+        "expression_basis": "explicit",
+        **mutation,
+    }
+    extractor = StructuredRelationExtractor(
+        lambda request: [payload],
+        model_id="offline-relation-model",
+        prompt_version="relation-prompt-v1",
+    )
+
+    with pytest.raises(InvalidModelOutputError):
+        extractor.extract(_relation_request(source_id, target_id))
+
+
+def test_structured_relation_adapter_rejects_more_than_twenty_proposals() -> None:
+    source_id = UUID("11111111-1111-1111-1111-111111111111")
+    target_id = UUID("22222222-2222-2222-2222-222222222222")
+    payload = {
+        "source_memory_id": str(source_id),
+        "target_memory_id": str(target_id),
+        "relation_type": "supports",
+        "source_expression": "证据明确支持论点",
+        "confidence": 0.96,
+        "expression_basis": "explicit",
+    }
+    extractor = StructuredRelationExtractor(
+        lambda request: [payload] * 21,
+        model_id="offline-relation-model",
+        prompt_version="relation-prompt-v1",
+    )
+
+    with pytest.raises(InvalidModelOutputError, match="limit"):
+        extractor.extract(_relation_request(source_id, target_id))
+
+
 @pytest.mark.parametrize(
     ("text", "category", "secret"),
     [
@@ -96,4 +180,37 @@ def _request() -> ExtractionRequest:
         allowed_memory_types=frozenset({"preference"}),
         capture_guidance="Capture durable preference.",
         profile_version="profile-v1",
+    )
+
+
+def _relation_request(
+    source_id: UUID,
+    target_id: UUID,
+) -> RelationExtractionRequest:
+    return RelationExtractionRequest(
+        profile_id="investment-research",
+        content="证据明确支持论点",
+        observed_at=datetime(2026, 7, 29, tzinfo=UTC),
+        profile_version="investment-research-v1",
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"evidence_claim"}),
+                target_memory_types=frozenset({"thesis"}),
+                description="Evidence supports a thesis.",
+            )
+        },
+        endpoints=(
+            RelationEndpoint(
+                source_id,
+                "evidence_claim",
+                "company-evidence",
+                "收入增长",
+            ),
+            RelationEndpoint(
+                target_id,
+                "thesis",
+                "company-thesis",
+                "增长趋势延续",
+            ),
+        ),
     )

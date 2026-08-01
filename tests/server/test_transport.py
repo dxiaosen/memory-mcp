@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import anyio
@@ -15,7 +16,12 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from memory_mcp.app import create_memory_mcp_server
-from memory_mcp.core import AssertionKind, ExpressionBasis
+from memory_mcp.core import (
+    AssertionKind,
+    ExpressionBasis,
+    MemoryRelationPolicy,
+    PrincipalContext,
+)
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
 from memory_mcp.profiles import GeneralWorkProfile
@@ -24,7 +30,9 @@ from pydantic import SecretStr
 
 from tests.support.fakes import (
     FakeCandidateExtractor,
+    TestMemoryProfile,
     candidate_proposal,
+    project_preference_command,
 )
 
 _OBSERVED_AT = "2026-07-30T10:00:00+08:00"
@@ -140,10 +148,11 @@ def _free_port() -> int:
 def _running_server(
     *,
     extractor: FakeCandidateExtractor,
+    memory_service=None,
 ) -> Iterator[str]:
     port = _free_port()
     settings = _settings(port)
-    service = create_memory_service(
+    service = memory_service or create_memory_service(
         InMemoryMemoryRepository(),
         [GeneralWorkProfile()],
         candidate_extractor=extractor,
@@ -241,6 +250,8 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     "reject_pending_memory",
                     "recall_memory",
                     "revoke_memory",
+                    "link_memories",
+                    "revoke_memory_relation",
                 }
                 capture_tool = next(
                     tool
@@ -523,6 +534,177 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
         assert all(
             "secret-password-123" not in request.content
             for request in first_extractor.requests
+        )
+
+
+def test_remote_transport_memory_relation_scopes_isolation_and_history() -> None:
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    service = create_memory_service(InMemoryMemoryRepository(), [profile])
+    principal = PrincipalContext("default:analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            subject="model-update",
+            memory_type="ongoing_item",
+            content="持续更新项目模型",
+            source_turn_id="session-1-turn-2",
+            source_expression="持续更新项目模型",
+        ),
+    )
+
+    with _running_server(
+        extractor=FakeCandidateExtractor(),
+        memory_service=service,
+    ) as url:
+
+        async def link_and_read(session: ClientSession):
+            extra_identity = await session.call_tool(
+                "link_memories",
+                arguments={
+                    "source_memory_id": str(source.item.memory_id),
+                    "target_memory_id": str(target.item.memory_id),
+                    "relation_type": "supports",
+                    "owner_id": "default:analyst-b",
+                },
+            )
+            assert extra_identity.isError is True
+            invalid_direction = _payload(
+                await session.call_tool(
+                    "link_memories",
+                    arguments={
+                        "source_memory_id": str(target.item.memory_id),
+                        "target_memory_id": str(source.item.memory_id),
+                        "relation_type": "supports",
+                    },
+                )
+            )
+            assert invalid_direction["error_code"] == "invalid_relation"
+            arguments = {
+                "source_memory_id": str(source.item.memory_id),
+                "target_memory_id": str(target.item.memory_id),
+                "relation_type": "supports",
+            }
+            linked = _payload(
+                await session.call_tool("link_memories", arguments=arguments)
+            )
+            replay = _payload(
+                await session.call_tool("link_memories", arguments=arguments)
+            )
+            assert linked["relation"] == replay["relation"]
+            assert linked["relation"]["origin"] == "manual"
+            assert linked["relation"]["scope"] == "item"
+            assert linked["relation"]["source_revision_id"] is not None
+            assert linked["relation"]["target_revision_id"] is not None
+            assert linked["relation"]["provenance"] is None
+            detail = _payload(
+                await session.call_tool(
+                    "get_memory",
+                    arguments={"memory_id": str(target.item.memory_id)},
+                )
+            )
+            assert detail["relations"][0]["direction"] == "incoming"
+            return linked["relation"]["relation_id"]
+
+        relation_id = anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_A,
+            link_and_read,
+        )
+
+        async def read_only(session: ClientSession):
+            denied = _payload(
+                await session.call_tool(
+                    "link_memories",
+                    arguments={
+                        "source_memory_id": str(source.item.memory_id),
+                        "target_memory_id": str(target.item.memory_id),
+                        "relation_type": "supports",
+                    },
+                )
+            )
+            assert denied["error_code"] == "permission_denied"
+            revoke_denied = _payload(
+                await session.call_tool(
+                    "revoke_memory_relation",
+                    arguments={"relation_id": relation_id},
+                )
+            )
+            assert revoke_denied["error_code"] == "permission_denied"
+
+        anyio.run(_with_session, url, _TOKEN_A_READ, read_only)
+
+        async def other_owner(session: ClientSession):
+            link_unavailable = _payload(
+                await session.call_tool(
+                    "link_memories",
+                    arguments={
+                        "source_memory_id": str(source.item.memory_id),
+                        "target_memory_id": str(target.item.memory_id),
+                        "relation_type": "supports",
+                    },
+                )
+            )
+            assert link_unavailable["error_code"] == "memory_unavailable"
+            unavailable = _payload(
+                await session.call_tool(
+                    "revoke_memory_relation",
+                    arguments={"relation_id": relation_id},
+                )
+            )
+            assert unavailable["error_code"] == "relation_unavailable"
+
+        anyio.run(_with_session, url, _TOKEN_B_AGENT_B, other_owner)
+
+        async def revoke_and_read_history(session: ClientSession):
+            revoked = _payload(
+                await session.call_tool(
+                    "revoke_memory_relation",
+                    arguments={"relation_id": relation_id},
+                )
+            )
+            repeated = _payload(
+                await session.call_tool(
+                    "revoke_memory_relation",
+                    arguments={"relation_id": relation_id},
+                )
+            )
+            assert revoked["relation"] == repeated["relation"]
+            assert revoked["relation"]["status"] == "revoked"
+            default_detail = _payload(
+                await session.call_tool(
+                    "get_memory",
+                    arguments={"memory_id": str(source.item.memory_id)},
+                )
+            )
+            assert default_detail["relations"] == []
+            history = _payload(
+                await session.call_tool(
+                    "get_memory",
+                    arguments={
+                        "memory_id": str(source.item.memory_id),
+                        "include_history": True,
+                    },
+                )
+            )
+            assert history["relations"][0]["status"] == "revoked"
+
+        anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_B,
+            revoke_and_read_history,
         )
 
 

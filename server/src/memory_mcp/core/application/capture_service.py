@@ -10,8 +10,13 @@ from threading import Lock
 from uuid import UUID
 
 from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
+from memory_mcp.core.application.automatic_relations import (
+    AutomaticRelationPlan,
+    AutomaticRelationPlanner,
+)
 from memory_mcp.core.application.candidate_processing import (
     CandidateMaterializer,
+    CandidateProcessingResult,
     CandidateProcessor,
 )
 from memory_mcp.core.application.review_service import ReviewService
@@ -22,6 +27,7 @@ from memory_mcp.core.domain import (
     CaptureStatus,
     ExtractionMetadata,
     MemoryRecord,
+    MessageRole,
     PrincipalContext,
     ReviewItem,
     TurnEnvelope,
@@ -39,6 +45,7 @@ from memory_mcp.core.ports import (
     ExtractionRequest,
     MemoryRepository,
     ProfileRegistry,
+    RelationExtractor,
     SensitiveContentGuard,
 )
 from memory_mcp.logging import log_content_event, log_event, stable_reference
@@ -56,6 +63,7 @@ class CaptureService:
         profile_registry: ProfileRegistry,
         *,
         candidate_extractor: CandidateExtractor | None,
+        relation_extractor: RelationExtractor | None,
         sensitive_guard: SensitiveContentGuard | None,
         admission_policy: ConservativeAdmissionPolicy,
         id_factory: Callable[[], UUID],
@@ -68,6 +76,17 @@ class CaptureService:
         self._id_factory = id_factory
         self._clock = clock
         self._capture_locks = _KeyedLocks()
+        self._relation_planner = (
+            AutomaticRelationPlanner(
+                repository,
+                profile_registry,
+                relation_extractor,
+                id_factory=id_factory,
+                clock=clock,
+            )
+            if relation_extractor is not None
+            else None
+        )
         materializer = CandidateMaterializer(
             id_factory=id_factory,
             clock=clock,
@@ -228,6 +247,51 @@ class CaptureService:
                 redacted_source=inspection.redacted_text,
                 initial_outcomes=initial_outcomes,
             )
+            relation_plan = AutomaticRelationPlan()
+            if self._relation_planner is not None and _has_processable_content(
+                inspection.redacted_text
+            ):
+                relation_plan = self._relation_planner.plan(
+                    principal,
+                    profile=profile,
+                    capture_id=capture_id,
+                    conversation_id=turn.conversation_id,
+                    source_turn_id=turn.source_turn_id,
+                    redacted_source=inspection.redacted_text,
+                    observed_at=turn.observed_at,
+                    same_capture_memories=_relation_endpoint_records(
+                        self._repository,
+                        principal,
+                        processed,
+                    ),
+                    subject_hint=(
+                        subject_hint_inspection.redacted_text
+                        if turn.subject_hint is not None
+                        else None
+                    ),
+                    trusted_user_sources=(
+                        tuple(
+                            guard.inspect(message.content).redacted_text
+                            for message in turn.messages
+                            if message.role is MessageRole.USER
+                        )
+                        if turn.messages
+                        else None
+                    ),
+                )
+                log_event(
+                    _LOGGER,
+                    logging.INFO,
+                    "memory.capture.relations_planned",
+                    accepted_count=len(relation_plan.relations),
+                    capture_id=capture_id,
+                    endpoint_count=relation_plan.endpoint_count,
+                    model_id=self._relation_planner.model_id,
+                    prompt_version=self._relation_planner.prompt_version,
+                    proposal_count=relation_plan.proposal_count,
+                    schema_version=self._relation_planner.schema_version,
+                    skipped_count=relation_plan.skipped_count,
+                )
             log_content_event(
                 "memory.capture.candidates",
                 capture_id=capture_id,
@@ -239,6 +303,16 @@ class CaptureService:
                 "memory.capture.admission",
                 capture_id=capture_id,
                 outcomes=tuple(asdict(outcome) for outcome in processed.outcomes),
+            )
+            log_content_event(
+                "memory.capture.relation_candidates",
+                capture_id=capture_id,
+                proposals=tuple(
+                    asdict(proposal) for proposal in relation_plan.proposals
+                ),
+                relations=tuple(
+                    asdict(relation) for relation in relation_plan.relations
+                ),
             )
         except (
             InvalidMemoryTypeError,
@@ -300,6 +374,7 @@ class CaptureService:
                 reviews=processed.reviews,
                 duplicate_evidence=processed.duplicate_evidence,
                 replacements=processed.replacements,
+                relations=relation_plan.relations,
             ),
         )
         log_content_event(
@@ -310,6 +385,7 @@ class CaptureService:
             ),
             memories=tuple(asdict(memory) for memory in processed.memories),
             replacements=tuple(asdict(write) for write in processed.replacements),
+            relations=tuple(asdict(relation) for relation in relation_plan.relations),
             reviews=tuple(asdict(review) for review in processed.reviews),
         )
         log_event(
@@ -334,6 +410,7 @@ class CaptureService:
                 outcome.decision is AdmissionDecision.PENDING
                 for outcome in processed.outcomes
             ),
+            relation_count=len(relation_plan.relations),
         )
         return result
 
@@ -414,6 +491,31 @@ class CaptureService:
 def _has_processable_content(value: str) -> bool:
     without_markers = _REDACTION_MARKER.sub("", value)
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
+
+
+def _relation_endpoint_records(
+    repository: MemoryRepository,
+    principal: PrincipalContext,
+    processed: CandidateProcessingResult,
+) -> tuple[MemoryRecord, ...]:
+    """把本轮 new/duplicate/replacement 的确定目标优先交给关系阶段。"""
+
+    records = list(processed.memories)
+    for duplicate in processed.duplicate_evidence:
+        current = repository.get(principal, duplicate.memory_id)
+        if current is not None:
+            records.append(current)
+    for replacement in processed.replacements:
+        current = repository.get(principal, replacement.memory_id)
+        if current is not None:
+            records.append(
+                MemoryRecord(
+                    item=current.item,
+                    current_revision=replacement.revision,
+                    evidence=replacement.evidence,
+                )
+            )
+    return tuple(records)
 
 
 class _KeyedLocks:

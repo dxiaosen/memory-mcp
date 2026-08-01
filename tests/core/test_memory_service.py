@@ -5,16 +5,23 @@ from uuid import UUID
 import pytest
 from memory_mcp.core import (
     InvalidMemoryProfileError,
+    InvalidMemoryRelationError,
     InvalidMemoryTypeError,
     InvalidProfileProgressError,
     LifecycleStatus,
     MemoryMetadataPolicy,
     MemoryNotFoundError,
+    MemoryRelationNotFoundError,
+    MemoryRelationPolicy,
     MemoryService,
     PrincipalContext,
     ProfileNotRegisteredError,
     ProfileRegistry,
     RecallQuery,
+    RelationDirection,
+    RelationOrigin,
+    RelationScope,
+    RelationStatus,
     SensitiveContentBlockedError,
     SensitivityLevel,
     VerificationStatus,
@@ -23,13 +30,43 @@ from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.composition import create_memory_service
 
-from tests.support.fakes import TestMemoryProfile, project_preference_command
+from tests.support.fakes import (
+    AlternateMemoryProfile,
+    FakeCandidateExtractor,
+    TestMemoryProfile,
+    candidate_proposal,
+    project_preference_command,
+)
 
 
 def _service():
     return create_memory_service(
         InMemoryMemoryRepository(),
         [TestMemoryProfile()],
+    )
+
+
+def _relation_profile() -> TestMemoryProfile:
+    return replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A durable preference supports an ongoing item.",
+            )
+        },
+    )
+
+
+def _ongoing_command():
+    return replace(
+        project_preference_command(),
+        subject="quarterly-model",
+        memory_type="ongoing_item",
+        content="季度模型需要持续更新",
+        source_turn_id="session-1-turn-2",
+        source_expression="季度模型需要持续更新",
     )
 
 
@@ -169,6 +206,19 @@ def test_malformed_profile_policy_is_rejected_before_use() -> None:
     with pytest.raises(InvalidMemoryProfileError, match="metadata_policies"):
         service.register_profile(TestMemoryProfile(metadata_policies={}))
 
+    with pytest.raises(InvalidMemoryProfileError, match="recall_priorities"):
+        service.register_profile(TestMemoryProfile(recall_priorities={}))
+
+    invalid_relation = MemoryRelationPolicy(
+        source_memory_types=frozenset({"unknown"}),
+        target_memory_types=frozenset({"preference"}),
+        description="Invalid endpoint vocabulary.",
+    )
+    with pytest.raises(InvalidMemoryProfileError, match="unknown memory types"):
+        service.register_profile(
+            TestMemoryProfile(relation_policies={"supports": invalid_relation})
+        )
+
 
 def test_revision_metadata_invariants_reject_invalid_values() -> None:
     record = _service().create_memory(
@@ -256,6 +306,214 @@ def test_record_without_source_evidence_is_invalid() -> None:
 
     with pytest.raises(ValueError, match="source evidence"):
         replace(record, evidence=())
+
+
+def test_relation_link_replay_direction_revoke_and_owner_isolation() -> None:
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+    )
+    owner_a = PrincipalContext("analyst-a")
+    owner_b = PrincipalContext("analyst-b")
+    source = service.create_memory(owner_a, project_preference_command())
+    target = service.create_memory(owner_a, _ongoing_command())
+    foreign = service.create_memory(owner_b, _ongoing_command())
+
+    relation = service.link_memories(
+        owner_a,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+    replay = service.link_memories(
+        owner_a,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+
+    assert replay == relation
+    assert relation.origin is RelationOrigin.MANUAL
+    assert relation.scope is RelationScope.ITEM
+    assert relation.source_revision_id == source.current_revision.revision_id
+    assert relation.target_revision_id == target.current_revision.revision_id
+    assert relation.provenance is None
+    outgoing = service.list_memory_relations(owner_a, source.item.memory_id)
+    incoming = service.list_memory_relations(owner_a, target.item.memory_id)
+    assert outgoing[0].direction is RelationDirection.OUTGOING
+    assert outgoing[0].related_memory_id == target.item.memory_id
+    assert incoming[0].direction is RelationDirection.INCOMING
+    assert incoming[0].related_memory_id == source.item.memory_id
+
+    with pytest.raises(MemoryNotFoundError, match="unavailable"):
+        service.link_memories(
+            owner_a,
+            source.item.memory_id,
+            foreign.item.memory_id,
+            "supports",
+        )
+    with pytest.raises(MemoryNotFoundError, match="unavailable"):
+        service.list_memory_relations(owner_b, source.item.memory_id)
+
+    revoked = service.revoke_memory_relation(owner_a, relation.relation_id)
+    assert revoked.status is RelationStatus.REVOKED
+    assert service.revoke_memory_relation(owner_a, relation.relation_id) == revoked
+    assert service.list_memory_relations(owner_a, source.item.memory_id) == ()
+    history = service.list_memory_relations(
+        owner_a,
+        source.item.memory_id,
+        include_inactive=True,
+    )
+    assert history[0].relation == revoked
+    with pytest.raises(MemoryRelationNotFoundError, match="unavailable"):
+        service.revoke_memory_relation(owner_b, relation.relation_id)
+
+
+def test_relation_rejects_self_direction_cross_profile_and_inactive_endpoint() -> None:
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile(), AlternateMemoryProfile()],
+    )
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(principal, _ongoing_command())
+    other_profile = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            profile_id="personal-notes",
+            subject="note",
+            memory_type="note",
+        ),
+    )
+
+    with pytest.raises(InvalidMemoryRelationError, match="self loop"):
+        service.link_memories(
+            principal,
+            source.item.memory_id,
+            source.item.memory_id,
+            "supports",
+        )
+    with pytest.raises(InvalidMemoryRelationError, match="endpoints"):
+        service.link_memories(
+            principal,
+            target.item.memory_id,
+            source.item.memory_id,
+            "supports",
+        )
+    with pytest.raises(InvalidMemoryRelationError, match="share a profile"):
+        service.link_memories(
+            principal,
+            source.item.memory_id,
+            other_profile.item.memory_id,
+            "supports",
+        )
+
+    service.revoke_memory(principal, target.item.memory_id)
+    with pytest.raises(InvalidMemoryRelationError, match="could not be created"):
+        service.link_memories(
+            principal,
+            source.item.memory_id,
+            target.item.memory_id,
+            "supports",
+        )
+
+
+def test_relation_rejects_an_expired_endpoint() -> None:
+    observed_at = datetime(2026, 7, 29, 10, tzinfo=UTC)
+    current_time = [observed_at]
+    profile = replace(
+        _relation_profile(),
+        metadata_policies={
+            "preference": MemoryMetadataPolicy(),
+            "ongoing_item": MemoryMetadataPolicy(validity_days=1),
+            "stable_context": MemoryMetadataPolicy(),
+        },
+    )
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(
+        repository,
+        ProfileRegistry(),
+        sensitive_guard=RegexSensitiveContentGuard(),
+        clock=lambda: current_time[0],
+    )
+    service.register_profile(profile)
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(principal, _ongoing_command())
+    current_time[0] = observed_at + timedelta(days=1)
+
+    with pytest.raises(InvalidMemoryRelationError, match="could not be created"):
+        service.link_memories(
+            principal,
+            source.item.memory_id,
+            target.item.memory_id,
+            "supports",
+        )
+
+
+def test_relation_survives_endpoint_replacement_and_domain_invariants() -> None:
+    expression = "以后项目周报改为 Markdown"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                expression,
+                content="项目周报默认使用 Markdown",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(principal, _ongoing_command())
+    relation = service.link_memories(
+        principal,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+
+    from memory_mcp.core import MessageRole, TurnEnvelope, TurnMessage
+
+    service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="replacement-session",
+            source_turn_id="replacement-turn",
+            content=expression,
+            observed_at=datetime(2026, 7, 30, 10, tzinfo=UTC),
+            subject_hint="weekly-report",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=expression,
+                    message_id="replacement-message",
+                ),
+            ),
+        ),
+    )
+
+    replaced = service.get_memory(principal, source.item.memory_id)
+    assert replaced.current_revision.revision_number == 2
+    assert (
+        service.list_memory_relations(principal, source.item.memory_id)[0].relation
+        == relation
+    )
+    with pytest.raises(ValueError, match="revoked relation requires"):
+        replace(relation, status=RelationStatus.REVOKED)
+    with pytest.raises(ValueError, match="self loop"):
+        replace(relation, target_memory_id=relation.source_memory_id)
+    with pytest.raises(ValueError, match="must not precede"):
+        replace(
+            relation,
+            status=RelationStatus.REVOKED,
+            revoked_at=relation.created_at - timedelta(seconds=1),
+        )
 
 
 @pytest.mark.parametrize(

@@ -30,10 +30,18 @@ from memory_mcp.core.domain import (
     CaptureResult,
     CaptureStatus,
     Evidence,
+    ExpressionBasis,
     MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRelation,
+    MemoryRelationSummary,
     MemoryRevision,
     PrincipalContext,
+    RelationDirection,
+    RelationOrigin,
+    RelationProvenance,
+    RelationScope,
+    RelationStatus,
     ReviewItem,
     ReviewStatus,
     normalize_memory_text,
@@ -80,6 +88,7 @@ class PostgreSQLMemoryRepository:
 
     def __init__(self, pool: PostgreSQLPool) -> None:
         self._pool = pool
+        self._profiles: dict[str, MemoryProfile] = {}
 
     def close(self) -> None:
         """关闭连接池中的全部连接。"""
@@ -114,6 +123,18 @@ class PostgreSQLMemoryRepository:
                     for memory_type in sorted(profile.memory_types)
                 ],
             )
+            _executemany(
+                connection,
+                """
+                INSERT INTO memory_profile_relations (profile_id, relation_type)
+                VALUES (%s, %s)
+                ON CONFLICT (profile_id, relation_type) DO NOTHING
+                """,
+                [
+                    (profile.profile_id, relation_type)
+                    for relation_type in sorted(profile.relation_policies)
+                ],
+            )
             registered_types = {
                 row["memory_type"]
                 for row in connection.execute(
@@ -137,6 +158,7 @@ class PostgreSQLMemoryRepository:
                     for memory_type in sorted(removed_types)
                 ],
             )
+        self._profiles[profile.profile_id] = profile
         log_event(
             _LOGGER,
             logging.DEBUG,
@@ -281,6 +303,169 @@ class PostgreSQLMemoryRepository:
             row["lifecycle_status"] = "revoked"
             return to_record(connection, row, principal.owner_id)
 
+    def link_relation(
+        self,
+        principal: PrincipalContext,
+        relation: MemoryRelation,
+        *,
+        effective_at: datetime,
+    ) -> MemoryRelation:
+        if relation.owner_id != principal.owner_id:
+            raise ValueError("relation owner must match trusted principal")
+        if relation.status is not RelationStatus.ACTIVE:
+            raise ValueError("new relation must be active")
+        if relation.origin is not RelationOrigin.MANUAL:
+            raise ValueError("explicit relation write must be manual")
+        with self._pool.connection() as connection:
+            committed = _insert_relation(
+                connection,
+                self._profiles,
+                principal,
+                relation,
+                effective_at=effective_at,
+            )
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.postgresql.relation_linked",
+            relation_id=committed.relation_id,
+            relation_origin=committed.origin.value,
+            relation_scope=committed.scope.value,
+            relation_type=committed.relation_type,
+            source_memory_id=committed.source_memory_id,
+            target_memory_id=committed.target_memory_id,
+        )
+        return committed
+
+    def revoke_relation(
+        self,
+        principal: PrincipalContext,
+        relation_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> MemoryRelation | None:
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                f"{_SELECT_RELATION} "
+                "WHERE owner_id = %s AND relation_id = %s FOR UPDATE",
+                (principal.owner_id, relation_id),
+            ).fetchone()
+            if row is None:
+                return None
+            existing = _load_relation(row)
+            if existing.status is RelationStatus.REVOKED:
+                return existing
+            cursor = connection.execute(
+                """
+                UPDATE memory_relations
+                SET status = 'revoked', revoked_at = %s
+                WHERE owner_id = %s AND relation_id = %s
+                """,
+                (revoked_at, principal.owner_id, relation_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            updated = connection.execute(
+                f"{_SELECT_RELATION} WHERE owner_id = %s AND relation_id = %s",
+                (principal.owner_id, relation_id),
+            ).fetchone()
+            return _load_relation(updated)
+
+    def list_relations(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        active_only: bool,
+        effective_at: datetime | None = None,
+    ) -> Sequence[MemoryRelationSummary]:
+        requested = frozenset(memory_ids)
+        if not requested:
+            return ()
+        conditions = [
+            "rel.owner_id = %s",
+            "(rel.source_memory_id = ANY(%s) OR rel.target_memory_id = ANY(%s))",
+        ]
+        parameters: list[object] = [
+            principal.owner_id,
+            list(requested),
+            list(requested),
+        ]
+        if active_only:
+            resolved = effective_at or datetime.now(UTC)
+            conditions.extend(
+                (
+                    "rel.status = 'active'",
+                    "sr.lifecycle_status = 'active'",
+                    "tr.lifecycle_status = 'active'",
+                    "sr.valid_from <= %s",
+                    "(sr.valid_until IS NULL OR sr.valid_until > %s)",
+                    "tr.valid_from <= %s",
+                    "(tr.valid_until IS NULL OR tr.valid_until > %s)",
+                )
+            )
+            parameters.extend((resolved, resolved, resolved, resolved))
+        query = f"""
+            SELECT rel.relation_id, rel.owner_id, rel.profile_id,
+                   rel.source_memory_id, rel.target_memory_id,
+                   rel.relation_type, rel.origin, rel.scope,
+                   rel.source_revision_id, rel.target_revision_id,
+                   rel.capture_id, rel.conversation_id, rel.source_turn_id,
+                   rel.source_expression, rel.confidence, rel.expression_basis,
+                   rel.model_id, rel.prompt_version, rel.schema_version,
+                   rel.status, rel.created_at, rel.revoked_at,
+                   rel.stale_at, rel.stale_reason,
+                   source.subject AS source_subject,
+                   source.memory_type AS source_memory_type,
+                   target.subject AS target_subject,
+                   target.memory_type AS target_memory_type
+            FROM memory_relations AS rel
+            JOIN memory_items AS source
+              ON source.memory_id = rel.source_memory_id
+             AND source.owner_id = rel.owner_id
+             AND source.profile_id = rel.profile_id
+            JOIN memory_items AS target
+              ON target.memory_id = rel.target_memory_id
+             AND target.owner_id = rel.owner_id
+             AND target.profile_id = rel.profile_id
+            JOIN memory_revisions AS sr
+              ON sr.memory_id = source.memory_id
+             AND sr.owner_id = source.owner_id
+             AND sr.is_current
+            JOIN memory_revisions AS tr
+              ON tr.memory_id = target.memory_id
+             AND tr.owner_id = target.owner_id
+             AND tr.is_current
+            WHERE {" AND ".join(conditions)}
+            ORDER BY rel.created_at, rel.relation_id
+        """
+        with self._pool.connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        summaries: list[MemoryRelationSummary] = []
+        for row in rows:
+            relation = _load_relation(row)
+            if relation.source_memory_id in requested:
+                summaries.append(
+                    MemoryRelationSummary(
+                        relation=relation,
+                        direction=RelationDirection.OUTGOING,
+                        related_memory_id=relation.target_memory_id,
+                        related_subject=row["target_subject"],
+                        related_memory_type=row["target_memory_type"],
+                    )
+                )
+            if relation.target_memory_id in requested:
+                summaries.append(
+                    MemoryRelationSummary(
+                        relation=relation,
+                        direction=RelationDirection.INCOMING,
+                        related_memory_id=relation.source_memory_id,
+                        related_subject=row["source_subject"],
+                        related_memory_type=row["source_memory_type"],
+                    )
+                )
+        return tuple(summaries)
+
     def get_history(
         self,
         principal: PrincipalContext,
@@ -380,6 +565,7 @@ class PostgreSQLMemoryRepository:
     ) -> None:
         validate_capture_write(principal, write)
         result = write.result
+        stale_relation_count = 0
         with self._pool.connection() as connection:
             event_or_turn = result.event_id or (
                 f"{result.conversation_id}\x1f{result.source_turn_id}"
@@ -513,6 +699,21 @@ class PostgreSQLMemoryRepository:
                     replacement.revision,
                     replacement.evidence,
                 )
+                stale_relation_count += _stale_revision_relations(
+                    connection,
+                    principal,
+                    replacement.memory_id,
+                    replacement.revision.revision_id,
+                    stale_at=replacement.revision.created_at,
+                )
+            for relation in write.relations:
+                _insert_relation(
+                    connection,
+                    self._profiles,
+                    principal,
+                    relation,
+                    effective_at=relation.created_at,
+                )
             for review in write.reviews:
                 self._insert_review(connection, result.capture_id, review)
             _executemany(
@@ -545,6 +746,8 @@ class PostgreSQLMemoryRepository:
             capture_id=result.capture_id,
             outcome_count=len(result.outcomes),
             owner_ref=stable_reference(principal.owner_id),
+            relation_count=len(write.relations),
+            stale_relation_count=stale_relation_count,
             status=result.status.value,
         )
 
@@ -661,6 +864,13 @@ class PostgreSQLMemoryRepository:
                         connection,
                         replacement.revision,
                         replacement.evidence,
+                    )
+                    _stale_revision_relations(
+                        connection,
+                        principal,
+                        replacement.memory_id,
+                        replacement.revision.revision_id,
+                        stale_at=replacement.revision.created_at,
                     )
             elif any(
                 value is not None for value in (memory, duplicate_evidence, replacement)
@@ -946,6 +1156,202 @@ class PostgreSQLMemoryRepository:
         )
 
 
+def _stale_revision_relations(
+    connection,
+    principal: PrincipalContext,
+    memory_id: UUID,
+    current_revision_id: UUID,
+    *,
+    stale_at: datetime,
+) -> int:
+    """在 replacement 事务内物化只对旧 revision 成立的关系。"""
+
+    cursor = connection.execute(
+        """
+        UPDATE memory_relations
+        SET status = 'stale',
+            stale_at = %s,
+            stale_reason = 'endpoint_revision_changed'
+        WHERE owner_id = %s
+          AND scope = 'revision'
+          AND status = 'active'
+          AND (
+              (source_memory_id = %s AND source_revision_id <> %s)
+              OR
+              (target_memory_id = %s AND target_revision_id <> %s)
+          )
+        """,
+        (
+            stale_at,
+            principal.owner_id,
+            memory_id,
+            current_revision_id,
+            memory_id,
+            current_revision_id,
+        ),
+    )
+    return cursor.rowcount
+
+
+def _insert_relation(
+    connection,
+    profiles: Mapping[str, MemoryProfile],
+    principal: PrincipalContext,
+    relation: MemoryRelation,
+    *,
+    effective_at: datetime,
+) -> MemoryRelation:
+    """在调用方事务内重新校验端点并幂等写入关系。"""
+
+    if relation.owner_id != principal.owner_id:
+        raise ValueError("relation owner must match trusted principal")
+    if relation.status is not RelationStatus.ACTIVE:
+        raise ValueError("new relation must be active")
+    if relation.origin is RelationOrigin.LEGACY:
+        raise ValueError("new relation cannot use legacy origin")
+    endpoints = connection.execute(
+        """
+        SELECT i.memory_id, i.profile_id, i.memory_type, r.revision_id,
+               r.lifecycle_status, r.valid_from, r.valid_until
+        FROM memory_items AS i
+        JOIN memory_revisions AS r
+          ON r.memory_id = i.memory_id
+         AND r.owner_id = i.owner_id
+         AND r.is_current
+        WHERE i.owner_id = %s
+          AND i.memory_id = ANY(%s)
+        FOR UPDATE OF i, r
+        """,
+        (
+            principal.owner_id,
+            [relation.source_memory_id, relation.target_memory_id],
+        ),
+    ).fetchall()
+    by_id = {as_uuid(row["memory_id"]): row for row in endpoints}
+    source = by_id.get(relation.source_memory_id)
+    target = by_id.get(relation.target_memory_id)
+    if source is None or target is None:
+        raise ValueError("relation endpoints are unavailable")
+    if (
+        source["profile_id"] != relation.profile_id
+        or target["profile_id"] != relation.profile_id
+    ):
+        raise ValueError("relation endpoints must share the relation profile")
+    profile = profiles.get(relation.profile_id)
+    policy = (
+        profile.relation_policies.get(relation.relation_type)
+        if profile is not None
+        else None
+    )
+    if (
+        policy is None
+        or source["memory_type"] not in policy.source_memory_types
+        or target["memory_type"] not in policy.target_memory_types
+    ):
+        raise ValueError("relation does not match the registered policy")
+    if any(
+        row["lifecycle_status"] != "active"
+        or row["valid_from"] > effective_at
+        or (row["valid_until"] is not None and row["valid_until"] <= effective_at)
+        for row in (source, target)
+    ):
+        raise ValueError("relation endpoints must be active and effective")
+    if relation.source_revision_id != as_uuid(
+        source["revision_id"]
+    ) or relation.target_revision_id != as_uuid(target["revision_id"]):
+        raise ValueError("relation revision snapshots must match current endpoints")
+    provenance = relation.provenance
+    if relation.origin is RelationOrigin.AUTOMATIC:
+        if provenance is None:
+            raise ValueError("automatic relation requires provenance")
+        capture = connection.execute(
+            """
+            SELECT 1
+            FROM memory_capture_runs
+            WHERE capture_id = %s
+              AND owner_id = %s
+              AND profile_id = %s
+              AND conversation_id = %s
+              AND source_turn_id = %s
+              AND status = 'completed'
+            """,
+            (
+                provenance.capture_id,
+                principal.owner_id,
+                relation.profile_id,
+                provenance.conversation_id,
+                provenance.source_turn_id,
+            ),
+        ).fetchone()
+        if capture is None:
+            raise ValueError("relation provenance capture is unavailable")
+    inserted = connection.execute(
+        """
+        INSERT INTO memory_relations (
+            relation_id, owner_id, profile_id, source_memory_id,
+            target_memory_id, relation_type, origin, scope,
+            source_revision_id, target_revision_id, capture_id,
+            conversation_id, source_turn_id, source_expression, confidence,
+            expression_basis, model_id, prompt_version, schema_version,
+            status, created_at, revoked_at, stale_at, stale_reason
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            'active', %s, NULL, NULL, NULL
+        )
+        ON CONFLICT (
+            owner_id, source_memory_id, target_memory_id, relation_type
+        ) WHERE status = 'active'
+        DO NOTHING
+        RETURNING relation_id
+        """,
+        (
+            relation.relation_id,
+            relation.owner_id,
+            relation.profile_id,
+            relation.source_memory_id,
+            relation.target_memory_id,
+            relation.relation_type,
+            relation.origin.value,
+            relation.scope.value,
+            relation.source_revision_id,
+            relation.target_revision_id,
+            provenance.capture_id if provenance is not None else None,
+            provenance.conversation_id if provenance is not None else None,
+            provenance.source_turn_id if provenance is not None else None,
+            provenance.source_expression if provenance is not None else None,
+            provenance.confidence if provenance is not None else None,
+            (provenance.expression_basis.value if provenance is not None else None),
+            provenance.model_id if provenance is not None else None,
+            provenance.prompt_version if provenance is not None else None,
+            provenance.schema_version if provenance is not None else None,
+            relation.created_at,
+        ),
+    ).fetchone()
+    if inserted is not None:
+        row = connection.execute(
+            f"{_SELECT_RELATION} WHERE relation_id = %s",
+            (inserted["relation_id"],),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            f"{_SELECT_RELATION} "
+            "WHERE owner_id = %s AND source_memory_id = %s "
+            "AND target_memory_id = %s AND relation_type = %s "
+            "AND status = 'active'",
+            (
+                relation.owner_id,
+                relation.source_memory_id,
+                relation.target_memory_id,
+                relation.relation_type,
+            ),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("active relation was not committed")
+    return _load_relation(row)
+
+
 def _executemany(
     connection, query: str, parameters: Sequence[Sequence[object]]
 ) -> None:
@@ -985,3 +1391,57 @@ SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        content_hash, citation_locator
 FROM memory_review_items
 """
+
+_SELECT_RELATION = """
+SELECT relation_id, owner_id, profile_id, source_memory_id, target_memory_id,
+       relation_type, origin, scope, source_revision_id, target_revision_id,
+       capture_id, conversation_id, source_turn_id, source_expression,
+       confidence, expression_basis, model_id, prompt_version, schema_version,
+       status, created_at, revoked_at, stale_at, stale_reason
+FROM memory_relations
+"""
+
+
+def _load_relation(row: Mapping[str, Any]) -> MemoryRelation:
+    origin = RelationOrigin(row["origin"])
+    provenance = (
+        RelationProvenance(
+            capture_id=as_uuid(row["capture_id"]),
+            conversation_id=row["conversation_id"],
+            source_turn_id=row["source_turn_id"],
+            source_expression=row["source_expression"],
+            confidence=row["confidence"],
+            expression_basis=ExpressionBasis(row["expression_basis"]),
+            model_id=row["model_id"],
+            prompt_version=row["prompt_version"],
+            schema_version=row["schema_version"],
+        )
+        if origin is RelationOrigin.AUTOMATIC
+        else None
+    )
+    return MemoryRelation(
+        relation_id=as_uuid(row["relation_id"]),
+        owner_id=row["owner_id"],
+        profile_id=row["profile_id"],
+        source_memory_id=as_uuid(row["source_memory_id"]),
+        target_memory_id=as_uuid(row["target_memory_id"]),
+        relation_type=row["relation_type"],
+        origin=origin,
+        scope=RelationScope(row["scope"]),
+        source_revision_id=(
+            as_uuid(row["source_revision_id"])
+            if row["source_revision_id"] is not None
+            else None
+        ),
+        target_revision_id=(
+            as_uuid(row["target_revision_id"])
+            if row["target_revision_id"] is not None
+            else None
+        ),
+        provenance=provenance,
+        status=RelationStatus(row["status"]),
+        created_at=row["created_at"],
+        revoked_at=row["revoked_at"],
+        stale_at=row["stale_at"],
+        stale_reason=row["stale_reason"],
+    )

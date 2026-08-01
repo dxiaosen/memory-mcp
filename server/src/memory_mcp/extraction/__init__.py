@@ -5,9 +5,16 @@ from memory_mcp.extraction.backends import (
     CandidateOutput,
     FixedCandidateBackend,
     LangChainCandidateBackend,
+    LangChainRelationBackend,
+    RelationBatch,
+    RelationOutput,
 )
 from memory_mcp.extraction.chat_models import create_chat_model
-from memory_mcp.extraction.factory import create_configured_candidate_extractor
+from memory_mcp.extraction.factory import (
+    ConfiguredExtractors,
+    create_configured_candidate_extractor,
+    create_configured_extractors,
+)
 from memory_mcp.extraction.settings import (
     ExtractionProvider,
     ExtractionSettings,
@@ -16,10 +23,15 @@ from memory_mcp.extraction.settings import (
 __all__ = [
     "CandidateBatch",
     "CandidateOutput",
+    "ConfiguredExtractors",
     "ExtractionProvider",
     "ExtractionSettings",
     "FixedCandidateBackend",
     "LangChainCandidateBackend",
+    "LangChainRelationBackend",
+    "RelationBatch",
+    "RelationOutput",
     "create_chat_model",
     "create_configured_candidate_extractor",
+    "create_configured_extractors",
 ]

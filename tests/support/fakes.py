@@ -13,6 +13,9 @@ from memory_mcp.core import (
     ExtractionRequest,
     LifecycleStatus,
     MemoryMetadataPolicy,
+    MemoryRelationPolicy,
+    RelationExtractionRequest,
+    RelationProposal,
 )
 
 
@@ -27,11 +30,16 @@ class TestMemoryProfile:
         {"preference", "ongoing_item", "stable_context"}
     )
     business_progress_values: frozenset[str] = frozenset({"open", "done"})
-    allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = "Capture durable project-work context."
     profile_version: str = "project-work-v1"
-    relation_rules: dict[str, str] = field(default_factory=dict)
-    recall_priorities: dict[str, int] = field(default_factory=dict)
+    relation_policies: dict[str, MemoryRelationPolicy] = field(default_factory=dict)
+    recall_priorities: dict[str, int] = field(
+        default_factory=lambda: {
+            "preference": 30,
+            "ongoing_item": 20,
+            "stable_context": 10,
+        }
+    )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {
             memory_type: MemoryMetadataPolicy()
@@ -47,11 +55,12 @@ class AlternateMemoryProfile:
     profile_id: str = "personal-notes"
     memory_types: frozenset[str] = frozenset({"note", "commitment"})
     business_progress_values: frozenset[str] = frozenset()
-    allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = "Capture durable personal notes."
     profile_version: str = "personal-notes-v1"
-    relation_rules: dict[str, str] = field(default_factory=dict)
-    recall_priorities: dict[str, int] = field(default_factory=dict)
+    relation_policies: dict[str, MemoryRelationPolicy] = field(default_factory=dict)
+    recall_priorities: dict[str, int] = field(
+        default_factory=lambda: {"note": 20, "commitment": 30}
+    )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {
             memory_type: MemoryMetadataPolicy()
@@ -85,6 +94,33 @@ class FakeCandidateExtractor:
         if len(self.requests) <= self.failures_before_success:
             raise RuntimeError("temporary model interruption")
         return self.proposals
+
+
+class FakeRelationExtractor:
+    """记录关系请求并允许按可信端点动态生成建议。"""
+
+    model_id = "fake-relation-model"
+    prompt_version = "relation-prompt-v1"
+    schema_version = "relation-v1"
+
+    def __init__(
+        self,
+        proposal_factory=None,
+        *,
+        failures_before_success: int = 0,
+    ) -> None:
+        self.proposal_factory = proposal_factory or (lambda request: ())
+        self.failures_before_success = failures_before_success
+        self.requests: list[RelationExtractionRequest] = []
+
+    def extract(
+        self,
+        request: RelationExtractionRequest,
+    ) -> tuple[RelationProposal, ...]:
+        self.requests.append(request)
+        if len(self.requests) <= self.failures_before_success:
+            raise RuntimeError("temporary relation model interruption")
+        return tuple(self.proposal_factory(request))
 
 
 def candidate_proposal(

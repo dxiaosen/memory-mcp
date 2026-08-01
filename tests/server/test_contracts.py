@@ -1,18 +1,89 @@
 import json
+from dataclasses import replace
+from datetime import UTC, datetime
+from uuid import UUID
 
 import anyio
 import pytest
 from memory_mcp.app import _run_server, create_memory_mcp_server
 from memory_mcp.auth import StaticTokenVerifier
+from memory_mcp.core import (
+    ExpressionBasis,
+    MemoryRelation,
+    RelationOrigin,
+    RelationProvenance,
+    RelationScope,
+    RelationStatus,
+)
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.schemas import CompletedTurnEventV1
+from memory_mcp.schemas import CompletedTurnEventV1, MemoryRelationView
 from memory_mcp.settings import MemoryServerSettings
 from pydantic import SecretStr, ValidationError
 
 from tests.support.fakes import FakeCandidateExtractor, TestMemoryProfile
 
 _TOKEN_A = "analyst-a-primary-token-000000000001"
+
+
+def test_relation_dto_exposes_governance_and_can_hide_provenance() -> None:
+    relation = MemoryRelation(
+        relation_id=UUID("10000000-0000-0000-0000-000000000001"),
+        owner_id="owner-a",
+        profile_id="investment-research",
+        source_memory_id=UUID("20000000-0000-0000-0000-000000000001"),
+        target_memory_id=UUID("30000000-0000-0000-0000-000000000001"),
+        relation_type="supports",
+        status=RelationStatus.ACTIVE,
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
+        origin=RelationOrigin.AUTOMATIC,
+        scope=RelationScope.REVISION,
+        source_revision_id=UUID("40000000-0000-0000-0000-000000000001"),
+        target_revision_id=UUID("50000000-0000-0000-0000-000000000001"),
+        provenance=RelationProvenance(
+            capture_id=UUID("60000000-0000-0000-0000-000000000001"),
+            conversation_id="conversation-1",
+            source_turn_id="turn-1",
+            source_expression="证据明确支持论点",
+            confidence=0.96,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            model_id="model-a",
+            prompt_version="relation-prompt-v1",
+            schema_version="relation-v1",
+        ),
+    )
+
+    visible = MemoryRelationView.from_relation(relation)
+    hidden = MemoryRelationView.from_relation(
+        relation,
+        include_provenance=False,
+    )
+
+    assert visible.origin == "automatic"
+    assert visible.scope == "revision"
+    assert visible.provenance is not None
+    assert visible.provenance.source_expression == "证据明确支持论点"
+    assert hidden.provenance is None
+
+    legacy = replace(
+        relation,
+        origin=RelationOrigin.LEGACY,
+        scope=RelationScope.ITEM,
+        source_revision_id=None,
+        target_revision_id=None,
+        provenance=None,
+    )
+    assert legacy.origin is RelationOrigin.LEGACY
+    with pytest.raises(ValueError, match="legacy relation must"):
+        replace(
+            legacy,
+            source_revision_id=relation.source_revision_id,
+            target_revision_id=relation.target_revision_id,
+        )
+    with pytest.raises(ValueError, match="automatic relation requires"):
+        replace(legacy, origin=RelationOrigin.AUTOMATIC)
+    with pytest.raises(ValueError, match="stale relation requires"):
+        replace(relation, status=RelationStatus.STALE)
 
 
 def _settings() -> MemoryServerSettings:
@@ -109,6 +180,8 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
         "reject_pending_memory",
         "recall_memory",
         "revoke_memory",
+        "link_memories",
+        "revoke_memory_relation",
     }
     capture = next(tool for tool in tools if tool.name == "capture_completed_turn")
     serialized_schema = json.dumps(capture.inputSchema)
@@ -121,6 +194,13 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
     recall = next(tool for tool in tools if tool.name == "recall_memory")
     assert "profile_id" not in recall.inputSchema["required"]
     assert recall.inputSchema["properties"]["profile_id"]["default"] == "general-work"
+    for relation_tool_name in ("link_memories", "revoke_memory_relation"):
+        relation_tool = next(tool for tool in tools if tool.name == relation_tool_name)
+        relation_schema = json.dumps(relation_tool.inputSchema)
+        assert "owner_id" not in relation_schema
+        assert "owner_key" not in relation_schema
+        assert "tenant_id" not in relation_schema
+        assert relation_tool.inputSchema.get("additionalProperties") is False
 
 
 def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:

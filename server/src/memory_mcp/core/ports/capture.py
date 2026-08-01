@@ -1,10 +1,16 @@
-"""候选抽取与敏感预检的框架无关端口。"""
+"""候选/关系抽取与敏感预检的框架无关端口。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from memory_mcp.core.domain.capture import CandidateProposal
+from memory_mcp.core.domain.relations import RelationEndpoint, RelationProposal
+from memory_mcp.core.ports.profiles import MemoryRelationPolicy
+
+MAX_RELATION_ENDPOINTS = 40
+MAX_RELATION_PROPOSALS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +42,60 @@ class CandidateExtractor(Protocol):
 
     def extract(self, request: ExtractionRequest) -> tuple[CandidateProposal, ...]:
         """执行一次同步结构化抽取。"""
+
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RelationExtractionRequest:
+    """只向关系模型暴露脱敏轮次和有界可信端点。"""
+
+    profile_id: str
+    content: str
+    observed_at: datetime
+    profile_version: str
+    relation_policies: Mapping[str, MemoryRelationPolicy]
+    endpoints: tuple[RelationEndpoint, ...]
+    subject_hint: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("profile_id", "content", "profile_version"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty text")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if not self.relation_policies:
+            raise ValueError("relation_policies must not be empty")
+        if len(self.endpoints) > MAX_RELATION_ENDPOINTS:
+            raise ValueError("relation endpoint limit exceeded")
+        if len({endpoint.memory_id for endpoint in self.endpoints}) != len(
+            self.endpoints
+        ):
+            raise ValueError("relation endpoints must have unique memory ids")
+        if self.subject_hint is not None and (
+            not isinstance(self.subject_hint, str) or not self.subject_hint.strip()
+        ):
+            raise ValueError("subject_hint must be non-empty text when supplied")
+
+
+class RelationExtractor(Protocol):
+    """把脱敏轮次和可信端点转换为结构化关系建议。"""
+
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def prompt_version(self) -> str: ...
+
+    @property
+    def schema_version(self) -> str: ...
+
+    def extract(
+        self,
+        request: RelationExtractionRequest,
+    ) -> tuple[RelationProposal, ...]:
+        """执行一次同步结构化关系抽取。"""
 
         ...
 

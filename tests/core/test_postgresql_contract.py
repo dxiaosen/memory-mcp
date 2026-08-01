@@ -1,13 +1,22 @@
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from threading import Event
+from uuid import uuid4
 
 import psycopg
 import pytest
-from memory_mcp.core import MemoryNotFoundError, PrincipalContext
+from memory_mcp.core import (
+    MemoryNotFoundError,
+    MemoryRelationPolicy,
+    PrincipalContext,
+    RelationDirection,
+    RelationOrigin,
+    RelationScope,
+    RelationStatus,
+)
 from memory_mcp.core.adapters.postgresql import (
     PostgreSQLMemoryRepository,
     create_pool,
@@ -54,6 +63,8 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
         "0003_profile_naming.sql",
         "0004_memory_metadata.sql",
         "0005_metadata_rollback_compat.sql",
+        "0006_memory_relations.sql",
+        "0007_relation_provenance.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -96,6 +107,32 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
         rollback_compatibility_migration
     )
 
+    relation_migration = migrations[5].sql
+    for required_fragment in (
+        "memory_profile_relations",
+        "memory_relations_owned_source",
+        "memory_relations_owned_target",
+        "memory_relations_not_self",
+        "memory_relations_one_active_idx",
+        "memory_relations_owner_profile_idx",
+    ):
+        assert required_fragment in relation_migration
+
+    provenance_migration = migrations[6].sql
+    for required_fragment in (
+        "origin TEXT NOT NULL DEFAULT 'legacy'",
+        "scope TEXT NOT NULL DEFAULT 'item'",
+        "source_revision_id",
+        "memory_relations_capture_owner",
+        "memory_relations_provenance_state",
+        "conversation_id IS NOT NULL",
+        "confidence IS NOT NULL",
+        "stale_reason TEXT",
+        "stale_reason IS NOT NULL",
+        "status IN ('active', 'stale', 'revoked')",
+    ):
+        assert required_fragment in provenance_migration
+
 
 def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
     required_methods = {
@@ -105,6 +142,9 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "list",
         "find_current",
         "revoke",
+        "link_relation",
+        "revoke_relation",
+        "list_relations",
         "get_history",
         "get_capture",
         "commit_capture",
@@ -195,6 +235,326 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
         assert reopened_service.get_memory(owner_a, created.item.memory_id) == created
     finally:
         reopened.close()
+
+
+def test_real_postgresql_relation_idempotency_history_and_restart(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    database_url = postgresql_test_database.url
+    repository = PostgreSQLMemoryRepository(
+        create_pool(database_url, min_size=1, max_size=4)
+    )
+    service = create_memory_service(repository, [profile])
+    principal = PrincipalContext("owner-relation")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            subject="model-update",
+            memory_type="ongoing_item",
+            content="持续更新模型",
+            source_turn_id="session-1-turn-2",
+            source_expression="持续更新模型",
+        ),
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            calls = tuple(
+                executor.submit(
+                    service.link_memories,
+                    principal,
+                    source.item.memory_id,
+                    target.item.memory_id,
+                    "supports",
+                )
+                for _ in range(2)
+            )
+            relations = tuple(call.result(timeout=10) for call in calls)
+        assert relations[0] == relations[1]
+    finally:
+        repository.close()
+
+    reopened_repository = PostgreSQLMemoryRepository(
+        create_pool(database_url, min_size=1, max_size=2)
+    )
+    try:
+        reopened_service = create_memory_service(reopened_repository, [profile])
+        outgoing = reopened_service.list_memory_relations(
+            principal,
+            source.item.memory_id,
+        )
+        assert len(outgoing) == 1
+        assert outgoing[0].direction is RelationDirection.OUTGOING
+        revoked = reopened_service.revoke_memory_relation(
+            principal,
+            relations[0].relation_id,
+        )
+        assert revoked.status is RelationStatus.REVOKED
+        assert (
+            reopened_service.list_memory_relations(principal, source.item.memory_id)
+            == ()
+        )
+        history = reopened_service.list_memory_relations(
+            principal,
+            source.item.memory_id,
+            include_inactive=True,
+        )
+        assert history[0].relation == revoked
+    finally:
+        reopened_repository.close()
+
+
+def test_real_postgresql_legacy_relation_defaults_remain_readable(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    repository = PostgreSQLMemoryRepository(
+        create_pool(postgresql_test_database.url, min_size=1, max_size=2)
+    )
+    service = create_memory_service(repository, [profile])
+    principal = PrincipalContext("owner-legacy-relation")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            subject="legacy-target",
+            memory_type="ongoing_item",
+            content="继续旧关系目标事项",
+            source_turn_id="legacy-target-turn",
+            source_expression="继续旧关系目标事项",
+        ),
+    )
+    relation_id = uuid4()
+    try:
+        with _connect_safely(postgresql_test_database.url) as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_relations (
+                    relation_id, owner_id, profile_id, source_memory_id,
+                    target_memory_id, relation_type, status, created_at,
+                    revoked_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'supports', 'active', %s, NULL)
+                """,
+                (
+                    relation_id,
+                    principal.owner_id,
+                    profile.profile_id,
+                    source.item.memory_id,
+                    target.item.memory_id,
+                    datetime(2026, 8, 1, tzinfo=UTC),
+                ),
+            )
+
+        relation = service.list_memory_relations(
+            principal,
+            source.item.memory_id,
+        )[0].relation
+        assert relation.relation_id == relation_id
+        assert relation.origin is RelationOrigin.LEGACY
+        assert relation.scope is RelationScope.ITEM
+        assert relation.source_revision_id is None
+        assert relation.provenance is None
+    finally:
+        repository.close()
+
+
+def test_real_postgresql_capture_commits_automatic_relation_atomically(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    from memory_mcp.core import (
+        ExpressionBasis,
+        MessageRole,
+        RelationOrigin,
+        RelationProposal,
+        RelationScope,
+        TurnEnvelope,
+        TurnMessage,
+    )
+
+    from tests.support.fakes import (
+        FakeRelationExtractor,
+        candidate_proposal,
+    )
+
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    text = "周报偏好明确支持持续事项"
+
+    def relation_proposals(request):
+        source = next(
+            endpoint
+            for endpoint in request.endpoints
+            if endpoint.memory_type == "preference"
+        )
+        target = next(
+            endpoint
+            for endpoint in request.endpoints
+            if endpoint.memory_type == "ongoing_item"
+        )
+        return (
+            RelationProposal(
+                source_memory_id=source.memory_id,
+                target_memory_id=target.memory_id,
+                relation_type="supports",
+                source_expression=text,
+                confidence=0.97,
+                expression_basis=ExpressionBasis.EXPLICIT,
+            ),
+        )
+
+    repository = PostgreSQLMemoryRepository(
+        create_pool(postgresql_test_database.url, min_size=1, max_size=3)
+    )
+    candidate_extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal("周报偏好", memory_type="preference"),
+            candidate_proposal(
+                "持续事项",
+                subject="continued-work",
+                memory_type="ongoing_item",
+                content="继续持续事项",
+            ),
+        )
+    )
+    relation_extractor = FakeRelationExtractor(relation_proposals)
+    service = create_memory_service(
+        repository,
+        [profile],
+        candidate_extractor=candidate_extractor,
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("owner-automatic-relation")
+    try:
+        first = service.capture_turn(
+            principal,
+            TurnEnvelope(
+                profile_id="project-work",
+                conversation_id="relation-capture",
+                source_turn_id="turn-1",
+                content=text,
+                observed_at=datetime(2026, 7, 30, 10, tzinfo=UTC),
+            ),
+        )
+        assert first.status.value == "completed"
+        source = next(
+            record
+            for record in service.list_memories(principal)
+            if record.item.memory_type == "preference"
+        )
+        automatic = service.list_memory_relations(
+            principal,
+            source.item.memory_id,
+        )[0].relation
+        assert automatic.origin is RelationOrigin.AUTOMATIC
+        assert automatic.scope is RelationScope.REVISION
+        assert automatic.provenance is not None
+        assert automatic.provenance.capture_id == first.capture_id
+
+        duplicate_service = create_memory_service(
+            repository,
+            [profile],
+            candidate_extractor=FakeCandidateExtractor(),
+            relation_extractor=FakeRelationExtractor(relation_proposals),
+        )
+        duplicate = duplicate_service.capture_turn(
+            principal,
+            TurnEnvelope(
+                profile_id="project-work",
+                conversation_id="relation-capture",
+                source_turn_id="turn-2",
+                content=text,
+                observed_at=datetime(2026, 7, 30, 11, tzinfo=UTC),
+            ),
+        )
+        assert duplicate.status.value == "completed"
+        assert (
+            len(
+                duplicate_service.list_memory_relations(
+                    principal,
+                    source.item.memory_id,
+                )
+            )
+            == 1
+        )
+
+        replacement_text = "以后项目周报改为图表"
+        replacement_service = create_memory_service(
+            repository,
+            [profile],
+            candidate_extractor=FakeCandidateExtractor(
+                (
+                    candidate_proposal(
+                        replacement_text,
+                        memory_type="preference",
+                        content="项目周报默认使用图表",
+                    ),
+                )
+            ),
+            relation_extractor=FakeRelationExtractor(),
+        )
+        replacement_service.capture_turn(
+            principal,
+            TurnEnvelope(
+                profile_id="project-work",
+                conversation_id="relation-capture",
+                source_turn_id="turn-replacement",
+                content=replacement_text,
+                observed_at=datetime(2026, 7, 30, 12, tzinfo=UTC),
+                messages=(
+                    TurnMessage(
+                        role=MessageRole.USER,
+                        content=replacement_text,
+                        message_id="replacement-message",
+                    ),
+                ),
+            ),
+        )
+        assert (
+            replacement_service.list_memory_relations(
+                principal,
+                source.item.memory_id,
+            )
+            == ()
+        )
+        stale = replacement_service.list_memory_relations(
+            principal,
+            source.item.memory_id,
+            include_inactive=True,
+        )[0].relation
+        assert stale.status is RelationStatus.STALE
+        assert stale.stale_reason == "endpoint_revision_changed"
+    finally:
+        repository.close()
 
 
 def test_real_postgresql_source_turn_idempotency_and_review_resolution(

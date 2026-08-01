@@ -38,6 +38,17 @@ from memory_mcp.core.domain.recall import (
     RecallResult,
     RecallSourceSummary,
 )
+from memory_mcp.core.domain.relations import (
+    MemoryRelation,
+    MemoryRelationSummary,
+    RelationDirection,
+    RelationEndpoint,
+    RelationOrigin,
+    RelationProposal,
+    RelationProvenance,
+    RelationScope,
+    RelationStatus,
+)
 
 __all__ = [
     "AdmissionDecision",
@@ -56,6 +67,8 @@ __all__ = [
     "MemoryHistoryEntry",
     "MemoryItem",
     "MemoryRecord",
+    "MemoryRelation",
+    "MemoryRelationSummary",
     "MemoryRevision",
     "MessageRole",
     "PrincipalContext",
@@ -63,6 +76,13 @@ __all__ = [
     "RecallResult",
     "RecallSourceSummary",
     "RecalledMemory",
+    "RelationDirection",
+    "RelationEndpoint",
+    "RelationOrigin",
+    "RelationProposal",
+    "RelationProvenance",
+    "RelationScope",
+    "RelationStatus",
     "ReviewItem",
     "ReviewStatus",
     "SensitivityLevel",

@@ -68,10 +68,11 @@ Memory MCP Server
 - pending 查看、确认与拒绝；
 - event 级幂等、payload conflict 和失败重处理；
 - 带 Bearer Token 认证和 scope 的 MCP Server；
-- 八个 MCP 工具、严格 DTO、稳定错误码；
+- 十个 MCP 工具、严格 DTO、稳定错误码；
 - `GeneralWorkProfile` 与 `InvestmentResearchProfile`；
 - revision confidence/verification/sensitivity/validity 和结构化引用来源；
 - owner-scoped 幂等 revoke，以及读取时自动失效过滤；
+- owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效和一跳关系感知召回；
 - duplicate Evidence、replacement revision 和显式 history；
 - owner-first recall、阈值、数量和 token budget；
 - 独立轻量 BeforeRun/AfterRun Agent Client 发行包；
@@ -92,7 +93,7 @@ Memory MCP Server
 - Redis/Kafka 消息队列；
 - Embedding、向量数据库和 HNSW；
 - 后台调度器写回 expired 状态、物理 delete 和 suppression；
-- 通用关系图；
+- 自动判断端点 revision 未变化时任意关系语义失效、关系待确认、无界关系图和递归图遍历；
 - Web 管理后台和 MCP Apps；
 - Docker、Kubernetes 或 Nginx；
 - 对用户陈述进行事实核验；
@@ -121,7 +122,7 @@ Memory MCP Server
 │                        │                               │
 │ Capture / Review / Lifecycle / Recall                  │
 │                        │                               │
-│ MemoryProfile / CandidateExtractor / Repository ports │
+│ MemoryProfile / Candidate+Relation Extractor / ports │
 └───────────────┬──────────────────────┬─────────────────┘
                 │                      │
                 ▼                      ▼
@@ -151,7 +152,12 @@ sequenceDiagram
     M->>L: 脱敏后的结构化抽取
     L-->>M: CandidateBatch
     M->>M: 证据、记忆配置、敏感和准入校验
-    M->>D: 一个 capture 事务
+    M->>D: owner/Profile 有效既有端点
+    D-->>M: 有界候选端点
+    M->>L: 脱敏轮次 + 关系策略 + 最多 40 个端点
+    L-->>M: RelationBatch
+    M->>M: 原文、端点白名单、方向、显式程度和置信度校验
+    M->>D: 新记忆 + 自动关系的一个 capture 事务
     D-->>M: commit
     M-->>H: capture receipt
 ```
@@ -186,6 +192,9 @@ sequenceDiagram
 → 记忆配置校验
 → 持久化前敏感复检
 → 准入和 lifecycle 分类
+→ relation policy 为空或无合法端点组合：跳过
+→ 否则 RelationExtractor（最多 40 个可信端点、20 条建议）
+→ Profile 方向、原文、explicit 和 confidence >= 0.90 校验
 → PostgreSQL 原子事务
 → capture receipt
 ```
@@ -198,10 +207,10 @@ sequenceDiagram
 | --- | --- | --- |
 | `core.domain` | Memory、Revision、Evidence、Candidate、Review、Recall 等领域对象 | HTTP、配置、SQL、模型 provider |
 | `core.ports` | Repository、Extractor、Sensitive Guard、MemoryProfile 契约 | 具体实现 |
-| `core.application` | 捕获、准入、审核、生命周期、召回用例 | MCP DTO、Bearer Token |
+| `core.application` | 捕获、准入、自动关系规划、审核、生命周期、召回用例 | MCP DTO、Bearer Token |
 | `core.adapters.postgresql` | Repository、transaction、row mapping、migration | Agent 生命周期 |
 | `core.adapters.in_memory` | 快速单元测试替身 | 部署运行 |
-| `extraction` | 真实模型 settings/provider、Candidate schema、测试 fixed adapter | owner 和准入 |
+| `extraction` | 真实模型 settings/provider、Candidate/Relation schema、测试 adapter | owner 和准入 |
 | `profiles` | 正式记忆配置允许的类型、guidance、版本和优先级 | transport 和 SQL |
 | 包根 `app/auth/settings/schemas/errors/tools` | MCP/HTTP、认证、DTO、错误映射和组合根 | Agent 框架 |
 | `memory_mcp_agent` | 远程 Client、Before/After Bridge、Host adapter、Runner | Server、Core Repository、数据库和模型 |
@@ -246,12 +255,14 @@ memory-mcp/
 │       │   │   ├── models.py       # Memory/Revision/Evidence
 │       │   │   ├── capture.py      # Candidate/Review/Capture
 │       │   │   ├── lifecycle.py    # history 和状态操作
-│       │   │   └── recall.py       # Recall query/result
+│       │   │   ├── relations.py     # owner-scoped MemoryRelation
+│       │   │   └── recall.py        # Recall query/result
 │       │   ├── ports/
 │       │   │   ├── repositories.py
 │       │   │   ├── capture.py
 │       │   │   └── profiles.py
 │       │   ├── application/
+│       │   │   ├── automatic_relations.py
 │       │   │   ├── capture_service.py
 │       │   │   ├── candidate_processing.py
 │       │   │   ├── review_service.py
@@ -380,6 +391,27 @@ Evidence[]
 `MemoryItem` 表示稳定逻辑对象，`MemoryRevision` 表示可变化的内容版本，
 `Evidence` 表示该版本为什么可信和从哪里来。
 
+两个稳定 Item 还可以形成一条 `MemoryRelation`：
+
+```text
+MemoryRelation
+├── relation_id / owner_id / profile_id
+├── source_memory_id → MemoryItem
+├── target_memory_id → MemoryItem
+├── source_revision_id? / target_revision_id?
+├── relation_type
+├── origin: legacy | manual | automatic
+├── scope: item | revision
+├── automatic provenance?
+├── status: active | stale | revoked
+└── created_at / stale_at? / revoked_at?
+```
+
+关系的稳定端点仍指向 Item。人工 `manual/item` 边保存创建时 revision 快照用于审计，
+但 endpoint 内容 replacement 后继续指向同一逻辑记忆；自动 `automatic/revision` 边
+只对创建时两端 revision 成立，任一端 replacement 会在同一事务将旧边转为 `stale`。
+端点 revoked/到期也会让活动查询和 recall 排除这条边，历史都不会被物理删除。
+
 ### 5.2 为什么 Item 与 Revision 分开
 
 如果直接覆盖一条记忆文本，会失去：
@@ -431,7 +463,7 @@ MemoryProfile 提供：
 - capture guidance；
 - `profile_version`；
 - 可选 business progress；
-- 可选 relation 声明；
+- `relation_policies`：关系名、合法 source/target memory types 和稳定说明；
 - recall type priorities；
 - 每种 memory type 的 sensitivity 和可选有效期策略。
 
@@ -464,6 +496,31 @@ MemoryProfile 提供：
 
 Core 不硬编码任一正式 Profile 的词义。新增配置只实现 `MemoryProfile`，不修改
 owner、准入、幂等和 Repository 基础语义；Profile 也不能降低敏感守卫优先级。
+
+### 5.5 关系策略
+
+`general-work` 的关系策略为空。`investment-research` 声明六种有向关系：
+
+| relation | source | target |
+| --- | --- | --- |
+| `supports` / `challenges` | `evidence_claim` | `thesis` |
+| `threatens` | `risk` | `thesis` |
+| `could_catalyze` | `catalyst` | `thesis` |
+| `addresses` | `ongoing_research` | `research_question` |
+| `resolves` | `research_decision` | `research_question` |
+
+ProfileRegistry 要求 relation policy 的两个端点集合都是当前 Profile memory types 的
+非空子集，并同时要求 recall priorities 精确覆盖所有 memory types。方向属于合同；
+例如 `thesis supports evidence_claim` 不会被 Core 自动反转，而是明确拒绝。
+
+AfterRun 会在服务端自动识别关系，但不是从任意自由文本直接写图。CandidateProcessor
+先确定本轮真正 auto-save 的 MemoryItem，Core 再把这些新 Item 与同 owner/Profile、
+current/active/effective 的既有 Item 组成最多 40 个可信端点。第二次严格结构化调用
+只能引用目录中的 memory ID 和当前 Profile 关系类型；Core 重新检查方向、原文连续
+表达、`expression_basis=explicit` 和 confidence 不低于 `0.90`。存在消息块时，关系
+原文还必须命中用户消息，不能只来自 Assistant/Tool，避免 Agent 固化自己的分析。
+低置信、推断、歧义、pending 或 blocked 端点不建边。`link_memories` 保留为历史
+补链和人工治理工具。
 
 ## 6. 身份、认证与隔离
 
@@ -543,7 +600,7 @@ user B / agent B ─── owner B
 - 认证：Bearer TokenVerifier；
 - 工具 schema：Pydantic 严格模型，额外字段拒绝。
 
-### 7.2 八个工具
+### 7.2 十个工具
 
 | 工具 | Scope | 作用 |
 | --- | --- | --- |
@@ -555,6 +612,8 @@ user B / agent B ─── owner B
 | `confirm_pending_memory` | `memory:review` | 确认并应用 pending |
 | `reject_pending_memory` | `memory:review` | 拒绝 pending |
 | `revoke_memory` | `memory:review` | 幂等撤销 owner 的 current memory，保留 revision 与 Evidence |
+| `link_memories` | `memory:write` | 按 Profile policy 幂等建立有向关系 |
+| `revoke_memory_relation` | `memory:review` | 幂等撤销 owner 的关系并保留历史 |
 
 ### 7.3 CompletedTurnEventV1
 
@@ -608,6 +667,7 @@ Recall receipt 提供：
 - observation time 和来源摘要；
 - extraction confidence、verification、sensitivity 和 validity；
 - 允许返回的 URI/title/publisher/time/hash/locator 来源摘要；
+- 活动一跳关系的类型、方向和另一端 ID/subject/type；
 - relevance score；
 - 服务端生成的 rendered context；
 - token estimate、budget 和 truncated。
@@ -623,6 +683,8 @@ Recall receipt 提供：
 - `unsupported_contract_version`
 - `idempotency_conflict`
 - `memory_unavailable`
+- `invalid_relation`
+- `relation_unavailable`
 - `review_unavailable`
 - `capture_not_configured`
 - `temporarily_unavailable`
@@ -698,19 +760,38 @@ CandidateExtractor 接收：
 
 模型不能提交目标 owner，也不能直接选择跨 scope 的 replacement memory ID。
 
+### 8.5 自动关系可信化
+
+只有 Profile 的 `relation_policies` 非空且端点中存在合法有向组合时，Capture 才执行
+关系抽取。本轮 auto-save 端点优先；既有端点由 Repository 先限定 owner/Profile/
+current/active/effective，再按轮次相关度补足。关系请求不含 owner、Token、Evidence
+URI 或跨 Profile 内容。
+
+`RelationBatch` 最多 20 条，每条只能包含 source/target memory ID、relation type、
+原文 `source_expression`、confidence 和 expression basis。未知 ID、自环、非法类型/
+方向、额外身份字段或伪造原文使捕获按 `invalid_candidate_output` 原子失败；结构合法
+但低于准入阈值或只命中 Assistant/Tool 消息的建议只跳过。相同 source/target/type
+在批内和 Repository 中都收敛为一条活动关系。
+
+准入后的自动边保存可信 capture/conversation/turn、精确脱敏来源表达、confidence、
+expression basis、模型/prompt/schema 版本和两端 revision 快照。模型输出不能提供这些
+身份字段。普通 recall 关系摘要不复制 provenance 正文；owner 显式调用
+`get_memory(include_history=true)` 才返回完整关系证据。
+
 ## 9. 模型抽取设计
 
 ### 9.1 生产模型与测试 adapter
 
-| 组合方式 | 候选来源 | 用途 |
+| 组合方式 | 候选与关系来源 | 用途 |
 | --- | --- | --- |
-| 生产运行时 | LangChain Chat Model + `CandidateBatch` | 自然语言真实抽取 |
-| 测试依赖注入 | 测试代码中的严格 Candidate 数组，source expression 精确命中才返回 | 自动化、无网络确定性验证 |
+| 生产运行时 | 一个 LangChain Chat Model + 独立 `CandidateBatch`/`RelationBatch` | 自然语言真实抽取 |
+| 测试依赖注入 | Fake Candidate/Relation extractor | 自动化、无网络确定性验证 |
 
-生产配置不提供 backend 选择器或固定候选 JSON，始终构造真实模型 extractor。
-测试通过组合根的 `candidate_extractor` 参数注入 fixed adapter，只替换“候选
-发现”，不会改变身份、准入、生命周期、Repository 和 MCP 契约。因此对应的
-PostgreSQL MCP E2E 仍是真实远程链路，不是整个系统 mock。
+生产配置不提供 backend 选择器或固定候选 JSON，只创建一次 ChatModel，再分别绑定
+候选和关系严格 schema/prompt。测试通过组合根的 `candidate_extractor` 和可选
+`relation_extractor` 注入替身，只替换模型发现，不改变身份、准入、生命周期、
+Repository 和 MCP 契约。因此对应的 PostgreSQL MCP E2E 仍是真实远程链路，不是
+整个系统 mock。自定义组装只注入旧 CandidateExtractor 时，关系阶段安全跳过。
 
 ### 9.2 Provider 工厂
 
@@ -725,7 +806,7 @@ Provider 差异停留在工厂，不进入 Core。
 ### 9.3 DeepSeek 兼容策略
 
 DeepSeek V4 默认 thinking 模式会拒绝 LangChain 强制 schema tool 使用的 named
-`tool_choice`。Candidate extraction 不需要 chain-of-thought，因此 DeepSeek
+`tool_choice`。候选和关系 extraction 都不需要 chain-of-thought，因此 DeepSeek
 provider 固定通过 `extra_body` 关闭 thinking，然后使用同一个 Pydantic schema。
 
 该行为是 provider compatibility，不是记忆配置或用户可调的业务推理开关。
@@ -740,6 +821,9 @@ System prompt 明确：
 - source expression 必须是原文连续子串；
 - 临时或含糊内容优先返回零候选；
 - memory type 只能来自 MemoryProfile。
+
+关系 prompt 还要求只引用给定 endpoint ID、只使用 Profile 提供的关系类型/方向、
+不得根据话题相似或模型常识推断关系；含糊时返回零关系。
 
 即使提示词失败，后续程序校验仍然是最终安全边界。
 
@@ -923,6 +1007,25 @@ owner/current revision 上把 lifecycle 改为 `revoked`，不创建新 revision
 但 lifecycle 不被后台任务改写。这样不需要 scheduler 或队列，同时保留历史；若
 未来需要合规删除或 suppression，应建立独立规范，不能复用 revoke 偷做物理删除。
 
+### 12.7 Relation 生命周期
+
+`link_memories` 只接受两个 owned、同 Profile、active/current/effective 的 Item，并由
+Profile policy 校验 relation type 和方向。相同 owner/source/target/type 的重放由
+应用与 PostgreSQL 活动部分唯一索引收敛为同一关系。它创建 `manual/item` 边；历史
+无法证明来源的 `0006` 数据迁移为 `legacy/item`，不伪造 provenance。
+
+`revoke_memory_relation` 把关系改为 `revoked` 并记录可信时间，不删除 endpoint；
+重复撤销返回相同记录。`get_memory` 默认只返回活动关系，`include_history=true` 才
+包含 stale 和已撤销关系。另一 owner 猜中 relation ID 时统一返回
+`relation_unavailable`。
+
+自动关系也走同一个 Repository 事务：同轮新 Item/Revision 先写入，关系端点在事务内
+重新校验，再用活动部分唯一索引幂等写边，最后提交 capture outcomes。它创建
+`automatic/revision` 边。replacement 会先把连接旧 revision 的活动边物化为
+`stale/endpoint_revision_changed`，再写针对新 revision 的新边；任何一步失败都共同
+回滚。端点 revoked/到期也会让关系停止参与读取和 recall，但系统仍不从任意自然语言
+自动撤销端点内容未变化的错误关系。
+
 ## 13. 主动召回
 
 ### 13.1 Repository 候选边界
@@ -950,10 +1053,11 @@ Application 对候选计算：
 - 字符二元组 overlap，改善中文小样本召回；
 - subject 完全相等加权；
 - MemoryProfile memory type priority；
+- 当另一端自身也达到 threshold 时，最多 `0.12` 的一跳关系加权；
 - observed time 作为稳定排序补充。
 
-只有达到 relevance threshold 的记录才进入结果。当前算法故意可解释、无外部
-Embedding 依赖。
+只有基础文本分数达到 relevance threshold 的记录才进入结果；关系不能独自把不相关
+endpoint 拉入召回，也不递归扩展候选。当前算法故意可解释、无外部 Embedding 依赖。
 
 ### 13.3 subject 语义
 
@@ -979,7 +1083,8 @@ Server 同时控制：
 - rendered context header 成本。
 
 当前 token 数是保守字符估算，不绑定 provider tokenizer。选中条目按预算逐个
-加入；无法容纳时标记 truncated。无相关内容返回空 items，Hook 将
+加入；关系只在两个 endpoint 都已选中时渲染，并同样计入预算。关系元数据放不下时
+先省略关系，再决定是否省略整个 item；任一截断都标记 truncated。无相关内容返回空 items，Hook 将
 `memory_context=None`，不会注入“没有记忆”占位。
 
 ### 13.5 安全渲染
@@ -1072,6 +1177,10 @@ after_run_success(
 默认 Runner 等待 receipt，返回 capture status、attempts、replayed、summary、
 created IDs、pending IDs、failure/warning。
 
+关系抽取完全位于 Server：Agent 仍只调用一次 `capture_completed_turn`。启用关系策略
+且存在合法端点组合时，AfterRun 最多增加一次结构化模型调用；`general-work` 不增加
+调用。完成 event 的重放在模型前返回，不重复执行候选或关系抽取。
+
 ### 14.5 Fail-open 与 fail-closed
 
 默认 `fail_open=true`：
@@ -1088,7 +1197,7 @@ created IDs、pending IDs、failure/warning。
 异步只是非阻塞网络 I/O，不意味着系统已有消息队列。当前：
 
 - BeforeRun 天然需要同步等待语义；
-- AfterRun 一般在数秒内完成；
+- AfterRun 一般在数秒内完成；投研关系可能增加一次有界结构化调用；
 - 有稳定 event ID 和有限重试；
 - Server 有数据库最终幂等；
 - 单实例没有跨进程削峰需求。
@@ -1147,6 +1256,7 @@ PostgreSQL 是唯一运行时权威，保存：
 - Evidence；
 - capture run/fingerprint/outcome；
 - pending ReviewItem；
+- Profile relation type 目录和 MemoryRelation；
 - lifecycle/current 约束；
 - migration 元数据。
 
@@ -1166,7 +1276,10 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 - capture event 幂等；
 - primary Evidence 完整；
 - review resolution 不产生跨 owner Memory；
-- replacement 不出现两个 current。
+- replacement 不出现两个 current；
+- relation 两端同 owner/同 Profile、无 self-loop、类型已注册；
+- 每个 owner/source/target/type 最多一条 active relation；origin/scope/provenance、
+  revision 外键以及 active/stale/revoked 时间状态一致。
 
 Application 校验提供友好错误；数据库约束提供最终防线。
 
@@ -1177,10 +1290,14 @@ Application 校验提供友好错误；数据库约束提供最终防线。
 - capture commit；
 - review confirm/reject；
 - replacement current 切换；
-- profile registration。
+- profile registration；
+- relation link/revoke。
+
+capture commit 同时可以包含自动关系，不在事务提交后再补写边。
 
 Repository facade 负责完整事务。`mapping.py` 负责 row → domain，
-`validation.py` 负责写入前关系校验，`schema.py` 负责 migration/health。这样既
+`validation.py` 负责捕获写入前的不变量校验，`schema.py` 负责 migration/health。
+关系事务继续由同一个 Repository facade 管理。这样既
 避免 1 个文件承担全部职责，也不把一个原子事务拆成多个不协调 Repository。
 
 ### 15.4 Migration
@@ -1204,10 +1321,14 @@ Migration：
    validity，Evidence citation 字段和 pending candidate 对应字段；历史 confidence
    保持 null，`valid_from` 从原 `observed_at` 回填；
 5. `0005_metadata_rollback_compat.sql`：为 `valid_from` 增加数据库时间默认值，只用于
-   旧版 Server 短期回滚写入；新版始终显式使用可信 `observed_at`。
+   旧版 Server 短期回滚写入；新版始终显式使用可信 `observed_at`；
+6. `0006_memory_relations.sql`：增加 Profile relation type 目录、关系表、同
+   owner/Profile endpoint 外键、状态约束和 active 唯一索引，不回填现有记忆；
+7. `0007_relation_provenance.sql`：增加 origin/scope、revision 快照、自动 provenance
+   和 stale 生命周期；旧关系保守标记为 `legacy/item`，不伪造历史证据。
 
 任何已执行 migration 都可能存在于部署数据库中，因此不能修改其内容或 checksum。
-新安装同样按五条顺序执行，最终 schema 只暴露 profile
+新安装同样按七条顺序执行，最终 schema 只暴露 profile
 命名。
 
 这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
@@ -1417,6 +1538,7 @@ Public Agent
 
 - `InMemoryMemoryRepository`：只替代 PostgreSQL；
 - `FakeCandidateExtractor`：只替代模型；
+- `FakeRelationExtractor`：按请求中的可信端点生成确定关系建议；
 - `_StructuredModel`：验证 LangChain schema 边界；
 - `_agent`：只提供业务 Agent 接线示例；
 - fixed adapter：测试中的确定性候选源；不属于生产配置，也不是整个系统 mock。
@@ -1428,7 +1550,7 @@ Public Agent
 - 进程重启后幂等；
 - 同 owner Agent A/B 共享；
 - 不同 owner 隔离；
-- 真实 provider 的 CandidateBatch；
+- 真实 provider 的 CandidateBatch/RelationBatch；
 - 默认日志无正文，内容模式可观察通过敏感检查的核心流程；
 - 两种日志模式都不含 Secret 和敏感规则拦截的原文；
 - Ctrl+C/ASGI lifespan 关闭资源；
@@ -1467,14 +1589,15 @@ owner 或 lifecycle 语义。
 - `profile_version`；
 - recall priorities；
 - 每种 type 的 metadata policy；
-- 可选 progress/relations。
+- 可选 progress；
+- 可选 `relation_policies`，每项显式列出 source/target memory types。
 
 不复制一套 Core 或 Repository。
 
 ### 20.3 新模型 provider
 
 在 `extraction/chat_models.py` 增加 provider factory 分支，继续返回
-`BaseChatModel`，复用 CandidateBatch 和后续安全校验。Provider 参数不进入 Core。
+`BaseChatModel`，复用 CandidateBatch/RelationBatch 和后续安全校验。Provider 参数不进入 Core。
 
 ### 20.4 新检索索引
 
@@ -1523,6 +1646,15 @@ Agent/Server
 17. extraction confidence 不代表事实真实性，citation 不自动等于 source verified；
 18. 到期和 revoked revision 不进入普通 list/recall，但详情、history 和 Evidence 可追溯；
 19. 正式 Profile 只能通过 `MemoryProfile` 扩展，不得在 Core 中按领域名称分支。
+20. 关系只能连接同 owner、同 Profile 的两个稳定 MemoryItem，且不能自环；
+21. endpoint 不相关时，关系不能单独把它拉入 recall；
+22. relation revoke 保留历史，不能暗中物理删除 endpoint 或 Evidence；
+23. Agent/用户运行配置不因关系能力增加新字段，仍然只要求 URL 和 Token。
+24. 自动关系只能引用本次可信端点目录，且只接受命中用户原文、explicit、confidence >= 0.90 的合法方向。
+25. pending/blocked/跨 owner/跨 Profile 记忆永远不能成为自动关系端点。
+26. 本轮新记忆和自动关系必须在同一个 CaptureWrite 事务可见或共同回滚。
+27. 自动关系必须绑定可信 capture、两端 revision 和完整 provenance，模型不能选择 owner/revision 身份。
+28. replacement 必须在同一事务把旧 revision-scoped 活动边转为 stale；人工 item-scoped 边继续有效。
 
 ## 22. 当前结构 Review 结论
 
@@ -1537,7 +1669,10 @@ Agent/Server
 - Agent 包的最小 HTTP/MCP Client 只保留主动记忆需要的协议面，发行依赖边界有
   自动化和隔离 wheel 测试；
 - PostgreSQL mapping/validation/schema 已分离；
-- Capture 候选处理和 Review 协调已从 facade 分离；
+- Capture 候选处理、自动关系规划和 Review 协调已从 facade 分离；
+- 关系能力复用现有 domain/port/Repository/tool 分层，没有增加图数据库、队列或新
+  顶层模块；
+- `evals/` 是不进入发行包的开发边界，默认模式不读取模型配置、网络或生产数据库；
 - 不需要增加 `integrations`、`observability`、`agent-lab`、`api` 或
   `transport/mcp` 等泛化目录；
 - 当前不需要 Nginx 和外部队列。

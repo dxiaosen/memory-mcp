@@ -14,7 +14,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from memory_mcp.auth import StaticTokenVerifier
-from memory_mcp.core import CandidateExtractor, MemoryProfile, MemoryService
+from memory_mcp.core import (
+    CandidateExtractor,
+    MemoryProfile,
+    MemoryService,
+    RelationExtractor,
+)
 from memory_mcp.core.adapters.postgresql import (
     PostgreSQLMemoryRepository,
     create_pool,
@@ -23,7 +28,7 @@ from memory_mcp.core.adapters.postgresql.schema import (
     apply_migrations as apply_postgresql_migrations,
 )
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.extraction.factory import create_configured_candidate_extractor
+from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
 from memory_mcp.profiles import built_in_profiles
@@ -75,6 +80,7 @@ def create_memory_mcp_server(
     *,
     memory_service: MemoryService | None = None,
     candidate_extractor: CandidateExtractor | None = None,
+    relation_extractor: RelationExtractor | None = None,
     extraction_settings: ExtractionSettings | None = None,
     profiles: Iterable[MemoryProfile] | None = None,
 ) -> MemoryMcpServer:
@@ -84,10 +90,14 @@ def create_memory_mcp_server(
     close_storage: Callable[[], None] | None = None
     if memory_service is None:
         configured_extractor = candidate_extractor
+        configured_relation_extractor = relation_extractor
         if configured_extractor is None:
-            configured_extractor = create_configured_candidate_extractor(
+            configured_extractors = create_configured_extractors(
                 extraction_settings or ExtractionSettings()
             )
+            configured_extractor = configured_extractors.candidate
+            if configured_relation_extractor is None:
+                configured_relation_extractor = configured_extractors.relation
         database_url = settings.require_postgresql_url()
         if settings.database_migrate_on_startup:
             apply_postgresql_migrations(database_url)
@@ -107,6 +117,7 @@ def create_memory_mcp_server(
             repository,
             configured_profiles,
             candidate_extractor=configured_extractor,
+            relation_extractor=configured_relation_extractor,
         )
     else:
 

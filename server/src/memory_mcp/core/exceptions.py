@@ -27,8 +27,16 @@ class InvalidProfileProgressError(MemoryCoreError):
     """业务进展值不属于当前记忆配置。"""
 
 
+class InvalidMemoryRelationError(MemoryCoreError):
+    """关系名称或有向端点不符合当前 Profile。"""
+
+
 class MemoryNotFoundError(MemoryCoreError):
     """当前用户范围内不存在指定记忆。"""
+
+
+class MemoryRelationNotFoundError(MemoryCoreError):
+    """当前用户范围内不存在指定记忆关系。"""
 
 
 class CaptureNotConfiguredError(MemoryCoreError):

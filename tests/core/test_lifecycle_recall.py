@@ -14,6 +14,7 @@ from memory_mcp.core import (
     ExpressionBasis,
     LifecycleStatus,
     MemoryNotFoundError,
+    MemoryRelationPolicy,
     MemoryService,
     MessageRole,
     PrincipalContext,
@@ -36,6 +37,7 @@ from memory_mcp.profiles import (
 
 from tests.support.fakes import (
     FakeCandidateExtractor,
+    TestMemoryProfile,
     candidate_proposal,
     project_preference_command,
 )
@@ -113,8 +115,7 @@ def test_general_work_policy_declares_formal_minimum() -> None:
         "ongoing_item",
         "decision",
     }
-    assert profile.allowed_relations == set()
-    assert profile.relation_rules == {}
+    assert profile.relation_policies == {}
     assert set(profile.recall_priorities) == profile.memory_types
 
 
@@ -140,8 +141,17 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
         "invalidated",
         "archived",
     }
-    assert profile.allowed_relations == set()
-    assert profile.relation_rules == {}
+    assert set(profile.relation_policies) == {
+        "supports",
+        "challenges",
+        "threatens",
+        "could_catalyze",
+        "addresses",
+        "resolves",
+    }
+    supports = profile.relation_policies["supports"]
+    assert supports.source_memory_types == {"evidence_claim"}
+    assert supports.target_memory_types == {"thesis"}
     assert set(profile.recall_priorities) == profile.memory_types
     assert set(profile.metadata_policies) == profile.memory_types
     assert profile.metadata_policies["research_preference"].validity_days is None
@@ -642,6 +652,73 @@ def test_recall_respects_item_and_conservative_token_limits() -> None:
     assert tiny.items == ()
     assert tiny.truncated is True
     assert tiny.estimated_tokens <= tiny.token_budget
+
+
+def test_recall_uses_only_bounded_relations_between_relevant_candidates() -> None:
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    service = create_memory_service(InMemoryMemoryRepository(), [profile])
+    principal = PrincipalContext("owner-a")
+    source = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            content="alpha long-term thesis signal zxqv-unique-778899",
+            source_expression="alpha long-term thesis signal zxqv-unique-778899",
+        ),
+    )
+    target = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            subject="alpha-research",
+            memory_type="ongoing_item",
+            content="alpha thesis monitoring task",
+            source_turn_id="session-1-turn-2",
+            source_expression="alpha thesis monitoring task",
+        ),
+    )
+    query = RecallQuery(
+        profile_id="project-work",
+        query="alpha thesis research",
+        token_budget=600,
+    )
+    before = service.recall_memory(principal, query)
+    before_scores = {item.memory_id: item.relevance_score for item in before.items}
+
+    service.link_memories(
+        principal,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+    after = service.recall_memory(principal, query)
+    after_scores = {item.memory_id: item.relevance_score for item in after.items}
+
+    assert set(after_scores) == {source.item.memory_id, target.item.memory_id}
+    for memory_id, score in after_scores.items():
+        assert score - before_scores[memory_id] == pytest.approx(0.12)
+    assert all(item.relations for item in after.items)
+    assert "relations=[" in after.rendered_context
+    assert after.estimated_tokens <= after.token_budget
+
+    unrelated = service.recall_memory(
+        principal,
+        RecallQuery(
+            profile_id="project-work",
+            query="zxqv-unique-778899",
+            token_budget=600,
+        ),
+    )
+    assert [item.memory_id for item in unrelated.items] == [source.item.memory_id]
 
 
 class _BlockingExtractor(FakeCandidateExtractor):

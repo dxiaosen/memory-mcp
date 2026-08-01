@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from memory_mcp.core import MemoryMetadataPolicy
+from memory_mcp.core import MemoryMetadataPolicy, MemoryRelationPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,13 +14,12 @@ class GeneralWorkProfile:
         {"preference", "stable_context", "ongoing_item", "decision"}
     )
     business_progress_values: frozenset[str] = frozenset()
-    allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = (
         "Capture explicit durable user preferences, stable context, ongoing "
         "items, and decisions. Keep ambiguous or inferred changes pending."
     )
     profile_version: str = "general-work-v1"
-    relation_rules: dict[str, str] = field(default_factory=dict)
+    relation_policies: dict[str, MemoryRelationPolicy] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(
         default_factory=lambda: {
             "preference": 40,

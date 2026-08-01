@@ -11,6 +11,7 @@ from memory_mcp.core.domain.models import (
     SensitivityLevel,
     VerificationStatus,
 )
+from memory_mcp.core.domain.relations import MemoryRelationSummary
 
 
 def _required_text(value: str, field_name: str) -> str:
@@ -90,6 +91,7 @@ class RecalledMemory:
     valid_until: datetime | None
     last_verified_at: datetime | None
     sources: tuple[RecallSourceSummary, ...]
+    relations: tuple[MemoryRelationSummary, ...]
     relevance_score: float
 
 

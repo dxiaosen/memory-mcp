@@ -9,13 +9,14 @@ PostgreSQL 持久化由服务端统一负责。
 - owner-scoped Memory Core 和 PostgreSQL 权威存储；
 - auto-save、pending、discard、blocked 四类准入；
 - duplicate Evidence、replacement revision 和 history；
-- 八个带认证和 scope 的 MCP 工具，包括幂等 `revoke_memory`；
+- 十个带认证和 scope 的 MCP 工具，包括幂等记忆/关系撤销；
 - revision 的抽取置信度、验证状态、敏感级别、有效期，以及可引用的来源元数据；
 - owner-first recall 和安全 rendered context；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
 - 独立轻量 `memory-mcp-agent` 发行包，Agent Host 不安装数据库、模型或 Server；
-- 真实 OpenAI-compatible/DeepSeek 结构化抽取，以及测试注入的确定性候选；
+- 真实 OpenAI-compatible/DeepSeek 结构化候选与关系抽取，以及测试注入的确定性替身；
 - `general-work` 与 `investment-research` 两套正式 MemoryProfile；
+- owner-scoped 一跳记忆关系、投研关系策略、AfterRun 自动建边和关系感知召回；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
@@ -125,6 +126,8 @@ BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置
 | `confirm_pending_memory` | `memory:review` | 确认 pending |
 | `reject_pending_memory` | `memory:review` | 拒绝 pending |
 | `revoke_memory` | `memory:review` | 幂等撤销当前记忆并保留历史和来源 |
+| `link_memories` | `memory:write` | 按当前 Profile 策略幂等建立有向关系 |
+| `revoke_memory_relation` | `memory:review` | 幂等撤销关系并保留审计历史 |
 
 工具参数不接受 owner。服务端只从可信 Token 映射构造 owner；同一用户的不同 Agent
 可以共享记忆，不同用户即使猜中 memory/review ID 也不能读取。
@@ -147,6 +150,9 @@ OpenSpec 只承担规范和变更管理：
 - [Agent 主动记忆变更](openspec/changes/add-agent-active-memory/)
 - [通用元数据增强](openspec/changes/enhance-memory-metadata/)
 - [投研记忆配置](openspec/changes/add-investment-research-profile/)
+- [通用记忆关系](openspec/changes/add-memory-relations/)
+- [自动记忆关系](openspec/changes/automate-memory-relations/)
+- [关系证据链与质量评估](openspec/changes/harden-memory-relations/)
 
 ## 验证
 
@@ -158,6 +164,10 @@ openspec-cn validate add-general-memory-core --strict
 openspec-cn validate add-agent-active-memory --strict
 openspec-cn validate enhance-memory-metadata --strict
 openspec-cn validate add-investment-research-profile --strict
+openspec-cn validate add-memory-relations --strict
+openspec-cn validate automate-memory-relations --strict
+openspec-cn validate harden-memory-relations --strict
+.venv/bin/python -m evals.runner
 ```
 
 真实 PostgreSQL 测试必须显式设置

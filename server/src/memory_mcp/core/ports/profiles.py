@@ -7,6 +7,7 @@ from typing import Protocol
 from memory_mcp.core.domain.models import SensitivityLevel
 from memory_mcp.core.exceptions import (
     InvalidMemoryProfileError,
+    InvalidMemoryRelationError,
     InvalidMemoryTypeError,
     InvalidProfileProgressError,
     ProfileAlreadyRegisteredError,
@@ -26,6 +27,31 @@ class MemoryMetadataPolicy:
             raise ValueError("sensitivity_level must be a SensitivityLevel")
         if self.validity_days is not None and self.validity_days < 1:
             raise ValueError("validity_days must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRelationPolicy:
+    """一种关系允许连接的记忆类型及其稳定语义。"""
+
+    source_memory_types: frozenset[str]
+    target_memory_types: frozenset[str]
+    description: str
+
+    def __post_init__(self) -> None:
+        if not _contains_only_normalized_text(self.source_memory_types):
+            raise ValueError("source_memory_types must contain normalized text")
+        if not self.source_memory_types:
+            raise ValueError("source_memory_types must not be empty")
+        if not _contains_only_normalized_text(self.target_memory_types):
+            raise ValueError("target_memory_types must contain normalized text")
+        if not self.target_memory_types:
+            raise ValueError("target_memory_types must not be empty")
+        if (
+            not isinstance(self.description, str)
+            or not self.description
+            or self.description != self.description.strip()
+        ):
+            raise ValueError("description must be normalized non-empty text")
 
 
 class MemoryProfile(Protocol):
@@ -50,12 +76,6 @@ class MemoryProfile(Protocol):
         ...
 
     @property
-    def allowed_relations(self) -> frozenset[str]:
-        """返回当前配置允许建立的业务关系；可为空。"""
-
-        ...
-
-    @property
     def capture_guidance(self) -> str:
         """返回捕获阶段使用的配置说明。"""
 
@@ -68,8 +88,8 @@ class MemoryProfile(Protocol):
         ...
 
     @property
-    def relation_rules(self) -> Mapping[str, str]:
-        """返回后续关系判断阶段使用的规则说明。"""
+    def relation_policies(self) -> Mapping[str, MemoryRelationPolicy]:
+        """返回关系名称到合法端点策略的映射；可为空。"""
 
         ...
 
@@ -110,10 +130,6 @@ class ProfileRegistry:
             raise InvalidMemoryProfileError(
                 "business_progress_values must contain non-empty values"
             )
-        if not _contains_only_normalized_text(profile.allowed_relations):
-            raise InvalidMemoryProfileError(
-                "allowed_relations must contain non-empty values"
-            )
         if (
             not isinstance(profile.capture_guidance, str)
             or not profile.capture_guidance
@@ -137,6 +153,33 @@ class ProfileRegistry:
             raise InvalidMemoryProfileError(
                 "metadata_policies must contain MemoryMetadataPolicy values"
             )
+        if set(profile.recall_priorities) != set(profile.memory_types):
+            raise InvalidMemoryProfileError(
+                "recall_priorities must define every memory type exactly once"
+            )
+        if any(
+            isinstance(priority, bool) or not isinstance(priority, int) or priority < 0
+            for priority in profile.recall_priorities.values()
+        ):
+            raise InvalidMemoryProfileError(
+                "recall_priorities must contain non-negative integers"
+            )
+        if not _contains_only_normalized_text(frozenset(profile.relation_policies)):
+            raise InvalidMemoryProfileError(
+                "relation_policies must use normalized non-empty keys"
+            )
+        for relation_type, policy in profile.relation_policies.items():
+            if not isinstance(policy, MemoryRelationPolicy):
+                raise InvalidMemoryProfileError(
+                    "relation_policies must contain MemoryRelationPolicy values"
+                )
+            unknown_types = (
+                policy.source_memory_types | policy.target_memory_types
+            ) - profile.memory_types
+            if unknown_types:
+                raise InvalidMemoryProfileError(
+                    f"relation policy {relation_type} references unknown memory types"
+                )
         if profile_id in self._profiles:
             raise ProfileAlreadyRegisteredError(
                 f"profile_id already registered: {profile_id}"
@@ -187,6 +230,29 @@ class ProfileRegistry:
 
         self.validate_memory_type(profile_id, memory_type)
         return self.get(profile_id).metadata_policies[memory_type]
+
+    def validate_relation(
+        self,
+        profile_id: str,
+        relation_type: str,
+        source_memory_type: str,
+        target_memory_type: str,
+    ) -> None:
+        """校验关系名称和有向端点类型。"""
+
+        profile = self.get(profile_id)
+        policy = profile.relation_policies.get(relation_type)
+        if policy is None:
+            raise InvalidMemoryRelationError(
+                f"relation type is not allowed by profile_id {profile_id}"
+            )
+        if (
+            source_memory_type not in policy.source_memory_types
+            or target_memory_type not in policy.target_memory_types
+        ):
+            raise InvalidMemoryRelationError(
+                f"relation endpoints are not allowed for {relation_type}"
+            )
 
     @property
     def profile_ids(self) -> frozenset[str]:

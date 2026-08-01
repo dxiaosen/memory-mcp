@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from threading import Lock
 from uuid import UUID
 
 from memory_mcp.core.domain import (
@@ -12,8 +13,14 @@ from memory_mcp.core.domain import (
     LifecycleStatus,
     MemoryHistoryEntry,
     MemoryRecord,
+    MemoryRelation,
+    MemoryRelationSummary,
     MemoryRevision,
     PrincipalContext,
+    RelationDirection,
+    RelationOrigin,
+    RelationScope,
+    RelationStatus,
     ReviewItem,
     ReviewStatus,
     normalize_memory_text,
@@ -26,6 +33,7 @@ from memory_mcp.core.ports import (
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryProfile,
+    MemoryRelationPolicy,
     ReplacementWrite,
 )
 
@@ -37,14 +45,23 @@ class InMemoryMemoryRepository:
         self._records: dict[UUID, MemoryRecord] = {}
         self._history: dict[UUID, tuple[MemoryHistoryEntry, ...]] = {}
         self._profile_types: dict[str, frozenset[str]] = {}
+        self._profile_relation_policies: dict[
+            str,
+            dict[str, MemoryRelationPolicy],
+        ] = {}
         self._captures: dict[
             tuple[str, ...],
             CaptureResult,
         ] = {}
         self._reviews: dict[UUID, ReviewItem] = {}
+        self._relations: dict[UUID, MemoryRelation] = {}
+        self._relation_lock = Lock()
 
     def register_profile(self, profile: MemoryProfile) -> None:
         self._profile_types[profile.profile_id] = frozenset(profile.memory_types)
+        self._profile_relation_policies[profile.profile_id] = dict(
+            profile.relation_policies
+        )
 
     def add(
         self,
@@ -150,6 +167,123 @@ class InMemoryMemoryRepository:
         )
         return updated
 
+    def link_relation(
+        self,
+        principal: PrincipalContext,
+        relation: MemoryRelation,
+        *,
+        effective_at: datetime,
+    ) -> MemoryRelation:
+        if relation.origin is not RelationOrigin.MANUAL:
+            raise ValueError("explicit relation write must be manual")
+        self._validate_relation_write(
+            principal,
+            relation,
+            records=self._records,
+            effective_at=effective_at,
+        )
+        with self._relation_lock:
+            for existing in self._relations.values():
+                if (
+                    existing.owner_id == principal.owner_id
+                    and existing.source_memory_id == relation.source_memory_id
+                    and existing.target_memory_id == relation.target_memory_id
+                    and existing.relation_type == relation.relation_type
+                    and existing.status is RelationStatus.ACTIVE
+                ):
+                    return existing
+            if relation.relation_id in self._relations:
+                raise ValueError("relation_id must be unique")
+            self._relations[relation.relation_id] = relation
+        return relation
+
+    def revoke_relation(
+        self,
+        principal: PrincipalContext,
+        relation_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> MemoryRelation | None:
+        with self._relation_lock:
+            relation = self._relations.get(relation_id)
+            if relation is None or relation.owner_id != principal.owner_id:
+                return None
+            if relation.status is RelationStatus.REVOKED:
+                return relation
+            revoked = replace(
+                relation,
+                status=RelationStatus.REVOKED,
+                revoked_at=revoked_at,
+            )
+            self._relations[relation_id] = revoked
+            return revoked
+
+    def list_relations(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        active_only: bool,
+        effective_at: datetime | None = None,
+    ) -> Sequence[MemoryRelationSummary]:
+        requested = frozenset(memory_ids)
+        if not requested:
+            return ()
+        resolved_time = effective_at or datetime.now(UTC)
+        summaries: list[MemoryRelationSummary] = []
+        for relation in self._relations.values():
+            if relation.owner_id != principal.owner_id:
+                continue
+            if not (
+                relation.source_memory_id in requested
+                or relation.target_memory_id in requested
+            ):
+                continue
+            source = self.get(principal, relation.source_memory_id)
+            target = self.get(principal, relation.target_memory_id)
+            if source is None or target is None:
+                continue
+            if active_only and (
+                relation.status is not RelationStatus.ACTIVE
+                or any(
+                    record.current_revision.lifecycle_status
+                    is not LifecycleStatus.ACTIVE
+                    or not _is_effective(record.current_revision, resolved_time)
+                    for record in (source, target)
+                )
+            ):
+                continue
+            if relation.source_memory_id in requested:
+                summaries.append(
+                    MemoryRelationSummary(
+                        relation=relation,
+                        direction=RelationDirection.OUTGOING,
+                        related_memory_id=target.item.memory_id,
+                        related_subject=target.item.subject,
+                        related_memory_type=target.item.memory_type,
+                    )
+                )
+            if relation.target_memory_id in requested:
+                summaries.append(
+                    MemoryRelationSummary(
+                        relation=relation,
+                        direction=RelationDirection.INCOMING,
+                        related_memory_id=source.item.memory_id,
+                        related_subject=source.item.subject,
+                        related_memory_type=source.item.memory_type,
+                    )
+                )
+        return tuple(
+            sorted(
+                summaries,
+                key=lambda value: (
+                    value.relation.created_at,
+                    value.relation.relation_id,
+                    value.direction.value,
+                ),
+            )
+        )
+
     def get_history(
         self,
         principal: PrincipalContext,
@@ -200,6 +334,7 @@ class InMemoryMemoryRepository:
             or write.reviews
             or write.duplicate_evidence
             or write.replacements
+            or write.relations
         ):
             raise ValueError("failed capture cannot persist candidate content")
         key = self._capture_key(result)
@@ -216,10 +351,13 @@ class InMemoryMemoryRepository:
             for operation in (*write.duplicate_evidence, *write.replacements)
         }
         review_ids = {review.review_id for review in write.reviews}
+        relation_ids = {relation.relation_id for relation in write.relations}
         if len(record_ids) != len(write.memories):
             raise ValueError("capture contains duplicate memory ids")
         if len(review_ids) != len(write.reviews):
             raise ValueError("capture contains duplicate review ids")
+        if len(relation_ids) != len(write.relations):
+            raise ValueError("capture contains duplicate relation ids")
         if len(lifecycle_ids) != (
             len(write.duplicate_evidence) + len(write.replacements)
         ):
@@ -309,12 +447,52 @@ class InMemoryMemoryRepository:
                     evidence=replacement.evidence,
                 ),
             )
-        reviews.update((review.review_id, review) for review in write.reviews)
-        captures[key] = result
-        self._records = records
-        self._history = history
-        self._reviews = reviews
-        self._captures = captures
+        with self._relation_lock:
+            relations = dict(self._relations)
+            for replacement in write.replacements:
+                relations = _stale_revision_relations(
+                    relations,
+                    principal,
+                    replacement,
+                )
+            for relation in write.relations:
+                provenance = relation.provenance
+                if (
+                    relation.origin is not RelationOrigin.AUTOMATIC
+                    or provenance is None
+                    or provenance.capture_id != result.capture_id
+                    or provenance.conversation_id != result.conversation_id
+                    or provenance.source_turn_id != result.source_turn_id
+                ):
+                    raise ValueError(
+                        "capture relation provenance must match capture result"
+                    )
+                self._validate_relation_write(
+                    principal,
+                    relation,
+                    records=records,
+                    effective_at=relation.created_at,
+                )
+                duplicate = any(
+                    existing_relation.owner_id == principal.owner_id
+                    and existing_relation.source_memory_id == relation.source_memory_id
+                    and existing_relation.target_memory_id == relation.target_memory_id
+                    and existing_relation.relation_type == relation.relation_type
+                    and existing_relation.status is RelationStatus.ACTIVE
+                    for existing_relation in relations.values()
+                )
+                if duplicate:
+                    continue
+                if relation.relation_id in relations:
+                    raise ValueError("relation_id must be unique")
+                relations[relation.relation_id] = relation
+            reviews.update((review.review_id, review) for review in write.reviews)
+            captures[key] = result
+            self._records = records
+            self._history = history
+            self._reviews = reviews
+            self._captures = captures
+            self._relations = relations
 
     def list_reviews(
         self,
@@ -466,9 +644,18 @@ class InMemoryMemoryRepository:
                 ),
             )
         reviews[review_id] = resolved
-        self._records = records
-        self._history = history
-        self._reviews = reviews
+        with self._relation_lock:
+            relations = dict(self._relations)
+            if replacement is not None:
+                relations = _stale_revision_relations(
+                    relations,
+                    principal,
+                    replacement,
+                )
+            self._records = records
+            self._history = history
+            self._reviews = reviews
+            self._relations = relations
         return resolved
 
     @staticmethod
@@ -523,6 +710,57 @@ class InMemoryMemoryRepository:
                 revision,
                 source,
             )
+
+    def _validate_relation_write(
+        self,
+        principal: PrincipalContext,
+        relation: MemoryRelation,
+        *,
+        records: dict[UUID, MemoryRecord],
+        effective_at: datetime,
+    ) -> None:
+        if relation.owner_id != principal.owner_id:
+            raise ValueError("relation owner must match trusted principal")
+        if relation.status is not RelationStatus.ACTIVE:
+            raise ValueError("new relation must be active")
+        if relation.origin is RelationOrigin.LEGACY:
+            raise ValueError("new relation cannot use legacy origin")
+        source = records.get(relation.source_memory_id)
+        target = records.get(relation.target_memory_id)
+        if (
+            source is None
+            or target is None
+            or source.item.owner_id != principal.owner_id
+            or target.item.owner_id != principal.owner_id
+        ):
+            raise ValueError("relation endpoints are unavailable")
+        if (
+            source.item.profile_id != relation.profile_id
+            or target.item.profile_id != relation.profile_id
+        ):
+            raise ValueError("relation endpoints must share the relation profile")
+        policy = self._profile_relation_policies.get(
+            relation.profile_id,
+            {},
+        ).get(relation.relation_type)
+        if (
+            policy is None
+            or source.item.memory_type not in policy.source_memory_types
+            or target.item.memory_type not in policy.target_memory_types
+        ):
+            raise ValueError("relation does not match the registered policy")
+        for record in (source, target):
+            revision = record.current_revision
+            if (
+                revision.lifecycle_status is not LifecycleStatus.ACTIVE
+                or not _is_effective(revision, effective_at)
+            ):
+                raise ValueError("relation endpoints must be active and effective")
+        if (
+            relation.source_revision_id != source.current_revision.revision_id
+            or relation.target_revision_id != target.current_revision.revision_id
+        ):
+            raise ValueError("relation revision snapshots must match current endpoints")
 
     def _validate_record(
         self,
@@ -646,3 +884,39 @@ def _is_effective(revision: MemoryRevision, at_time: datetime) -> bool:
     return revision.valid_from <= at_time and (
         revision.valid_until is None or revision.valid_until > at_time
     )
+
+
+def _stale_revision_relations(
+    relations: dict[UUID, MemoryRelation],
+    principal: PrincipalContext,
+    replacement: ReplacementWrite,
+) -> dict[UUID, MemoryRelation]:
+    """返回物化 replacement 失效边后的关系副本。"""
+
+    stale_at = replacement.revision.created_at
+    current_revision_id = replacement.revision.revision_id
+    return {
+        relation_id: (
+            replace(
+                relation,
+                status=RelationStatus.STALE,
+                stale_at=stale_at,
+                stale_reason="endpoint_revision_changed",
+            )
+            if relation.owner_id == principal.owner_id
+            and relation.scope is RelationScope.REVISION
+            and relation.status is RelationStatus.ACTIVE
+            and (
+                (
+                    relation.source_memory_id == replacement.memory_id
+                    and relation.source_revision_id != current_revision_id
+                )
+                or (
+                    relation.target_memory_id == replacement.memory_id
+                    and relation.target_revision_id != current_revision_id
+                )
+            )
+            else relation
+        )
+        for relation_id, relation in relations.items()
+    }

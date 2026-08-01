@@ -103,8 +103,10 @@ Memory PostgreSQL is healthy
 Evidence：历史 `extraction_confidence` 为 null，`valid_from` 从原 `observed_at`
 回填，并增加 verification、sensitivity、validity 与 citation 字段。随后还会应用
 `0005_metadata_rollback_compat.sql`，保证保留向前 schema 时旧版 Server 仍能短期
-回滚写入。显示 `PostgreSQL schema is up to date` 代表五条 migration 都已应用且
-checksum 一致，
+回滚写入。关系版本还会应用 `0006_memory_relations.sql`，增加关系目录、关系表、
+同 owner/Profile 端点外键和活动关系唯一索引；随后 `0007_relation_provenance.sql`
+增加 revision 快照、自动 provenance 和 stale 生命周期，旧边只标成 `legacy/item`。
+显示 `PostgreSQL schema is up to date` 代表七条 migration 都已应用且 checksum 一致，
 不是“没有数据库表”。
 
 启动服务：
@@ -227,7 +229,66 @@ MEMORY_HOOK_PROFILE_ID=investment-research \
 verification 设成 `source_verified`。投研 subject 应细化到实体/主题与指标、期间、
 事件或问题焦点；无法保证 canonical subject 时，召回仍应省略 subject。
 
-### 4.2 查看元数据、到期和撤销
+### 4.2 自动建立和治理投研关系
+
+启用 `investment-research` 后，AfterRun 的 Server Capture 会先完成记忆候选准入，
+再从本轮 auto-save 记忆和同 owner/Profile 的有效既有记忆中选择最多 40 个端点，
+执行一次独立结构化关系抽取。只有原文明确表达、confidence 不低于 `0.90`、端点
+唯一、命中用户消息且符合 Profile 方向的关系才会与本轮记忆在同一个事务自动保存；
+Assistant/Tool 自己给出的结论、pending、blocked、低置信、推断或歧义关系不会形成边。
+
+手工端到端验证建议分两轮：第一轮在 `investment-research` 下明确保存一条 thesis；
+第二轮提交一条 evidence_claim，并在原文中明确说明“该证据支持前述论点”。第二轮
+完成后用 `list_memories` 找到 evidence/thesis，再对任一端点调用 `get_memory`；
+`relations[]` 应出现 `supports`、正确的 incoming/outgoing 方向和另一端 memory ID。
+默认日志应出现 `memory.capture.relations_planned`，其中 `accepted_count=1`；不需要让
+Agent 额外调用关系工具。真实模型若把任一记忆判为 pending，先通过 Review 确认后在
+后续轮次再次明确关系，系统不会给 pending 候选建立悬空边。
+
+因此普通 Agent 不需要取得 memory ID 或主动调用关系工具。`link_memories` 仍保留为
+人工验收、历史数据补链和错误修正的治理能力。MCP Inspector 可以先查看
+`list_memories`，再显式调用：
+
+```text
+link_memories {
+  "source_memory_id":"<evidence_claim UUID>",
+  "target_memory_id":"<thesis UUID>",
+  "relation_type":"supports"
+}
+```
+
+相同 owner/source/target/type 的重复调用返回同一活动关系。投研 Profile 允许
+`supports`、`challenges`、`threatens`、`could_catalyze`、`addresses` 和 `resolves`；
+合法方向见[配置参考](config.md#7-固定记忆配置)。`get_memory` 默认返回活动一跳
+关系，`include_history=true` 还会返回 provenance、stale 和已撤销关系。自动边的
+`origin=automatic`、`scope=revision`，会给出两端 revision、capture、来源表达、
+confidence 和抽取版本；显式工具边为 `manual/item` 且没有模型 provenance。需要撤销时调用：
+
+```text
+revoke_memory_relation {"relation_id":"<UUID>"}
+```
+
+关系撤销不删除端点或历史。关系 MCP 工具同样不接受 owner；跨用户 ID 与不存在不可
+区分。撤销一条错误边当前仍是显式治理操作；如果任一端点记忆 revoked 或到期，
+这条关系会自动停止参与普通详情与 recall，但历史关系行继续保留。自动关系任一端
+replacement 时也会转为 `stale/endpoint_revision_changed`；新的 current revision
+必须重新建立关系，旧边不会静默跟随新内容。自动关系不改变普通用户配置，仍然只有
+URL 和 Token。
+
+### 4.3 自动质量评估
+
+默认离线评估不读取模型配置、网络、Token 或数据库：
+
+```bash
+.venv/bin/python -m evals.runner
+```
+
+它输出候选/关系 precision、recall、Recall@K、安全负例通过率和失败 case ID，阈值
+不满足时返回非零。显式评估当前真实模型时，在已加载 `MEMORY_MCP_MODEL_*` 的环境中
+增加 `--live-model`；该模式只使用进程内 Repository，不写生产 PostgreSQL。完整合同
+见 `evals/README.md`。
+
+### 4.4 查看元数据、到期和撤销
 
 `list_memories`、`get_memory(include_history=true)` 和 `recall_memory` 会返回
 extraction confidence、verification、sensitivity、validity；详情/history 还返回
@@ -464,7 +525,7 @@ Key、provider 异常正文和敏感规则拦截的原文在任何模式下都�
 ```
 
 `client.py` 只演示只读操作。pending confirm/reject 和完整 DTO 可通过任意 MCP
-Inspector/Client 调用八个注册工具。Token 始终从 Agent 进程环境或其显式 env
+Inspector/Client 调用十个注册工具。Token 始终从 Agent 进程环境或其显式 env
 文件读取。
 
 ## 12. 部署访问

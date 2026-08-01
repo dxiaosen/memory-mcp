@@ -245,6 +245,10 @@ BeforeRun  → recall_memory → 注入 rendered_context
 AfterRun   → capture_completed_turn（仅成功完成的轮次）
 ```
 
+对于启用 `relation_policies` 的投研 Profile，Server 会在同一个 Capture 中完成候选
+准入、可选的第二次结构化关系抽取，并把新记忆和高置信关系放入同一 PostgreSQL
+事务。Agent Host 不增加地址/Token 之外的配置，也不主动调用 `link_memories`。
+
 `memory-mcp-hook` 接受通用 BeforeRun/AfterRun 合同，并内置 Codex/Claude Code
 字段兼容，不需要复制客户端实现。Codex 当前没有原生 HTTP Hook，因此跨机时也由
 这个本地轻量命令请求远端 Server；它不是本地 Server。Host 安装、标准合同、首批
@@ -270,8 +274,14 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 `scenario/policy_version` 列原地重命名为 `profile_id/profile_version`。
 `0004_memory_metadata.sql` 在保留旧 revision/Evidence 的基础上增加 confidence、
 verification、sensitivity、validity 和 citation 字段；
-`0005_metadata_rollback_compat.sql` 保证旧版 Server 短期回滚仍可写入。不要修改任何已执行 migration，
-否则已部署数据库会因 checksum 不一致拒绝启动。由于 MCP
+`0005_metadata_rollback_compat.sql` 保证旧版 Server 短期回滚仍可写入。
+`0006_memory_relations.sql` 只增加向前兼容的关系目录/数据表和 MemoryItem 复合身份
+约束；旧 Server 会忽略这些新表，回滚时不删除它们。`0007_relation_provenance.sql`
+继续向前增加 origin/scope、revision 快照、自动 provenance 和 stale 生命周期；旧边
+保守标记为 `legacy/item`，不回填无法证明的模型证据。理解 `0007` 的 Server 与
+migration 必须同一发布窗口上线；出现 stale 数据后不能回滚到只认识
+`active/revoked` 的旧二进制。不要修改任何已执行 migration，否则已部署数据库会因
+checksum 不一致拒绝启动。由于 MCP
 DTO 同步改为 `profile_id`，Server 与主动记忆 Agent Client 应在同一发布窗口升级。
 
 Server 应用回滚时恢复上一个代码版本并重新同步锁定依赖。Agent Client 独立按

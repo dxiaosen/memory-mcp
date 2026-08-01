@@ -17,16 +17,23 @@ from memory_mcp.core.domain import (
     MemoryHistoryEntry,
     MemoryItem,
     MemoryRecord,
+    MemoryRelation,
+    MemoryRelationSummary,
     MemoryRevision,
     PrincipalContext,
     RecallQuery,
     RecallResult,
+    RelationOrigin,
+    RelationScope,
+    RelationStatus,
     ReviewItem,
     TurnEnvelope,
     VerificationStatus,
 )
 from memory_mcp.core.exceptions import (
+    InvalidMemoryRelationError,
     MemoryNotFoundError,
+    MemoryRelationNotFoundError,
     SensitiveContentBlockedError,
 )
 from memory_mcp.core.ports import (
@@ -34,6 +41,7 @@ from memory_mcp.core.ports import (
     MemoryProfile,
     MemoryRepository,
     ProfileRegistry,
+    RelationExtractor,
     SensitiveContentGuard,
 )
 from memory_mcp.logging import log_content_event, log_event, stable_reference
@@ -50,6 +58,7 @@ class MemoryService:
         profile_registry: ProfileRegistry,
         *,
         candidate_extractor: CandidateExtractor | None = None,
+        relation_extractor: RelationExtractor | None = None,
         sensitive_guard: SensitiveContentGuard,
         admission_policy: ConservativeAdmissionPolicy | None = None,
         id_factory: Callable[[], UUID] = uuid4,
@@ -64,6 +73,7 @@ class MemoryService:
             repository,
             profile_registry,
             candidate_extractor=candidate_extractor,
+            relation_extractor=relation_extractor,
             sensitive_guard=sensitive_guard,
             admission_policy=(admission_policy or ConservativeAdmissionPolicy()),
             id_factory=id_factory,
@@ -310,6 +320,112 @@ class MemoryService:
             owner_ref=stable_reference(principal.owner_id),
         )
         return record
+
+    def link_memories(
+        self,
+        principal: PrincipalContext,
+        source_memory_id: UUID,
+        target_memory_id: UUID,
+        relation_type: str,
+    ) -> MemoryRelation:
+        """在两个 owned、有效的稳定记忆身份之间建立有向关系。"""
+
+        if source_memory_id == target_memory_id:
+            raise InvalidMemoryRelationError("memory relation cannot be a self loop")
+        source = self._repository.get(principal, source_memory_id)
+        target = self._repository.get(principal, target_memory_id)
+        if source is None or target is None:
+            raise MemoryNotFoundError("memory is unavailable")
+        if source.item.profile_id != target.item.profile_id:
+            raise InvalidMemoryRelationError(
+                "memory relation endpoints must share a profile"
+            )
+        self._profile_registry.validate_relation(
+            source.item.profile_id,
+            relation_type,
+            source.item.memory_type,
+            target.item.memory_type,
+        )
+        now = self._clock()
+        relation = MemoryRelation(
+            relation_id=self._id_factory(),
+            owner_id=principal.owner_id,
+            profile_id=source.item.profile_id,
+            source_memory_id=source_memory_id,
+            target_memory_id=target_memory_id,
+            relation_type=relation_type,
+            status=RelationStatus.ACTIVE,
+            created_at=now,
+            origin=RelationOrigin.MANUAL,
+            scope=RelationScope.ITEM,
+            source_revision_id=source.current_revision.revision_id,
+            target_revision_id=target.current_revision.revision_id,
+        )
+        try:
+            committed = self._repository.link_relation(
+                principal,
+                relation,
+                effective_at=now,
+            )
+        except ValueError as exc:
+            raise InvalidMemoryRelationError(
+                "memory relation could not be created"
+            ) from exc
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.relation.linked",
+            relation_id=committed.relation_id,
+            relation_origin=committed.origin.value,
+            relation_scope=committed.scope.value,
+            relation_type=committed.relation_type,
+            source_memory_id=committed.source_memory_id,
+            target_memory_id=committed.target_memory_id,
+        )
+        return committed
+
+    def revoke_memory_relation(
+        self,
+        principal: PrincipalContext,
+        relation_id: UUID,
+    ) -> MemoryRelation:
+        """幂等撤销一条 owned 关系并保留审计时间。"""
+
+        relation = self._repository.revoke_relation(
+            principal,
+            relation_id,
+            revoked_at=self._clock(),
+        )
+        if relation is None:
+            raise MemoryRelationNotFoundError("memory relation is unavailable")
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.relation.revoked",
+            relation_id=relation.relation_id,
+            relation_origin=relation.origin.value,
+            relation_scope=relation.scope.value,
+            relation_type=relation.relation_type,
+        )
+        return relation
+
+    def list_memory_relations(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+        *,
+        include_inactive: bool = False,
+    ) -> Sequence[MemoryRelationSummary]:
+        """读取一项 owned 记忆的一跳关系。"""
+
+        if self._repository.get(principal, memory_id) is None:
+            raise MemoryNotFoundError("memory is unavailable")
+        return self._repository.list_relations(
+            principal,
+            memory_ids=(memory_id,),
+            active_only=not include_inactive,
+            effective_at=self._clock(),
+        )
 
     def capture_turn(
         self,

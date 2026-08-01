@@ -1,5 +1,7 @@
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from memory_mcp.core import (
@@ -9,8 +11,13 @@ from memory_mcp.core import (
     CaptureStatus,
     EvidenceSourceType,
     ExpressionBasis,
+    MemoryRelationPolicy,
     MessageRole,
     PrincipalContext,
+    RelationOrigin,
+    RelationProposal,
+    RelationScope,
+    RelationStatus,
     ReviewNotFoundError,
     ReviewStatus,
     SensitivityLevel,
@@ -24,8 +31,10 @@ from memory_mcp.core.composition import create_memory_service
 from tests.support.fakes import (
     AlternateMemoryProfile,
     FakeCandidateExtractor,
+    FakeRelationExtractor,
     TestMemoryProfile,
     candidate_proposal,
+    project_preference_command,
 )
 
 _OBSERVED_AT = datetime(2026, 7, 29, 10, tzinfo=UTC)
@@ -562,6 +571,668 @@ def test_two_profile_profiles_supply_different_extraction_contracts() -> None:
         "project-work",
         "personal-notes",
     }
+
+
+def test_automatic_relation_links_same_capture_memories_and_replays_once() -> None:
+    text = "周报格式偏好明确支持接口重构跟进"
+    candidate_extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "周报格式偏好",
+                subject="weekly-report",
+                memory_type="preference",
+            ),
+            candidate_proposal(
+                "接口重构跟进",
+                subject="interface-refactor",
+                memory_type="ongoing_item",
+                content="继续跟进接口重构",
+            ),
+        )
+    )
+    relation_extractor = FakeRelationExtractor(
+        lambda request: (_relation_proposal(request, text),)
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=candidate_extractor,
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    first = service.capture_turn(principal, _turn(text))
+    replayed = service.capture_turn(principal, _turn(text))
+    candidate_extractor.proposals = ()
+    duplicate = service.capture_turn(principal, _turn(text, turn_id="turn-2"))
+
+    memories = service.list_memories(principal)
+    source = next(
+        record for record in memories if record.item.memory_type == "preference"
+    )
+    relations = service.list_memory_relations(principal, source.item.memory_id)
+    assert first.status is CaptureStatus.COMPLETED
+    assert replayed.replayed is True
+    assert duplicate.status is CaptureStatus.COMPLETED
+    assert len(relations) == 1
+    relation = relations[0].relation
+    assert relation.relation_type == "supports"
+    assert relation.origin is RelationOrigin.AUTOMATIC
+    assert relation.scope is RelationScope.REVISION
+    assert relation.source_revision_id == source.current_revision.revision_id
+    assert relation.provenance is not None
+    assert relation.provenance.capture_id == first.capture_id
+    assert relation.provenance.conversation_id == "conversation-1"
+    assert relation.provenance.source_turn_id == "turn-1"
+    assert relation.provenance.source_expression == text
+    assert relation.provenance.confidence == 0.96
+    assert relation.provenance.model_id == "fake-relation-model"
+    assert len(candidate_extractor.requests) == 2
+    assert len(relation_extractor.requests) == 2
+
+
+def test_relation_free_profile_skips_relation_model() -> None:
+    relation_extractor = FakeRelationExtractor()
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=FakeCandidateExtractor(
+            (candidate_proposal("以后周报默认用表格"),)
+        ),
+        relation_extractor=relation_extractor,
+    )
+
+    result = service.capture_turn(
+        PrincipalContext("analyst-a"),
+        _turn("以后周报默认用表格"),
+    )
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert relation_extractor.requests == []
+
+
+def test_automatic_relation_becomes_stale_and_can_be_recreated() -> None:
+    first_text = "周报偏好明确支持持续事项"
+    candidate_extractor = _two_relation_candidates()
+    relation_extractor = FakeRelationExtractor(
+        lambda request: (_relation_proposal(request, first_text),)
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=candidate_extractor,
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    service.capture_turn(principal, _turn(first_text))
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    original_relation = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+    )[0].relation
+
+    replacement_text = "以后项目周报改为图表"
+    candidate_extractor.proposals = (
+        candidate_proposal(
+            replacement_text,
+            memory_type="preference",
+            content="项目周报默认使用图表",
+        ),
+    )
+    relation_extractor.proposal_factory = lambda request: ()
+    service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="conversation-1",
+            source_turn_id="turn-replacement",
+            content=replacement_text,
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=replacement_text,
+                    message_id="replacement-message",
+                ),
+            ),
+        ),
+    )
+
+    assert service.list_memory_relations(principal, source.item.memory_id) == ()
+    stale = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+        include_inactive=True,
+    )[0].relation
+    assert stale.relation_id == original_relation.relation_id
+    assert stale.status is RelationStatus.STALE
+    assert stale.stale_at is not None
+    assert stale.stale_reason == "endpoint_revision_changed"
+
+    rebuilt_text = "图表周报偏好明确支持持续事项"
+    candidate_extractor.proposals = ()
+    relation_extractor.proposal_factory = lambda request: (
+        _relation_proposal(request, rebuilt_text),
+    )
+    service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="conversation-1",
+            source_turn_id="turn-rebuild-relation",
+            content=rebuilt_text,
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=rebuilt_text,
+                    message_id="rebuilt-relation-message",
+                ),
+            ),
+        ),
+    )
+
+    active = service.list_memory_relations(principal, source.item.memory_id)
+    history = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+        include_inactive=True,
+    )
+    current_source = service.get_memory(principal, source.item.memory_id)
+    assert len(active) == 1
+    assert active[0].relation.relation_id != original_relation.relation_id
+    assert active[0].relation.source_revision_id == (
+        current_source.current_revision.revision_id
+    )
+    assert {summary.relation.status for summary in history} == {
+        RelationStatus.ACTIVE,
+        RelationStatus.STALE,
+    }
+
+    revoked = service.revoke_memory_relation(principal, stale.relation_id)
+    assert revoked.status is RelationStatus.REVOKED
+    assert revoked.stale_at == stale.stale_at
+    assert revoked.stale_reason == "endpoint_revision_changed"
+
+
+def test_automatic_relation_catalog_excludes_pending_and_other_owner() -> None:
+    profile = _relation_profile()
+    repository = InMemoryMemoryRepository()
+    relation_extractor = FakeRelationExtractor()
+    service = create_memory_service(
+        repository,
+        [profile],
+        candidate_extractor=FakeCandidateExtractor(
+            (
+                candidate_proposal("周报偏好", memory_type="preference"),
+                candidate_proposal(
+                    "可能继续另一个事项",
+                    subject="pending-target",
+                    memory_type="ongoing_item",
+                    content="可能继续另一个事项",
+                    assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+                    expression_basis=ExpressionBasis.INFERRED,
+                ),
+            )
+        ),
+        relation_extractor=relation_extractor,
+    )
+    analyst_a = PrincipalContext("analyst-a")
+    analyst_b = PrincipalContext("analyst-b")
+    existing = service.create_memory(
+        analyst_a,
+        replace(
+            project_preference_command(),
+            subject="existing-target",
+            memory_type="ongoing_item",
+            content="继续已有事项",
+            source_turn_id="existing-turn-a",
+            source_expression="继续已有事项",
+        ),
+    )
+    other_owner = service.create_memory(
+        analyst_b,
+        replace(
+            project_preference_command(),
+            subject="other-owner-target",
+            memory_type="ongoing_item",
+            content="其他用户事项",
+            source_turn_id="existing-turn-b",
+            source_expression="其他用户事项",
+        ),
+    )
+
+    service.capture_turn(
+        analyst_a,
+        _turn("周报偏好明确支持已有事项。可能继续另一个事项"),
+    )
+
+    request = relation_extractor.requests[0]
+    endpoint_ids = {endpoint.memory_id for endpoint in request.endpoints}
+    endpoint_subjects = {endpoint.subject for endpoint in request.endpoints}
+    assert existing.item.memory_id in endpoint_ids
+    assert other_owner.item.memory_id not in endpoint_ids
+    assert "pending-target" not in endpoint_subjects
+
+
+def test_relation_catalog_is_bounded_and_prioritizes_same_capture_memory() -> None:
+    profile = _relation_profile()
+    relation_extractor = FakeRelationExtractor()
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [profile],
+        candidate_extractor=FakeCandidateExtractor(
+            (candidate_proposal("本轮周报偏好", memory_type="preference"),)
+        ),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    for index in range(45):
+        service.create_memory(
+            principal,
+            replace(
+                project_preference_command(),
+                subject=f"existing-task-{index}",
+                memory_type="ongoing_item",
+                content=f"已有事项 {index}",
+                source_turn_id=f"existing-turn-{index}",
+                source_expression=f"已有事项 {index}",
+            ),
+        )
+
+    service.capture_turn(principal, _turn("本轮周报偏好支持已有事项"))
+
+    endpoints = relation_extractor.requests[0].endpoints
+    assert len(endpoints) == 40
+    assert endpoints[0].memory_type == "preference"
+    assert endpoints[0].subject == "weekly-report"
+
+
+def test_replacement_revision_is_prioritized_as_relation_endpoint() -> None:
+    text = "周报偏好改成图表并明确支持持续事项"
+    relation_extractor = FakeRelationExtractor(
+        lambda request: (_relation_proposal(request, text),)
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=FakeCandidateExtractor(
+            (
+                candidate_proposal(
+                    text,
+                    memory_type="preference",
+                    content="项目周报默认使用图表",
+                ),
+            )
+        ),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            subject="continued-work",
+            memory_type="ongoing_item",
+            content="继续持续事项",
+            source_turn_id="continued-turn",
+            source_expression="继续持续事项",
+        ),
+    )
+
+    result = service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="conversation-1",
+            source_turn_id="turn-replacement-relation",
+            content=text,
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=text,
+                    message_id="replacement-user-message",
+                ),
+            ),
+        ),
+    )
+
+    assert result.status is CaptureStatus.COMPLETED
+    request_source = next(
+        endpoint
+        for endpoint in relation_extractor.requests[0].endpoints
+        if endpoint.memory_id == source.item.memory_id
+    )
+    assert request_source.content == "项目周报默认使用图表"
+    assert (
+        service.get_memory(principal, source.item.memory_id).current_revision.content
+        == "项目周报默认使用图表"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
+def test_relation_admission_is_explicit_high_confidence_and_deduplicated() -> None:
+    text = "周报偏好明确支持持续事项"
+
+    def proposals(request):
+        accepted = _relation_proposal(request, text)
+        return (
+            accepted,
+            accepted,
+            replace(accepted, confidence=0.89),
+            replace(accepted, expression_basis=ExpressionBasis.INFERRED),
+        )
+
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(proposals),
+    )
+    principal = PrincipalContext("analyst-a")
+
+    service.capture_turn(principal, _turn(text))
+
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
+def test_assistant_only_relation_expression_is_not_auto_saved() -> None:
+    relation_text = "周报偏好明确支持持续事项"
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(
+            lambda request: (_relation_proposal(request, relation_text),)
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+    user_text = "周报偏好。持续事项。"
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-assistant-relation",
+        content=f"[user]\n{user_text}\n[assistant]\n{relation_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=user_text,
+                message_id="user-message",
+            ),
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=relation_text,
+                message_id="assistant-message",
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert service.list_memory_relations(principal, source.item.memory_id) == ()
+
+
+def test_unknown_relation_endpoint_fails_without_persisting_candidates() -> None:
+    text = "周报偏好明确支持持续事项"
+
+    def proposals(request):
+        return (
+            replace(
+                _relation_proposal(request, text),
+                target_memory_id=uuid4(),
+            ),
+        )
+
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(proposals),
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.FAILED
+    assert result.failure_code == "invalid_candidate_output"
+    assert service.list_memories(principal) == ()
+
+
+def test_invalid_automatic_relation_direction_fails_without_writes() -> None:
+    text = "周报偏好明确支持持续事项"
+
+    def proposals(request):
+        proposal = _relation_proposal(request, text)
+        return (
+            replace(
+                proposal,
+                source_memory_id=proposal.target_memory_id,
+                target_memory_id=proposal.source_memory_id,
+            ),
+        )
+
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(proposals),
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.FAILED
+    assert result.failure_code == "invalid_candidate_output"
+    assert service.list_memories(principal) == ()
+
+
+def test_relation_provider_failure_reprocesses_without_duplicate_relation() -> None:
+    text = "周报偏好明确支持持续事项"
+    relation_extractor = FakeRelationExtractor(
+        lambda request: (_relation_proposal(request, text),),
+        failures_before_success=1,
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    failed = service.capture_turn(principal, _turn(text))
+    completed = service.capture_turn(principal, _turn(text))
+    replayed = service.capture_turn(principal, _turn(text))
+
+    assert failed.status is CaptureStatus.REPROCESS_REQUIRED
+    assert completed.status is CaptureStatus.COMPLETED
+    assert replayed.replayed is True
+    assert len(relation_extractor.requests) == 2
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
+def test_in_memory_capture_rolls_back_when_relation_write_is_invalid() -> None:
+    class RejectingRelationRepository(InMemoryMemoryRepository):
+        def commit_capture(self, principal, write):
+            if write.relations:
+                broken = replace(
+                    write.relations[0],
+                    target_memory_id=uuid4(),
+                )
+                write = replace(write, relations=(broken,))
+            return super().commit_capture(principal, write)
+
+    repository = RejectingRelationRepository()
+    service = create_memory_service(
+        repository,
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(
+            lambda request: (
+                _relation_proposal(
+                    request,
+                    "周报偏好明确支持持续事项",
+                ),
+            )
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+
+    with pytest.raises(ValueError, match="endpoints are unavailable"):
+        service.capture_turn(
+            principal,
+            _turn("周报偏好明确支持持续事项"),
+        )
+
+    assert repository.list(principal, active_only=False) == ()
+
+
+def test_replacement_and_stale_transition_roll_back_together() -> None:
+    class RejectingReplacementRepository(InMemoryMemoryRepository):
+        def commit_capture(self, principal, write):
+            if write.replacements and write.relations:
+                broken = replace(
+                    write.relations[0],
+                    target_memory_id=uuid4(),
+                )
+                write = replace(write, relations=(broken,))
+            return super().commit_capture(principal, write)
+
+    repository = RejectingReplacementRepository()
+    candidate_extractor = _two_relation_candidates()
+    first_text = "周报偏好明确支持持续事项"
+    relation_extractor = FakeRelationExtractor(
+        lambda request: (_relation_proposal(request, first_text),)
+    )
+    service = create_memory_service(
+        repository,
+        [_relation_profile()],
+        candidate_extractor=candidate_extractor,
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    service.capture_turn(principal, _turn(first_text))
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    active_relation = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+    )[0].relation
+
+    replacement_text = "以后项目周报改为图表并明确支持持续事项"
+    candidate_extractor.proposals = (
+        candidate_proposal(
+            replacement_text,
+            memory_type="preference",
+            content="项目周报默认使用图表",
+        ),
+    )
+    relation_extractor.proposal_factory = lambda request: (
+        _relation_proposal(request, replacement_text),
+    )
+
+    with pytest.raises(ValueError, match="endpoints are unavailable"):
+        service.capture_turn(
+            principal,
+            TurnEnvelope(
+                profile_id="project-work",
+                conversation_id="conversation-1",
+                source_turn_id="turn-rollback-replacement",
+                content=replacement_text,
+                observed_at=_OBSERVED_AT,
+                messages=(
+                    TurnMessage(
+                        role=MessageRole.USER,
+                        content=replacement_text,
+                        message_id="rollback-replacement-message",
+                    ),
+                ),
+            ),
+        )
+
+    unchanged = service.get_memory(principal, source.item.memory_id)
+    relation = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+    )[0].relation
+    assert unchanged.current_revision.revision_number == 1
+    assert relation.relation_id == active_relation.relation_id
+    assert relation.status is RelationStatus.ACTIVE
+
+
+def _relation_profile():
+    return replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+
+
+def _two_relation_candidates() -> FakeCandidateExtractor:
+    return FakeCandidateExtractor(
+        (
+            candidate_proposal("周报偏好", memory_type="preference"),
+            candidate_proposal(
+                "持续事项",
+                subject="continued-work",
+                memory_type="ongoing_item",
+                content="继续持续事项",
+            ),
+        )
+    )
+
+
+def _relation_proposal(request, source_expression: str) -> RelationProposal:
+    source = next(
+        endpoint
+        for endpoint in request.endpoints
+        if endpoint.memory_type == "preference"
+    )
+    target = next(
+        endpoint
+        for endpoint in request.endpoints
+        if endpoint.memory_type == "ongoing_item"
+    )
+    return RelationProposal(
+        source_memory_id=source.memory_id,
+        target_memory_id=target.memory_id,
+        relation_type="supports",
+        source_expression=source_expression,
+        confidence=0.96,
+        expression_basis=ExpressionBasis.EXPLICIT,
+    )
 
 
 def _turn(

@@ -2,16 +2,21 @@
 
 import json
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
+from memory_mcp.core import MemoryRelationPolicy, RelationEndpoint
 from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
-from memory_mcp.core.ports import ExtractionRequest
+from memory_mcp.core.ports import ExtractionRequest, RelationExtractionRequest
 from memory_mcp.extraction import (
     CandidateBatch,
     ExtractionSettings,
     FixedCandidateBackend,
     LangChainCandidateBackend,
+    LangChainRelationBackend,
+    RelationBatch,
     create_configured_candidate_extractor,
+    create_configured_extractors,
 )
 from memory_mcp.extraction.backends import SCHEMA_VERSION
 from pydantic import ValidationError
@@ -87,6 +92,44 @@ def test_real_backend_uses_strict_schema_and_untrusted_source_prompt() -> None:
     assert "以后项目周报默认用表格" in rendered
 
 
+def test_relation_backend_uses_bounded_schema_and_policy_prompt() -> None:
+    source_id = UUID("11111111-1111-1111-1111-111111111111")
+    target_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    class RelationRunnable(_StructuredRunnable):
+        def invoke(self, messages: object) -> object:
+            self.messages = messages
+            return {
+                "relations": [
+                    {
+                        "source_memory_id": str(source_id),
+                        "target_memory_id": str(target_id),
+                        "relation_type": "supports",
+                        "source_expression": "证据明确支持论点",
+                        "confidence": 0.98,
+                        "expression_basis": "explicit",
+                    }
+                ]
+            }
+
+    class RelationModel:
+        def __init__(self) -> None:
+            self.runnable = RelationRunnable()
+
+        def with_structured_output(self, schema):
+            assert schema is RelationBatch
+            return self.runnable
+
+    model = RelationModel()
+    payload = LangChainRelationBackend(model)(_relation_request(source_id, target_id))
+
+    assert payload[0]["relation_type"] == "supports"
+    rendered = "\n".join(str(message.content) for message in model.runnable.messages)
+    assert "only memory_id values from endpoints" in rendered
+    assert "证据明确支持论点" in rendered
+    assert "owner" in rendered
+
+
 def test_fixed_extractor_can_be_injected_without_runtime_configuration() -> None:
     extractor = StructuredCandidateExtractor(
         FixedCandidateBackend.from_json(json.dumps([_candidate()])),
@@ -118,6 +161,42 @@ def test_real_extractor_uses_configured_chat_model() -> None:
     assert len(extractor.extract(_request("[user]\n以后项目周报默认用表格"))) == 1
 
 
+def test_candidate_and_relation_extractors_share_one_chat_model() -> None:
+    source_id = UUID("11111111-1111-1111-1111-111111111111")
+    target_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    class CombinedModel:
+        def __init__(self) -> None:
+            self.schemas = []
+
+        def with_structured_output(self, schema):
+            self.schemas.append(schema)
+            if schema is CandidateBatch:
+                return _StructuredRunnable()
+
+            class RelationRunnable:
+                def invoke(self, messages):
+                    return {"relations": []}
+
+            assert schema is RelationBatch
+            return RelationRunnable()
+
+    settings = ExtractionSettings(
+        provider="openai",
+        model_name="structured-model",
+        api_key="secret",
+        _env_file=None,
+    )
+    model = CombinedModel()
+
+    extractors = create_configured_extractors(settings, chat_model=model)
+
+    assert model.schemas == [CandidateBatch, RelationBatch]
+    assert extractors.candidate.model_id == "openai:structured-model"
+    assert extractors.relation.model_id == "openai:structured-model"
+    assert extractors.relation.extract(_relation_request(source_id, target_id)) == ()
+
+
 def test_real_extractor_missing_credentials_fails_before_database_startup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -128,3 +207,36 @@ def test_real_extractor_missing_credentials_fails_before_database_startup(
 
     with pytest.raises(ValidationError):
         ExtractionSettings(_env_file=None)
+
+
+def _relation_request(
+    source_id: UUID,
+    target_id: UUID,
+) -> RelationExtractionRequest:
+    return RelationExtractionRequest(
+        profile_id="investment-research",
+        content="证据明确支持论点",
+        observed_at=datetime(2026, 7, 30, tzinfo=UTC),
+        profile_version="investment-research-v1",
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                frozenset({"evidence_claim"}),
+                frozenset({"thesis"}),
+                "Evidence supports a thesis.",
+            )
+        },
+        endpoints=(
+            RelationEndpoint(
+                source_id,
+                "evidence_claim",
+                "company-evidence",
+                "收入增长",
+            ),
+            RelationEndpoint(
+                target_id,
+                "thesis",
+                "company-thesis",
+                "增长延续",
+            ),
+        ),
+    )

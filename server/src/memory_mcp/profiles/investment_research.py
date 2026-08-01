@@ -2,7 +2,11 @@
 
 from dataclasses import dataclass, field
 
-from memory_mcp.core import MemoryMetadataPolicy, SensitivityLevel
+from memory_mcp.core import (
+    MemoryMetadataPolicy,
+    MemoryRelationPolicy,
+    SensitivityLevel,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +29,6 @@ class InvestmentResearchProfile:
     business_progress_values: frozenset[str] = frozenset(
         {"open", "monitoring", "resolved", "invalidated", "archived"}
     )
-    # Core 尚未提供可持久化关系契约，不能提前声明看似可用的关系。
-    allowed_relations: frozenset[str] = frozenset()
     capture_guidance: str = (
         "Capture only durable investment-research context. Use "
         "research_preference for the user's lasting research or output methods; "
@@ -45,7 +47,40 @@ class InvestmentResearchProfile:
         "ambiguous."
     )
     profile_version: str = "investment-research-v1"
-    relation_rules: dict[str, str] = field(default_factory=dict)
+    relation_policies: dict[str, MemoryRelationPolicy] = field(
+        default_factory=lambda: {
+            "supports": MemoryRelationPolicy(
+                frozenset({"evidence_claim"}),
+                frozenset({"thesis"}),
+                "Externally sourced evidence supports a thesis.",
+            ),
+            "challenges": MemoryRelationPolicy(
+                frozenset({"evidence_claim"}),
+                frozenset({"thesis"}),
+                "Externally sourced evidence challenges a thesis.",
+            ),
+            "threatens": MemoryRelationPolicy(
+                frozenset({"risk"}),
+                frozenset({"thesis"}),
+                "A risk may invalidate or weaken a thesis.",
+            ),
+            "could_catalyze": MemoryRelationPolicy(
+                frozenset({"catalyst"}),
+                frozenset({"thesis"}),
+                "A future event may change how a thesis develops.",
+            ),
+            "addresses": MemoryRelationPolicy(
+                frozenset({"ongoing_research"}),
+                frozenset({"research_question"}),
+                "An ongoing research task addresses an open question.",
+            ),
+            "resolves": MemoryRelationPolicy(
+                frozenset({"research_decision"}),
+                frozenset({"research_question"}),
+                "A research conclusion resolves an open question.",
+            ),
+        }
+    )
     recall_priorities: dict[str, int] = field(
         default_factory=lambda: {
             "research_preference": 50,

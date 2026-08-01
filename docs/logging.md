@@ -68,6 +68,8 @@ request_id="..." result_count=1 status="completed" tool_name="list_memories"
 | `client_ref` / `agent_ref` | 调用方稳定假名引用 |
 | `capture_id` / `memory_id` / `revision_id` | 技术记录 ID |
 | `status` / `error_code` | 稳定状态 |
+| `relation_origin` / `relation_scope` | 关系来源和 item/revision 作用域 |
+| `relation_count` / `stale_relation_count` | 新建关系和 replacement 失效关系数量 |
 | `result_count` | 结果数量 |
 | `duration_ms` | 操作耗时 |
 | `error_type` | 异常类型名，不是异常消息 |
@@ -128,7 +130,10 @@ memory.get.completed
 memory.get.unavailable
 memory.list.completed
 memory.revoke.completed
+memory.relation.linked
+memory.relation.revoked
 memory.capture.started
+memory.capture.relations_planned
 memory.capture.completed
 memory.capture.incomplete
 memory.capture.processing_failed
@@ -143,6 +148,7 @@ logging.content.enabled
 memory.capture.input
 memory.capture.candidates
 memory.capture.admission
+memory.capture.relation_candidates
 memory.capture.persisted
 memory.create.input
 memory.create.persisted
@@ -163,6 +169,7 @@ memory.recall.output
 ```text
 memory.postgresql.profile_registered
 memory.postgresql.record_committed
+memory.postgresql.relation_linked
 memory.postgresql.capture_committed
 memory.postgresql.migration.started
 memory.postgresql.migration.applied
@@ -181,6 +188,14 @@ agent_hook.failed
 
 Agent Hook 事件只记录 host、事件名、稳定 run reference、数量、状态、尝试次数和
 错误码，不记录 prompt、最终回复、Token 或本地状态内容。
+
+`memory.capture.relations_planned` 只记录 capture ID、模型/prompt/schema 版本以及
+endpoint/proposal/accepted/skipped 数量，不记录端点 subject/content、关系原文或
+owner。`memory.capture.relation_candidates` 只在操作者显式启用内容日志时输出已经
+通过脱敏边界的建议和计划关系；关闭内容日志时不会生成该正文事件。
+`memory.postgresql.capture_committed` 的 `stale_relation_count` 只表示本次 replacement
+物化失效的边数；`memory.relation.linked/revoked` 可以记录 origin/scope/status，但
+任何 operational event 都不得记录 provenance 的 conversation、turn 或 source expression。
 
 已删除的 Knowledge、Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
 
