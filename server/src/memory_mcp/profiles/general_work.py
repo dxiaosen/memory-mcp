@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+from memory_mcp.core import MemoryMetadataPolicy
+
 
 @dataclass(frozen=True, slots=True)
 class GeneralWorkProfile:
@@ -25,5 +27,16 @@ class GeneralWorkProfile:
             "decision": 35,
             "ongoing_item": 30,
             "stable_context": 20,
+        }
+    )
+    metadata_policies: dict[str, MemoryMetadataPolicy] = field(
+        default_factory=lambda: {
+            memory_type: MemoryMetadataPolicy()
+            for memory_type in (
+                "preference",
+                "stable_context",
+                "ongoing_item",
+                "decision",
+            )
         }
     )

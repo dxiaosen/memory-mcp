@@ -97,6 +97,12 @@ def validate_review_memory(
         or revision.business_progress != candidate.business_progress
         or revision.save_rationale != candidate.save_rationale
         or revision.observed_at != candidate.observed_at
+        or revision.extraction_confidence != candidate.confidence
+        or revision.verification_status.value != "user_confirmed"
+        or revision.sensitivity_level is not candidate.sensitivity_level
+        or revision.valid_from != candidate.valid_from
+        or revision.valid_until != candidate.valid_until
+        or revision.last_verified_at != candidate.last_verified_at
         or revision.original_time_expression != candidate.original_time_expression
         or revision.normalized_time != candidate.normalized_time
     ):
@@ -113,5 +119,13 @@ def validate_review_memory(
         or source.source_role is not candidate.source_role
         or source.source_message_id != candidate.source_message_id
         or source.source_tool_name != candidate.source_tool_name
+        or source.source_type is not candidate.source_type
+        or source.source_uri != candidate.source_uri
+        or source.source_title != candidate.source_title
+        or source.source_publisher != candidate.source_publisher
+        or source.published_at != candidate.published_at
+        or source.retrieved_at != candidate.retrieved_at
+        or source.content_hash != candidate.content_hash
+        or source.citation_locator != candidate.citation_locator
     ):
         raise ValueError("confirmed memory source must match pending candidate")

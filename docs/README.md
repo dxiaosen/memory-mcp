@@ -56,5 +56,19 @@ OpenSpec 是规范与变更管理区，不是第二套使用手册：
 - [Tasks](../openspec/changes/add-agent-active-memory/tasks.md)
 - [Agent Active Memory Spec](../openspec/changes/add-agent-active-memory/specs/agent-active-memory/spec.md)
 
+通用元数据增强：
+
+- [Proposal](../openspec/changes/enhance-memory-metadata/proposal.md)
+- [OpenSpec Design](../openspec/changes/enhance-memory-metadata/design.md)
+- [Tasks](../openspec/changes/enhance-memory-metadata/tasks.md)
+- [Memory Metadata Spec](../openspec/changes/enhance-memory-metadata/specs/memory-metadata/spec.md)
+
+投研 Profile：
+
+- [Proposal](../openspec/changes/add-investment-research-profile/proposal.md)
+- [OpenSpec Design](../openspec/changes/add-investment-research-profile/design.md)
+- [Tasks](../openspec/changes/add-investment-research-profile/tasks.md)
+- [Investment Research Spec](../openspec/changes/add-investment-research-profile/specs/investment-research-memory/spec.md)
+
 规范性需求以 capability specs 为准，完成状态只看 tasks，当前实现解释以
 `docs/design.md` 为准。

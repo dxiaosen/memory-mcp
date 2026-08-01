@@ -1,8 +1,10 @@
 """记忆配置契约和进程内注册表。"""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
+from memory_mcp.core.domain.models import SensitivityLevel
 from memory_mcp.core.exceptions import (
     InvalidMemoryProfileError,
     InvalidMemoryTypeError,
@@ -10,6 +12,20 @@ from memory_mcp.core.exceptions import (
     ProfileAlreadyRegisteredError,
     ProfileNotRegisteredError,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryMetadataPolicy:
+    """一种 memory type 的通用元数据默认规则。"""
+
+    sensitivity_level: SensitivityLevel = SensitivityLevel.CONFIDENTIAL
+    validity_days: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sensitivity_level, SensitivityLevel):
+            raise ValueError("sensitivity_level must be a SensitivityLevel")
+        if self.validity_days is not None and self.validity_days < 1:
+            raise ValueError("validity_days must be positive")
 
 
 class MemoryProfile(Protocol):
@@ -63,6 +79,12 @@ class MemoryProfile(Protocol):
 
         ...
 
+    @property
+    def metadata_policies(self) -> Mapping[str, MemoryMetadataPolicy]:
+        """返回每种合法 memory type 的敏感和有效期默认规则。"""
+
+        ...
+
 
 class ProfileRegistry:
     """显式注册并校验记忆配置，不提供隐式默认配置。"""
@@ -104,6 +126,17 @@ class ProfileRegistry:
             or profile.profile_version != profile.profile_version.strip()
         ):
             raise InvalidMemoryProfileError("profile_version must not be empty")
+        if set(profile.metadata_policies) != set(profile.memory_types):
+            raise InvalidMemoryProfileError(
+                "metadata_policies must define every memory type exactly once"
+            )
+        if any(
+            not isinstance(policy, MemoryMetadataPolicy)
+            for policy in profile.metadata_policies.values()
+        ):
+            raise InvalidMemoryProfileError(
+                "metadata_policies must contain MemoryMetadataPolicy values"
+            )
         if profile_id in self._profiles:
             raise ProfileAlreadyRegisteredError(
                 f"profile_id already registered: {profile_id}"
@@ -144,6 +177,16 @@ class ProfileRegistry:
                 "business progress is not allowed by profile_id "
                 f"{profile_id}: {business_progress}"
             )
+
+    def metadata_policy(
+        self,
+        profile_id: str,
+        memory_type: str,
+    ) -> MemoryMetadataPolicy:
+        """取得已校验 profile 下某种记忆的元数据规则。"""
+
+        self.validate_memory_type(profile_id, memory_type)
+        return self.get(profile_id).metadata_policies[memory_type]
 
     @property
     def profile_ids(self) -> frozenset[str]:

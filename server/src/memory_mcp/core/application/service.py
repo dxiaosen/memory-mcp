@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from uuid import UUID, uuid4
 
@@ -23,6 +23,7 @@ from memory_mcp.core.domain import (
     RecallResult,
     ReviewItem,
     TurnEnvelope,
+    VerificationStatus,
 )
 from memory_mcp.core.exceptions import (
     MemoryNotFoundError,
@@ -72,6 +73,7 @@ class MemoryService:
             repository,
             profile_registry,
             sensitive_guard,
+            clock=self._clock,
         )
 
     def register_profile(self, profile: MemoryProfile) -> None:
@@ -112,6 +114,10 @@ class MemoryService:
         self._profile_registry.validate_business_progress(
             command.profile_id,
             command.business_progress,
+        )
+        metadata_policy = self._profile_registry.metadata_policy(
+            command.profile_id,
+            command.memory_type,
         )
         persisted_text = "\n".join(
             value
@@ -165,6 +171,16 @@ class MemoryService:
                 save_rationale=command.save_rationale,
                 observed_at=command.observed_at,
                 created_at=created_at,
+                extraction_confidence=None,
+                verification_status=VerificationStatus.USER_ASSERTED,
+                sensitivity_level=metadata_policy.sensitivity_level,
+                valid_from=command.observed_at,
+                valid_until=(
+                    command.observed_at + timedelta(days=metadata_policy.validity_days)
+                    if metadata_policy.validity_days is not None
+                    else None
+                ),
+                last_verified_at=None,
                 original_time_expression=command.original_time_expression,
                 normalized_time=command.normalized_time,
             ),
@@ -259,6 +275,7 @@ class MemoryService:
         records = self._repository.list(
             principal,
             active_only=not include_inactive,
+            effective_at=self._clock(),
         )
         log_event(
             _LOGGER,
@@ -273,6 +290,26 @@ class MemoryService:
             memories=tuple(asdict(record) for record in records),
         )
         return records
+
+    def revoke_memory(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> MemoryRecord:
+        """幂等撤销当前 owner 的活动记忆并保留可追溯历史。"""
+
+        record = self._repository.revoke(principal, memory_id)
+        if record is None:
+            raise MemoryNotFoundError("memory is unavailable")
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.revoke.completed",
+            lifecycle_status=record.current_revision.lifecycle_status.value,
+            memory_id=memory_id,
+            owner_ref=stable_reference(principal.owner_id),
+        )
+        return record
 
     def capture_turn(
         self,

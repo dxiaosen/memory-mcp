@@ -71,8 +71,8 @@ PostgreSQL URI 的用户名或密码若包含保留字符必须 percent-encode�
 | 类别 | 当前性质 | 说明 |
 | --- | --- | --- |
 | Core 领域规则与四类准入 | 代码固定 | owner-first、Evidence、revision、pending、敏感拦截和幂等不能由环境变量绕过 |
-| `GeneralWorkProfile` | 代码固定 | `profile_id`、memory type、捕获规则、`profile_version` 和召回优先级 |
-| MCP 工具与 DTO v1 | 代码固定 | 七个工具；capture contract version 为 `1` |
+| 内置 MemoryProfile | 代码固定 | `general-work` 与 `investment-research` 的类型、捕获规则、版本、优先级和元数据策略 |
+| MCP 工具与 DTO v1 | 代码固定 | 八个工具；capture contract version 为 `1` |
 | PostgreSQL schema | migration 管理 | 通过独立命令升级，不在服务启动时动态拼表 |
 | Server 地址、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | Principal 映射 | 静态环境配置 | 当前正式认证入口；可替换为 OAuth/OIDC 适配器 |
@@ -277,9 +277,42 @@ Agent Token 只在 HTTP Authorization 边界解封。不要把它放入 CLI 参�
 | memory types | `preference`, `stable_context`, `ongoing_item`, `decision` |
 | `profile_version` | `general-work-v1` |
 | recall priority | preference 40, decision 35, ongoing_item 30, stable_context 20 |
+| metadata policy | 全部 `confidential`，不自动过期 |
+
+`InvestmentResearchProfile` 当前固定：
+
+| memory type | 默认敏感级别 | 默认有效期 |
+| --- | --- | --- |
+| `research_preference` | `confidential` | 无 |
+| `research_question` | `confidential` | 365 天 |
+| `thesis` | `confidential` | 180 天 |
+| `evidence_claim` | `internal` | 90 天 |
+| `risk` | `confidential` | 180 天 |
+| `catalyst` | `internal` | 90 天 |
+| `ongoing_research` | `confidential` | 365 天 |
+| `research_decision` | `confidential` | 无 |
+
+投研 Profile 的 `profile_id` 为 `investment-research`，版本为
+`investment-research-v1`。Server 启动会同时注册两套内置 Profile，但 MCP 工具和
+通用 Hook 的公开默认仍为 `general-work`，不会从正文猜测场景。
+
+普通通用 Agent 仍只配置 URL 与 Token。投研产品应在自己的集成代码中固定
+`HookContext(profile_id="investment-research", ...)`；仓库手工测试也可以临时设置
+`MEMORY_HOOK_PROFILE_ID=investment-research`。后者是集成调试值，不应让最终用户在
+每轮对话中选择或输入 Profile。
 
 `profile_version` 表示“哪一版记忆配置做出了本次抽取与准入决定”，用于审计、回放和
 未来规则升级后的差异识别；它不是模型版本，也不是每次请求动态递增的计数器。
 
 `subject` 是可选的精确预过滤条件。通用查询应省略 subject；只有 Agent Host 能
 稳定生成与写入一致的规范 subject 时才传入。
+
+### 7.1 元数据含义
+
+- `extraction_confidence`：结构化抽取质量，手工创建或旧数据可为 null；
+- `verification_status`：`unverified`、`user_asserted`、`user_confirmed` 或
+  `source_verified`，citation 本身不会自动核验；
+- `sensitivity_level`：允许保存内容的治理标签，不能绕过敏感阻断；
+- `valid_from/valid_until`：普通 list/recall 的读取时有效窗口；到期不删除历史；
+- Evidence citation：可选 source type、URI、标题、发布者、发布/获取时间、hash 和
+  locator，身份仍只来自 Token。

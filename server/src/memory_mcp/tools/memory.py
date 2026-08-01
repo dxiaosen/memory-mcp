@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from memory_mcp.auth import MemoryScope
 from memory_mcp.schemas import (
@@ -12,6 +13,7 @@ from memory_mcp.schemas import (
     MemoryDetailReceipt,
     MemoryListReceipt,
     MemoryRevisionView,
+    MemoryRevocationReceipt,
     MemorySummaryView,
     MemoryView,
     decode_cursor,
@@ -144,5 +146,54 @@ class MemoryTools(ToolSupport):
                 return self._error_response(
                     current_request_id,
                     "get_memory",
+                    exc,
+                )
+
+        @server.tool(
+            name="revoke_memory",
+            description=(
+                "Revoke one owned current memory without deleting its traceable history."
+            ),
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        async def revoke_memory(
+            memory_id: str,
+            ctx: Context,
+        ) -> MemoryRevocationReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.REVIEW)
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "revoke_memory",
+                )
+                record = await asyncio.to_thread(
+                    self._service.revoke_memory,
+                    principal.to_core(),
+                    UUID(memory_id),
+                )
+                receipt = MemoryRevocationReceipt(
+                    request_id=current_request_id,
+                    memory=MemoryView.from_record(record),
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "revoke_memory",
+                    started_at,
+                    status="revoked",
+                    result_count=1,
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "revoke_memory",
                     exc,
                 )

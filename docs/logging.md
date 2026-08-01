@@ -127,6 +127,7 @@ memory.create.blocked
 memory.get.completed
 memory.get.unavailable
 memory.list.completed
+memory.revoke.completed
 memory.capture.started
 memory.capture.completed
 memory.capture.incomplete

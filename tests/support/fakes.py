@@ -12,6 +12,7 @@ from memory_mcp.core import (
     ExpressionBasis,
     ExtractionRequest,
     LifecycleStatus,
+    MemoryMetadataPolicy,
 )
 
 
@@ -31,6 +32,12 @@ class TestMemoryProfile:
     profile_version: str = "project-work-v1"
     relation_rules: dict[str, str] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(default_factory=dict)
+    metadata_policies: dict[str, MemoryMetadataPolicy] = field(
+        default_factory=lambda: {
+            memory_type: MemoryMetadataPolicy()
+            for memory_type in ("preference", "ongoing_item", "stable_context")
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +52,12 @@ class AlternateMemoryProfile:
     profile_version: str = "personal-notes-v1"
     relation_rules: dict[str, str] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(default_factory=dict)
+    metadata_policies: dict[str, MemoryMetadataPolicy] = field(
+        default_factory=lambda: {
+            memory_type: MemoryMetadataPolicy()
+            for memory_type in ("note", "commitment")
+        }
+    )
 
 
 class FakeCandidateExtractor:

@@ -3,8 +3,9 @@
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
+from datetime import datetime
 
 from memory_mcp.core.domain import (
     MemoryRecord,
@@ -40,10 +41,13 @@ class RecallService:
         repository: MemoryRepository,
         profile_registry: ProfileRegistry,
         sensitive_guard: SensitiveContentGuard,
+        *,
+        clock: Callable[[], datetime],
     ) -> None:
         self._repository = repository
         self._profile_registry = profile_registry
         self._sensitive_guard = sensitive_guard
+        self._clock = clock
 
     def recall(
         self,
@@ -64,6 +68,7 @@ class RecallService:
             principal,
             profile_id=query.profile_id,
             subject=query.subject,
+            effective_at=self._clock(),
         )
         ranked = tuple(
             sorted(
@@ -272,6 +277,12 @@ def _to_recalled_memory(
         content=revision.content,
         assertion_kind=revision.assertion_kind,
         observed_at=revision.observed_at,
+        extraction_confidence=revision.extraction_confidence,
+        verification_status=revision.verification_status,
+        sensitivity_level=revision.sensitivity_level,
+        valid_from=revision.valid_from,
+        valid_until=revision.valid_until,
+        last_verified_at=revision.last_verified_at,
         sources=tuple(
             RecallSourceSummary(
                 conversation_id=source.conversation_id,
@@ -279,6 +290,14 @@ def _to_recalled_memory(
                 source_expression=source.source_expression,
                 observed_at=source.observed_at,
                 source_role=source.source_role,
+                source_type=source.source_type,
+                source_uri=source.source_uri,
+                source_title=source.source_title,
+                source_publisher=source.source_publisher,
+                published_at=source.published_at,
+                retrieved_at=source.retrieved_at,
+                content_hash=source.content_hash,
+                citation_locator=source.citation_locator,
             )
             for source in record.evidence[-3:]
         ),
@@ -293,7 +312,11 @@ def _render_item(item: RecalledMemory) -> str:
         f"type={json.dumps(item.memory_type, ensure_ascii=False)}, "
         f"subject={json.dumps(item.subject, ensure_ascii=False)}, "
         f"assertion_kind={item.assertion_kind.value}, "
-        f"observed_at={item.observed_at.isoformat()}): "
+        f"verification={item.verification_status.value}, "
+        f"sensitivity={item.sensitivity_level.value}, "
+        f"observed_at={item.observed_at.isoformat()}, "
+        f"valid_from={item.valid_from.isoformat()}, "
+        f"valid_until={item.valid_until.isoformat() if item.valid_until else 'open'}): "
         f"{json.dumps(item.content, ensure_ascii=False)}"
     )
 

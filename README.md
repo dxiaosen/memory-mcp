@@ -9,11 +9,13 @@ PostgreSQL 持久化由服务端统一负责。
 - owner-scoped Memory Core 和 PostgreSQL 权威存储；
 - auto-save、pending、discard、blocked 四类准入；
 - duplicate Evidence、replacement revision 和 history；
-- 七个带认证和 scope 的 MCP 工具；
+- 八个带认证和 scope 的 MCP 工具，包括幂等 `revoke_memory`；
+- revision 的抽取置信度、验证状态、敏感级别、有效期，以及可引用的来源元数据；
 - owner-first recall 和安全 rendered context；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
 - 独立轻量 `memory-mcp-agent` 发行包，Agent Host 不安装数据库、模型或 Server；
 - 真实 OpenAI-compatible/DeepSeek 结构化抽取，以及测试注入的确定性候选；
+- `general-work` 与 `investment-research` 两套正式 MemoryProfile；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
@@ -122,6 +124,7 @@ BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置
 | `list_pending_reviews` | `memory:review` | 查看待确认候选 |
 | `confirm_pending_memory` | `memory:review` | 确认 pending |
 | `reject_pending_memory` | `memory:review` | 拒绝 pending |
+| `revoke_memory` | `memory:review` | 幂等撤销当前记忆并保留历史和来源 |
 
 工具参数不接受 owner。服务端只从可信 Token 映射构造 owner；同一用户的不同 Agent
 可以共享记忆，不同用户即使猜中 memory/review ID 也不能读取。
@@ -142,6 +145,8 @@ OpenSpec 只承担规范和变更管理：
 
 - [通用记忆核心变更](openspec/changes/add-general-memory-core/)
 - [Agent 主动记忆变更](openspec/changes/add-agent-active-memory/)
+- [通用元数据增强](openspec/changes/enhance-memory-metadata/)
+- [投研记忆配置](openspec/changes/add-investment-research-profile/)
 
 ## 验证
 
@@ -151,6 +156,8 @@ uv run ruff format --check .
 uv run ruff check .
 openspec-cn validate add-general-memory-core --strict
 openspec-cn validate add-agent-active-memory --strict
+openspec-cn validate enhance-memory-metadata --strict
+openspec-cn validate add-investment-research-profile --strict
 ```
 
 真实 PostgreSQL 测试必须显式设置

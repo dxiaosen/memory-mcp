@@ -84,6 +84,12 @@ client_id 或 agent_id。同一用户的不同 Agent 可以使用不同 Token，
 旧的 `MEMORY_HOOK_MCP_URL` 和 `MEMORY_HOOK_BEARER_TOKEN` 只作为迁移别名；新旧
 同时存在时新名称优先。
 
+`general-work` 是通用 Hook 的代码默认值。投研产品集成应在封装层固定
+`HookContext(profile_id="investment-research", ...)`，终端用户仍只接触 URL 和
+Token；Server 和 Hook 都不会根据对话正文猜测场景。仓库手工联调时可以临时设置
+`MEMORY_HOOK_PROFILE_ID=investment-research`，它属于集成调试，不应做成每轮用户
+选择项。
+
 ### 配置职责不要混合
 
 一个完整接入包含三类配置，它们不是同一个文件：
@@ -245,7 +251,8 @@ from memory_mcp_agent import (
 
 settings = MemoryHookSettings()
 context = HookContext(
-    profile_id="general-work",
+    # 通用产品使用 general-work；投研产品在集成代码中固定 investment-research。
+    profile_id=settings.profile_id,
     conversation_id=conversation_id,
     turn_id=turn_id,
 )
@@ -390,6 +397,19 @@ event="agent_hook.capture.completed"
 
 用映射到同一 tenant/subject 的另一枚 Token 启动另一个宿主，预期仍能召回。换成
 不同 subject 的 Token 执行相同查询，预期 `recalled_count=0`。
+
+### 7.4 投研集成
+
+验证内置投研 Profile 时，在启动宿主的环境中临时增加：
+
+```bash
+export MEMORY_HOOK_PROFILE_ID=investment-research
+```
+
+先输入一条明确、长期且不含交易指令的研究偏好，再在新轮次询问该偏好。服务端可能
+保存为 `research_preference`，也可能因模型置信度进入 pending。`thesis`、
+`evidence_claim`、`risk`、`catalyst` 等是服务端抽取语义，不需要用户在正文里说出
+类型名。联调结束后删除该环境变量即可恢复 `general-work`。
 
 ## 8. 本地状态与日志
 

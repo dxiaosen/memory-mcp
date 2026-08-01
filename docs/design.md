@@ -68,8 +68,10 @@ Memory MCP Server
 - pending 查看、确认与拒绝；
 - event 级幂等、payload conflict 和失败重处理；
 - 带 Bearer Token 认证和 scope 的 MCP Server；
-- 七个 MCP 工具、严格 DTO、稳定错误码；
-- `GeneralWorkProfile`；
+- 八个 MCP 工具、严格 DTO、稳定错误码；
+- `GeneralWorkProfile` 与 `InvestmentResearchProfile`；
+- revision confidence/verification/sensitivity/validity 和结构化引用来源；
+- owner-scoped 幂等 revoke，以及读取时自动失效过滤；
 - duplicate Evidence、replacement revision 和显式 history；
 - owner-first recall、阈值、数量和 token budget；
 - 独立轻量 BeforeRun/AfterRun Agent Client 发行包；
@@ -89,8 +91,8 @@ Memory MCP Server
 - 多 worker 自动伸缩与数据库级 RLS；
 - Redis/Kafka 消息队列；
 - Embedding、向量数据库和 HNSW；
-- 自动过期、完整 revoke/delete 和 suppression；
-- 第二套正式记忆配置和通用关系图；
+- 后台调度器写回 expired 状态、物理 delete 和 suppression；
+- 通用关系图；
 - Web 管理后台和 MCP Apps；
 - Docker、Kubernetes 或 Nginx；
 - 对用户陈述进行事实核验；
@@ -273,7 +275,8 @@ memory-mcp/
 │       │   ├── backends.py
 │       │   └── factory.py
 │       ├── profiles/
-│       │   └── general_work.py
+│       │   ├── general_work.py
+│       │   └── investment_research.py
 │       ├── tools/
 │       │   ├── capture.py
 │       │   ├── memory.py
@@ -350,6 +353,11 @@ MemoryRevision
 ├── lifecycle_status
 ├── is_current
 ├── observed_at / created_at
+├── extraction_confidence?
+├── verification_status
+├── sensitivity_level
+├── valid_from / valid_until?
+├── last_verified_at?
 ├── save_rationale
 ├── original_time_expression?
 └── normalized_time?
@@ -362,6 +370,10 @@ Evidence[]
 ├── source_role
 ├── message_id?
 ├── tool_name?
+├── source_type
+├── source_uri? / source_title? / source_publisher?
+├── published_at? / retrieved_at?
+├── content_hash? / citation_locator?
 └── observed_at
 ```
 
@@ -393,6 +405,23 @@ Evidence[]
 
 召回和渲染必须保留这些标签。系统不能把“用户曾这样说”渲染为“已经验证为真”。
 
+`verification_status` 与 `extraction_confidence` 是两条独立维度：
+
+| 字段 | 含义 |
+| --- | --- |
+| `extraction_confidence` | 模型是否把原文稳定抽取为当前结构；不代表内容为真 |
+| `unverified` | 尚未获得用户或来源核验 |
+| `user_asserted` | 来自用户明确陈述 |
+| `user_confirmed` | 用户通过 pending confirmation 接受该候选 |
+| `source_verified` | 预留给明确的来源核验流程；存在 citation 不会自动赋值 |
+
+`sensitivity_level` 只对允许落库的内容分类。`public/internal/confidential/restricted`
+不能绕过敏感守卫：凭据、真实持仓和交易指令即使标成 `restricted` 仍然 blocked。
+
+有效期使用半开区间 `[valid_from, valid_until)`。普通 list/recall 在 Repository
+owner 查询中直接排除未来或到期 revision，不依赖后台任务；详情与 history 仍保留
+原 revision 和 Evidence，便于解释和审计。
+
 ### 5.4 记忆配置
 
 MemoryProfile 提供：
@@ -403,9 +432,10 @@ MemoryProfile 提供：
 - `profile_version`；
 - 可选 business progress；
 - 可选 relation 声明；
-- recall type priorities。
+- recall type priorities；
+- 每种 memory type 的 sensitivity 和可选有效期策略。
 
-当前默认正式配置 `general-work`：
+公开工具默认配置仍是 `general-work`：
 
 | memory type | 用途 |
 | --- | --- |
@@ -414,8 +444,26 @@ MemoryProfile 提供：
 | `ongoing_item` | 后续仍需推进的事项 |
 | `decision` | 用户明确形成的当前决策 |
 
-Core 不硬编码这些词义。未来新增配置只实现 `MemoryProfile`，不修改 owner、准入、幂等和
-Repository 基础语义。
+服务端同时内置 `investment-research`，用于投研专用集成：
+
+| memory type | 用途 | 默认有效期 |
+| --- | --- | --- |
+| `research_preference` | 长期研究方法、来源或输出偏好 | 无 |
+| `research_question` | 跨会话未决问题 | 365 天 |
+| `thesis` | 用户明确、可证伪的研究论点 | 180 天 |
+| `evidence_claim` | 带来源与时间边界的外部证据主张 | 90 天 |
+| `risk` | 可能改变或推翻论点的风险 | 180 天 |
+| `catalyst` | 待观察的未来事件或触发因素 | 90 天 |
+| `ongoing_research` | 研究任务、缺口和后续动作 | 365 天 |
+| `research_decision` | 研究范围、口径或结论选择；不是交易指令 | 无 |
+
+投研 subject 必须细化到“实体/主题 + 指标、期间、事件、问题或论点焦点”，避免同一
+公司的不同证据因 subject 过粗被误判为冲突。`thesis` 保持 `user_view`，
+`evidence_claim` 使用 `external_fact` 和独立 Evidence；高抽取置信度或存在 citation
+都不会自动变成 `source_verified`。
+
+Core 不硬编码任一正式 Profile 的词义。新增配置只实现 `MemoryProfile`，不修改
+owner、准入、幂等和 Repository 基础语义；Profile 也不能降低敏感守卫优先级。
 
 ## 6. 身份、认证与隔离
 
@@ -495,7 +543,7 @@ user B / agent B ─── owner B
 - 认证：Bearer TokenVerifier；
 - 工具 schema：Pydantic 严格模型，额外字段拒绝。
 
-### 7.2 七个工具
+### 7.2 八个工具
 
 | 工具 | Scope | 作用 |
 | --- | --- | --- |
@@ -506,6 +554,7 @@ user B / agent B ─── owner B
 | `list_pending_reviews` | `memory:review` | 查看待确认候选 |
 | `confirm_pending_memory` | `memory:review` | 确认并应用 pending |
 | `reject_pending_memory` | `memory:review` | 拒绝 pending |
+| `revoke_memory` | `memory:review` | 幂等撤销 owner 的 current memory，保留 revision 与 Evidence |
 
 ### 7.3 CompletedTurnEventV1
 
@@ -522,6 +571,10 @@ messages[1..64]
   content
   message_id?
   tool_name?
+  source_type?
+  source_uri? / source_title? / source_publisher?
+  published_at? / retrieved_at?
+  content_hash? / citation_locator?
 ```
 
 约束：
@@ -529,6 +582,7 @@ messages[1..64]
 - 当前只接受 contract version `1`；
 - 时间必须带时区；
 - `tool_name` 只允许出现在 tool message；
+- source time 必须带时区，引用字段必须是非空字符串；
 - 完整拼接正文受 Server 字符上限限制；
 - canonical JSON 生成 payload fingerprint；
 - 不接受 owner；
@@ -552,6 +606,8 @@ Recall receipt 提供：
 - 精确 revision ID；
 - memory type、subject、content、assertion kind；
 - observation time 和来源摘要；
+- extraction confidence、verification、sensitivity 和 validity；
+- 允许返回的 URI/title/publisher/time/hash/locator 来源摘要；
 - relevance score；
 - 服务端生成的 rendered context；
 - token estimate、budget 和 truncated。
@@ -635,6 +691,7 @@ CandidateExtractor 接收：
 - conversation/turn/time：永远使用验证后的 event；
 - source expression：必须出现在对应脱敏来源；
 - source role：来自消息块；
+- source type、URI、标题、发布者、时间、hash 和 locator：只来自精确命中的消息块；
 - memory type：必须在当前 MemoryProfile 中；
 - confidence/durability/expression basis：必须满足 schema；
 - 所有自由文本：持久化前再次敏感检查。
@@ -741,7 +798,8 @@ replacement 和冲突。任何候选最终只能有一个互斥结果。
 - business progress；
 - original time expression；
 - source message ID；
-- source tool name。
+- source tool name；
+- source URI/title/publisher/hash/citation locator。
 
 任何一个持久化字段包含禁止内容，整条候选 blocked。普通日志只记录类别和数量；
 即使开启内容日志，也不记录敏感原文或 backend exception message。
@@ -855,6 +913,16 @@ ReviewItem 与 active memory 分离。拥有 `memory:review` scope 的当前 own
 确认在一个事务内应用 new/duplicate/replacement；拒绝后永不进入普通召回。跨
 owner review ID 不泄露内容或存在性。
 
+### 12.6 Revoke 与到期
+
+拥有 `memory:review` scope 的 owner 可以调用 `revoke_memory`。Repository 在同一
+owner/current revision 上把 lifecycle 改为 `revoked`，不创建新 revision，也不
+删除 Evidence；重复调用返回同一状态。另一 owner 猜中 ID 时与不存在完全一致。
+
+到期不是 revoke。`valid_until` 到达后，普通 list/recall 在读取时排除该 revision，
+但 lifecycle 不被后台任务改写。这样不需要 scheduler 或队列，同时保留历史；若
+未来需要合规删除或 suppression，应建立独立规范，不能复用 revoke 偷做物理删除。
+
 ## 13. 主动召回
 
 ### 13.1 Repository 候选边界
@@ -865,6 +933,7 @@ Repository 首先执行：
 owner
 → active/current
 → profile_id
+→ valid_from <= now < valid_until（或无上限）
 → optional subject
 ```
 
@@ -922,8 +991,8 @@ Rendered context 包含固定边界说明：
 - 当前用户请求优先；
 - 用户观点未独立验证。
 
-每条 item 显示 revision、type、subject、assertion kind、observed time 和内容，
-使业务 Agent 能正确理解来源和时效。
+每条 item 显示 revision、type、subject、assertion kind、verification、sensitivity、
+observed time、validity 和内容，使业务 Agent 能正确理解来源、确定性和时效。
 
 ### 13.6 未来语义索引
 
@@ -1090,6 +1159,9 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 
 - 引用 owner 一致；
 - profile_id/type 已注册；
+- verification/sensitivity 枚举和 confidence 范围合法；
+- validity 是合法半开时间窗口；
+- Evidence source type 和可选引用文本合法；
 - 每个 MemoryItem 最多一个 current Revision；
 - capture event 幂等；
 - primary Evidence 完整；
@@ -1127,10 +1199,15 @@ Migration：
 1. `0001_memory_core.sql`：建立初始 Memory Core schema；
 2. `0002_lifecycle_recall.sql`：增加生命周期召回索引；
 3. `0003_profile_naming.sql`：原地把旧 `scenario/policy_version` 命名迁移为
-   `profile_id/profile_version`，通过 rename 保留已有数据。
+   `profile_id/profile_version`，通过 rename 保留已有数据；
+4. `0004_memory_metadata.sql`：增加 revision confidence/verification/sensitivity/
+   validity，Evidence citation 字段和 pending candidate 对应字段；历史 confidence
+   保持 null，`valid_from` 从原 `observed_at` 回填；
+5. `0005_metadata_rollback_compat.sql`：为 `valid_from` 增加数据库时间默认值，只用于
+   旧版 Server 短期回滚写入；新版始终显式使用可信 `observed_at`。
 
-前两条 migration 已经可能存在于部署数据库中，因此即使源码术语升级也不能修改
-它们的内容或 checksum。新安装同样按三条顺序执行，最终 schema 只暴露 profile
+任何已执行 migration 都可能存在于部署数据库中，因此不能修改其内容或 checksum。
+新安装同样按五条顺序执行，最终 schema 只暴露 profile
 命名。
 
 这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
@@ -1389,6 +1466,7 @@ owner 或 lifecycle 语义。
 - capture guidance；
 - `profile_version`；
 - recall priorities；
+- 每种 type 的 metadata policy；
 - 可选 progress/relations。
 
 不复制一套 Core 或 Repository。
@@ -1442,6 +1520,9 @@ Agent/Server
 14. Hook 内部步骤不重复触发；
 15. 新 Agent/模型/索引不能反向污染 Core；
 16. Agent 发行包不能引入 Server、数据库、模型或完整 MCP SDK 依赖。
+17. extraction confidence 不代表事实真实性，citation 不自动等于 source verified；
+18. 到期和 revoked revision 不进入普通 list/recall，但详情、history 和 Evidence 可追溯；
+19. 正式 Profile 只能通过 `MemoryProfile` 扩展，不得在 Core 中按领域名称分支。
 
 ## 22. 当前结构 Review 结论
 

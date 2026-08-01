@@ -240,6 +240,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     "confirm_pending_memory",
                     "reject_pending_memory",
                     "recall_memory",
+                    "revoke_memory",
                 }
                 capture_tool = next(
                     tool
@@ -306,6 +307,11 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     )
                 )
                 assert detail["item"]["evidence"][0]["source_role"] == "user"
+                assert detail["item"]["evidence"][0]["source_type"] == "conversation"
+                assert detail["item"]["extraction_confidence"] == 0.95
+                assert detail["item"]["verification_status"] == "user_asserted"
+                assert detail["item"]["sensitivity_level"] == "confidential"
+                assert detail["item"]["valid_until"] is None
                 recalled = _payload(
                     await session.call_tool(
                         "recall_memory",
@@ -320,6 +326,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     recalled["items"][0]["revision_id"]
                     == (detail["item"]["revision_id"])
                 )
+                assert recalled["items"][0]["verification_status"] == "user_asserted"
                 assert (
                     "current user request always takes priority"
                     in (recalled["rendered_context"])
@@ -416,6 +423,13 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     )
                 )
                 assert review["error_code"] == "review_unavailable"
+                revoke = _payload(
+                    await session.call_tool(
+                        "revoke_memory",
+                        arguments={"memory_id": memory_id},
+                    )
+                )
+                assert revoke["error_code"] == "memory_unavailable"
                 recalled = _payload(
                     await session.call_tool(
                         "recall_memory",
@@ -442,12 +456,67 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     )
                 )
                 assert denied["error_code"] == "permission_denied"
+                revoke_denied = _payload(
+                    await session.call_tool(
+                        "revoke_memory",
+                        arguments={"memory_id": memory_id},
+                    )
+                )
+                assert revoke_denied["error_code"] == "permission_denied"
 
             anyio.run(
                 _with_session,
                 url,
                 _TOKEN_A_READ,
                 read_only,
+            )
+
+            async def revoke_owner_memory(session: ClientSession):
+                revoked = _payload(
+                    await session.call_tool(
+                        "revoke_memory",
+                        arguments={"memory_id": memory_id},
+                    )
+                )
+                repeated = _payload(
+                    await session.call_tool(
+                        "revoke_memory",
+                        arguments={"memory_id": memory_id},
+                    )
+                )
+                assert revoked["memory"] == repeated["memory"]
+                assert revoked["memory"]["lifecycle_status"] == "revoked"
+                memories = _payload(
+                    await session.call_tool("list_memories", arguments={})
+                )
+                assert memories["items"] == []
+                recalled = _payload(
+                    await session.call_tool(
+                        "recall_memory",
+                        arguments={
+                            "profile_id": "general-work",
+                            "query": "周报 要点",
+                        },
+                    )
+                )
+                assert recalled["items"] == []
+                detail = _payload(
+                    await session.call_tool(
+                        "get_memory",
+                        arguments={
+                            "memory_id": memory_id,
+                            "include_history": True,
+                        },
+                    )
+                )
+                assert detail["item"]["lifecycle_status"] == "revoked"
+                assert detail["history"][0]["lifecycle_status"] == "revoked"
+
+            anyio.run(
+                _with_session,
+                url,
+                _TOKEN_A_AGENT_B,
+                revoke_owner_memory,
             )
 
     finally:

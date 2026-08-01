@@ -159,7 +159,9 @@ def _system_prompt(request: ExtractionRequest) -> str:
         "source_turn. Prefer zero candidates when evidence is ambiguous or "
         "temporary. Use assertion_kind=user_view for preferences and opinions, "
         "user_provided_fact for user-stated context, and system_inference only "
-        "for explicit inference. Allowed memory_type values: "
+        "for explicit inference. Use external_fact for claims attributed to a "
+        "tool, document, or web source; a citation does not mean the claim is "
+        "verified. Allowed memory_type values: "
         f"{allowed_types}. Policy guidance: {request.capture_guidance} "
         f"Policy version: {request.profile_version}."
     )

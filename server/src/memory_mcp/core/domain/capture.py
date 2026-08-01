@@ -5,7 +5,13 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from memory_mcp.core.domain.models import AssertionKind, MessageRole
+from memory_mcp.core.domain.models import (
+    AssertionKind,
+    EvidenceSourceType,
+    MessageRole,
+    SensitivityLevel,
+    VerificationStatus,
+)
 
 
 def _require_text(value: str, field_name: str) -> str:
@@ -76,6 +82,14 @@ class TurnMessage:
     content: str
     message_id: str | None = None
     tool_name: str | None = None
+    source_type: EvidenceSourceType | None = None
+    source_uri: str | None = None
+    source_title: str | None = None
+    source_publisher: str | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
+    content_hash: str | None = None
+    citation_locator: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, MessageRole):
@@ -91,6 +105,26 @@ class TurnMessage:
             "tool_name",
             _require_optional_text(self.tool_name, "tool_name"),
         )
+        if self.source_type is not None and not isinstance(
+            self.source_type, EvidenceSourceType
+        ):
+            raise ValueError("source_type must be an EvidenceSourceType")
+        for field_name in (
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "content_hash",
+            "citation_locator",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _require_optional_text(getattr(self, field_name), field_name),
+            )
+        for field_name in ("published_at", "retrieved_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_aware_datetime(value, field_name)
         if self.tool_name is not None and self.role is not MessageRole.TOOL:
             raise ValueError("tool_name is only valid for tool messages")
 
@@ -233,12 +267,25 @@ class Candidate:
     expression_basis: ExpressionBasis
     observed_at: datetime
     created_at: datetime
+    verification_status: VerificationStatus
+    sensitivity_level: SensitivityLevel
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
     business_progress: str | None = None
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
     source_role: MessageRole | None = None
     source_message_id: str | None = None
     source_tool_name: str | None = None
+    source_type: EvidenceSourceType = EvidenceSourceType.CONVERSATION
+    source_uri: str | None = None
+    source_title: str | None = None
+    source_publisher: str | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
+    content_hash: str | None = None
+    citation_locator: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -280,6 +327,17 @@ class Candidate:
         )
         _require_aware_datetime(self.observed_at, "observed_at")
         _require_aware_datetime(self.created_at, "created_at")
+        if not isinstance(self.verification_status, VerificationStatus):
+            raise ValueError("verification_status must be a VerificationStatus")
+        if not isinstance(self.sensitivity_level, SensitivityLevel):
+            raise ValueError("sensitivity_level must be a SensitivityLevel")
+        _require_aware_datetime(self.valid_from, "valid_from")
+        if self.valid_until is not None:
+            _require_aware_datetime(self.valid_until, "valid_until")
+            if self.valid_until <= self.valid_from:
+                raise ValueError("valid_until must be later than valid_from")
+        if self.last_verified_at is not None:
+            _require_aware_datetime(self.last_verified_at, "last_verified_at")
         if self.normalized_time is not None:
             _require_aware_datetime(self.normalized_time, "normalized_time")
         if self.source_role is not None and not isinstance(
@@ -287,7 +345,17 @@ class Candidate:
             MessageRole,
         ):
             raise ValueError("source_role must be a MessageRole")
-        for field_name in ("source_message_id", "source_tool_name"):
+        if not isinstance(self.source_type, EvidenceSourceType):
+            raise ValueError("source_type must be an EvidenceSourceType")
+        for field_name in (
+            "source_message_id",
+            "source_tool_name",
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "content_hash",
+            "citation_locator",
+        ):
             object.__setattr__(
                 self,
                 field_name,
@@ -298,6 +366,10 @@ class Candidate:
             and self.source_role is not MessageRole.TOOL
         ):
             raise ValueError("source_tool_name is only valid for tool sources")
+        for field_name in ("published_at", "retrieved_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_aware_datetime(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)

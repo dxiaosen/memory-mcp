@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from math import ceil
 from typing import Any
 from uuid import UUID
@@ -183,11 +183,20 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         *,
         active_only: bool,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         conditions = ["i.owner_id = %s"]
         parameters: list[object] = [principal.owner_id]
         if active_only:
-            conditions.append("r.lifecycle_status = 'active'")
+            resolved_time = effective_at or datetime.now(UTC)
+            conditions.extend(
+                (
+                    "r.lifecycle_status = 'active'",
+                    "r.valid_from <= %s",
+                    "(r.valid_until IS NULL OR r.valid_until > %s)",
+                )
+            )
+            parameters.extend((resolved_time, resolved_time))
         query = (
             f"{_SELECT_CURRENT_RECORD} WHERE {' AND '.join(conditions)} "
             "ORDER BY i.created_at, i.memory_id"
@@ -203,13 +212,22 @@ class PostgreSQLMemoryRepository:
         profile_id: str,
         subject: str | None = None,
         memory_type: str | None = None,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         conditions = [
             "i.owner_id = %s",
             "i.profile_id = %s",
             "r.lifecycle_status = 'active'",
+            "r.valid_from <= %s",
+            "(r.valid_until IS NULL OR r.valid_until > %s)",
         ]
-        parameters: list[object] = [principal.owner_id, profile_id]
+        resolved_time = effective_at or datetime.now(UTC)
+        parameters: list[object] = [
+            principal.owner_id,
+            profile_id,
+            resolved_time,
+            resolved_time,
+        ]
         if memory_type is not None:
             conditions.append("i.memory_type = %s")
             parameters.append(memory_type)
@@ -231,6 +249,38 @@ class PostgreSQLMemoryRepository:
             if normalize_memory_text(record.item.subject) == subject_key
         )
 
+    def revoke(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> MemoryRecord | None:
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                f"{_SELECT_CURRENT_RECORD} "
+                "WHERE i.owner_id = %s AND i.memory_id = %s FOR UPDATE",
+                (principal.owner_id, memory_id),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["lifecycle_status"] == "revoked":
+                return to_record(connection, row, principal.owner_id)
+            if row["lifecycle_status"] != "active":
+                return None
+            connection.execute(
+                """
+                UPDATE memory_revisions
+                SET lifecycle_status = 'revoked'
+                WHERE owner_id = %s
+                  AND memory_id = %s
+                  AND revision_id = %s
+                  AND is_current
+                  AND lifecycle_status = 'active'
+                """,
+                (principal.owner_id, memory_id, row["revision_id"]),
+            )
+            row["lifecycle_status"] = "revoked"
+            return to_record(connection, row, principal.owner_id)
+
     def get_history(
         self,
         principal: PrincipalContext,
@@ -244,7 +294,9 @@ class PostgreSQLMemoryRepository:
                        r.lifecycle_status, r.business_progress,
                        r.save_rationale, r.observed_at, r.created_at,
                        r.is_current, r.original_time_expression,
-                       r.normalized_time
+                       r.normalized_time, r.extraction_confidence,
+                       r.verification_status, r.sensitivity_level,
+                       r.valid_from, r.valid_until, r.last_verified_at
                 FROM memory_items AS i
                 JOIN memory_revisions AS r
                   ON r.memory_id = i.memory_id
@@ -727,10 +779,13 @@ class PostgreSQLMemoryRepository:
                 assertion_kind, lifecycle_status, business_progress,
                 save_rationale, observed_at, created_at, is_current,
                 primary_evidence_id, original_time_expression, normalized_time
+                , extraction_confidence, verification_status,
+                sensitivity_level, valid_from, valid_until, last_verified_at
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
             )
             """,
             (
@@ -749,6 +804,12 @@ class PostgreSQLMemoryRepository:
                 evidence[0].evidence_id,
                 revision.original_time_expression,
                 revision.normalized_time,
+                revision.extraction_confidence,
+                revision.verification_status.value,
+                revision.sensitivity_level.value,
+                revision.valid_from,
+                revision.valid_until,
+                revision.last_verified_at,
             ),
         )
         cls._insert_evidence(connection, evidence)
@@ -765,11 +826,14 @@ class PostgreSQLMemoryRepository:
                 evidence_id, memory_id, revision_id, owner_id,
                 conversation_id, source_turn_id, source_expression,
                 observed_at, created_at, source_role, source_message_id,
-                source_tool_name
+                source_tool_name, source_type, source_uri, source_title,
+                source_publisher, published_at, retrieved_at, content_hash,
+                citation_locator
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
             )
             """,
             [
@@ -790,6 +854,14 @@ class PostgreSQLMemoryRepository:
                     ),
                     source.source_message_id,
                     source.source_tool_name,
+                    source.source_type.value,
+                    source.source_uri,
+                    source.source_title,
+                    source.source_publisher,
+                    source.published_at,
+                    source.retrieved_at,
+                    source.content_hash,
+                    source.citation_locator,
                 )
                 for source in evidence
             ],
@@ -812,12 +884,17 @@ class PostgreSQLMemoryRepository:
                 expression_basis, observed_at, candidate_created_at,
                 original_time_expression, normalized_time, status,
                 created_at, decided_at, source_role, source_message_id,
-                source_tool_name
+                source_tool_name, verification_status, sensitivity_level,
+                valid_from, valid_until, last_verified_at, source_type,
+                source_uri, source_title, source_publisher, published_at,
+                retrieved_at, content_hash, citation_locator
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s
             )
             """,
             (
@@ -852,6 +929,19 @@ class PostgreSQLMemoryRepository:
                 ),
                 candidate.source_message_id,
                 candidate.source_tool_name,
+                candidate.verification_status.value,
+                candidate.sensitivity_level.value,
+                candidate.valid_from,
+                candidate.valid_until,
+                candidate.last_verified_at,
+                candidate.source_type.value,
+                candidate.source_uri,
+                candidate.source_title,
+                candidate.source_publisher,
+                candidate.published_at,
+                candidate.retrieved_at,
+                candidate.content_hash,
+                candidate.citation_locator,
             ),
         )
 
@@ -872,7 +962,9 @@ SELECT i.memory_id, i.owner_id, i.profile_id, i.subject, i.memory_type,
        r.lifecycle_status, r.business_progress, r.save_rationale,
        r.observed_at AS revision_observed_at,
        r.created_at AS revision_created_at, r.is_current,
-       r.original_time_expression, r.normalized_time
+       r.original_time_expression, r.normalized_time,
+       r.extraction_confidence, r.verification_status, r.sensitivity_level,
+       r.valid_from, r.valid_until, r.last_verified_at
 FROM memory_items AS i
 JOIN memory_revisions AS r
   ON r.memory_id = i.memory_id
@@ -887,6 +979,9 @@ SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        durability, expression_basis, observed_at, candidate_created_at,
        original_time_expression, normalized_time, status, created_at,
        decided_at, resolved_memory_id, source_role, source_message_id,
-       source_tool_name
+       source_tool_name, verification_status, sensitivity_level,
+       valid_from, valid_until, last_verified_at, source_type, source_uri,
+       source_title, source_publisher, published_at, retrieved_at,
+       content_hash, citation_locator
 FROM memory_review_items
 """

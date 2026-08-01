@@ -18,6 +18,7 @@ from pydantic import (
 from memory_mcp.core import (
     AdmissionDecision,
     CaptureResult,
+    EvidenceSourceType,
     MemoryHistoryEntry,
     MemoryRecord,
     MessageRole,
@@ -41,12 +42,27 @@ class RoleMessageV1(StrictDto):
     content: NonEmptyText
     message_id: str | None = Field(default=None, min_length=1)
     tool_name: str | None = Field(default=None, min_length=1)
+    source_type: Literal["conversation", "tool", "document", "web"] | None = None
+    source_uri: str | None = Field(default=None, min_length=1)
+    source_title: str | None = Field(default=None, min_length=1)
+    source_publisher: str | None = Field(default=None, min_length=1)
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
+    content_hash: str | None = Field(default=None, min_length=1)
+    citation_locator: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_tool_name(self) -> Self:
         if self.tool_name is not None and self.role != "tool":
             raise ValueError("tool_name is only valid for tool messages")
         return self
+
+    @field_validator("published_at", "retrieved_at")
+    @classmethod
+    def require_aware_source_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("source time must be timezone-aware")
+        return value
 
 
 class CompletedTurnEventV1(StrictDto):
@@ -97,6 +113,18 @@ class CompletedTurnEventV1(StrictDto):
                     content=message.content,
                     message_id=message.message_id,
                     tool_name=message.tool_name,
+                    source_type=(
+                        EvidenceSourceType(message.source_type)
+                        if message.source_type is not None
+                        else None
+                    ),
+                    source_uri=message.source_uri,
+                    source_title=message.source_title,
+                    source_publisher=message.source_publisher,
+                    published_at=message.published_at,
+                    retrieved_at=message.retrieved_at,
+                    content_hash=message.content_hash,
+                    citation_locator=message.citation_locator,
                 )
                 for message in self.messages
             ),
@@ -167,6 +195,14 @@ class EvidenceView(StrictDto):
     source_role: MessageRole | None = None
     source_message_id: str | None = None
     source_tool_name: str | None = None
+    source_type: EvidenceSourceType
+    source_uri: str | None = None
+    source_title: str | None = None
+    source_publisher: str | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
+    content_hash: str | None = None
+    citation_locator: str | None = None
 
 
 class MemorySummaryView(StrictDto):
@@ -180,6 +216,12 @@ class MemorySummaryView(StrictDto):
     lifecycle_status: str
     business_progress: str | None
     observed_at: datetime
+    extraction_confidence: float | None
+    verification_status: str
+    sensitivity_level: str
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
 
     @classmethod
     def from_record(cls, record: MemoryRecord) -> Self:
@@ -209,6 +251,14 @@ class MemoryView(MemorySummaryView):
                     source_role=evidence.source_role,
                     source_message_id=evidence.source_message_id,
                     source_tool_name=evidence.source_tool_name,
+                    source_type=evidence.source_type,
+                    source_uri=evidence.source_uri,
+                    source_title=evidence.source_title,
+                    source_publisher=evidence.source_publisher,
+                    published_at=evidence.published_at,
+                    retrieved_at=evidence.retrieved_at,
+                    content_hash=evidence.content_hash,
+                    citation_locator=evidence.citation_locator,
                 )
                 for evidence in record.evidence
             ),
@@ -228,6 +278,12 @@ def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
         "lifecycle_status": revision.lifecycle_status.value,
         "business_progress": revision.business_progress,
         "observed_at": revision.observed_at,
+        "extraction_confidence": revision.extraction_confidence,
+        "verification_status": revision.verification_status.value,
+        "sensitivity_level": revision.sensitivity_level.value,
+        "valid_from": revision.valid_from,
+        "valid_until": revision.valid_until,
+        "last_verified_at": revision.last_verified_at,
     }
 
 
@@ -257,6 +313,12 @@ class MemoryRevisionView(StrictDto):
     save_rationale: str
     observed_at: datetime
     created_at: datetime
+    extraction_confidence: float | None
+    verification_status: str
+    sensitivity_level: str
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
     evidence: tuple[EvidenceView, ...]
 
     @classmethod
@@ -273,6 +335,12 @@ class MemoryRevisionView(StrictDto):
             save_rationale=revision.save_rationale,
             observed_at=revision.observed_at,
             created_at=revision.created_at,
+            extraction_confidence=revision.extraction_confidence,
+            verification_status=revision.verification_status.value,
+            sensitivity_level=revision.sensitivity_level.value,
+            valid_from=revision.valid_from,
+            valid_until=revision.valid_until,
+            last_verified_at=revision.last_verified_at,
             evidence=tuple(
                 EvidenceView(
                     conversation_id=source.conversation_id,
@@ -282,6 +350,14 @@ class MemoryRevisionView(StrictDto):
                     source_role=source.source_role,
                     source_message_id=source.source_message_id,
                     source_tool_name=source.source_tool_name,
+                    source_type=source.source_type,
+                    source_uri=source.source_uri,
+                    source_title=source.source_title,
+                    source_publisher=source.source_publisher,
+                    published_at=source.published_at,
+                    retrieved_at=source.retrieved_at,
+                    content_hash=source.content_hash,
+                    citation_locator=source.citation_locator,
                 )
                 for source in entry.evidence
             ),
@@ -294,6 +370,14 @@ class RecallSourceView(StrictDto):
     source_expression: str
     observed_at: datetime
     source_role: MessageRole | None
+    source_type: EvidenceSourceType
+    source_uri: str | None
+    source_title: str | None
+    source_publisher: str | None
+    published_at: datetime | None
+    retrieved_at: datetime | None
+    content_hash: str | None
+    citation_locator: str | None
 
 
 class RecalledMemoryView(StrictDto):
@@ -305,6 +389,12 @@ class RecalledMemoryView(StrictDto):
     content: str
     assertion_kind: str
     observed_at: datetime
+    extraction_confidence: float | None
+    verification_status: str
+    sensitivity_level: str
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
     sources: tuple[RecallSourceView, ...]
     relevance_score: float
 
@@ -332,6 +422,12 @@ class RecallReceipt(StrictDto):
                     content=item.content,
                     assertion_kind=item.assertion_kind.value,
                     observed_at=item.observed_at,
+                    extraction_confidence=item.extraction_confidence,
+                    verification_status=item.verification_status.value,
+                    sensitivity_level=item.sensitivity_level.value,
+                    valid_from=item.valid_from,
+                    valid_until=item.valid_until,
+                    last_verified_at=item.last_verified_at,
                     sources=tuple(
                         RecallSourceView(
                             conversation_id=source.conversation_id,
@@ -339,6 +435,14 @@ class RecallReceipt(StrictDto):
                             source_expression=source.source_expression,
                             observed_at=source.observed_at,
                             source_role=source.source_role,
+                            source_type=source.source_type,
+                            source_uri=source.source_uri,
+                            source_title=source.source_title,
+                            source_publisher=source.source_publisher,
+                            published_at=source.published_at,
+                            retrieved_at=source.retrieved_at,
+                            content_hash=source.content_hash,
+                            citation_locator=source.citation_locator,
                         )
                         for source in item.sources
                     ),
@@ -400,6 +504,12 @@ class ReviewResolutionReceipt(StrictDto):
     review_id: UUID
     status: Literal["confirmed", "rejected"]
     memory: MemoryView | None = None
+
+
+class MemoryRevocationReceipt(StrictDto):
+    ok: Literal[True] = True
+    request_id: str
+    memory: MemoryView
 
 
 def encode_cursor(offset: int) -> str:

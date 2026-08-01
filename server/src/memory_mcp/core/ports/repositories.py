@@ -80,6 +80,7 @@ class MemoryRepository(Protocol):
         principal: PrincipalContext,
         *,
         active_only: bool,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         """列出当前用户的当前版本，并可排除非活动记忆。"""
 
@@ -92,8 +93,18 @@ class MemoryRepository(Protocol):
         profile_id: str,
         subject: str | None = None,
         memory_type: str | None = None,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         """在 Repository 内先完成 owner/current/active/profile_id/subject 缩小。"""
+
+        ...
+
+    def revoke(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> MemoryRecord | None:
+        """幂等撤销 owned current revision；越权与不存在都返回 ``None``。"""
 
         ...
 

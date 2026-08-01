@@ -22,12 +22,15 @@ from memory_mcp.core.domain.lifecycle import (
 from memory_mcp.core.domain.models import (
     AssertionKind,
     Evidence,
+    EvidenceSourceType,
     LifecycleStatus,
     MemoryItem,
     MemoryRecord,
     MemoryRevision,
     MessageRole,
     PrincipalContext,
+    SensitivityLevel,
+    VerificationStatus,
 )
 from memory_mcp.core.domain.recall import (
     RecalledMemory,
@@ -46,6 +49,7 @@ __all__ = [
     "CaptureResult",
     "CaptureStatus",
     "Evidence",
+    "EvidenceSourceType",
     "ExpressionBasis",
     "ExtractionMetadata",
     "LifecycleStatus",
@@ -61,7 +65,9 @@ __all__ = [
     "RecalledMemory",
     "ReviewItem",
     "ReviewStatus",
+    "SensitivityLevel",
     "TurnEnvelope",
     "TurnMessage",
+    "VerificationStatus",
     "normalize_memory_text",
 ]

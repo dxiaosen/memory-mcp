@@ -26,7 +26,7 @@ from memory_mcp.core.composition import create_memory_service
 from memory_mcp.extraction.factory import create_configured_candidate_extractor
 from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
-from memory_mcp.profiles import GeneralWorkProfile
+from memory_mcp.profiles import built_in_profiles
 from memory_mcp.settings import MemoryServerSettings
 from memory_mcp.tools import MemoryMcpTools
 
@@ -102,7 +102,7 @@ def create_memory_mcp_server(
         health_check = repository.check_health
         close_storage = repository.close
 
-        configured_profiles = tuple(profiles or (GeneralWorkProfile(),))
+        configured_profiles = tuple(profiles or built_in_profiles())
         memory_service = create_memory_service(
             repository,
             configured_profiles,

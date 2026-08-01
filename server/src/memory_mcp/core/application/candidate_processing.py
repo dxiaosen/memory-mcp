@@ -3,7 +3,7 @@
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from memory_mcp.core.application.admission import (
@@ -17,6 +17,7 @@ from memory_mcp.core.domain import (
     CandidateProposal,
     CaptureOutcome,
     Evidence,
+    EvidenceSourceType,
     ExpressionBasis,
     LifecycleStatus,
     MemoryItem,
@@ -28,6 +29,7 @@ from memory_mcp.core.domain import (
     ReviewStatus,
     TurnEnvelope,
     TurnMessage,
+    VerificationStatus,
     normalize_memory_text,
 )
 from memory_mcp.core.exceptions import InvalidModelOutputError
@@ -71,7 +73,12 @@ class CandidateMaterializer:
         self._id_factory = id_factory
         self._clock = clock
 
-    def record(self, candidate: Candidate) -> MemoryRecord:
+    def record(
+        self,
+        candidate: Candidate,
+        *,
+        verification_status: VerificationStatus | None = None,
+    ) -> MemoryRecord:
         memory_id = self._id_factory()
         revision_id = self._id_factory()
         created_at = self._clock()
@@ -96,6 +103,14 @@ class CandidateMaterializer:
                 save_rationale=candidate.save_rationale,
                 observed_at=candidate.observed_at,
                 created_at=created_at,
+                extraction_confidence=candidate.confidence,
+                verification_status=(
+                    verification_status or candidate.verification_status
+                ),
+                sensitivity_level=candidate.sensitivity_level,
+                valid_from=candidate.valid_from,
+                valid_until=candidate.valid_until,
+                last_verified_at=candidate.last_verified_at,
                 original_time_expression=candidate.original_time_expression,
                 normalized_time=candidate.normalized_time,
             ),
@@ -130,6 +145,8 @@ class CandidateMaterializer:
         self,
         target: MemoryRecord,
         candidate: Candidate,
+        *,
+        verification_status: VerificationStatus | None = None,
     ) -> ReplacementWrite:
         old_revision = target.current_revision
         revision_id = self._id_factory()
@@ -146,6 +163,12 @@ class CandidateMaterializer:
             save_rationale=candidate.save_rationale,
             observed_at=candidate.observed_at,
             created_at=created_at,
+            extraction_confidence=candidate.confidence,
+            verification_status=(verification_status or candidate.verification_status),
+            sensitivity_level=candidate.sensitivity_level,
+            valid_from=candidate.valid_from,
+            valid_until=candidate.valid_until,
+            last_verified_at=candidate.last_verified_at,
             original_time_expression=candidate.original_time_expression,
             normalized_time=candidate.normalized_time,
         )
@@ -184,6 +207,14 @@ class CandidateMaterializer:
             source_role=candidate.source_role,
             source_message_id=candidate.source_message_id,
             source_tool_name=candidate.source_tool_name,
+            source_type=candidate.source_type,
+            source_uri=candidate.source_uri,
+            source_title=candidate.source_title,
+            source_publisher=candidate.source_publisher,
+            published_at=candidate.published_at,
+            retrieved_at=candidate.retrieved_at,
+            content_hash=candidate.content_hash,
+            citation_locator=candidate.citation_locator,
         )
 
 
@@ -241,6 +272,10 @@ class CandidateProcessor:
                 turn.profile_id,
                 proposal.business_progress,
             )
+            metadata_policy = self._profile_registry.metadata_policy(
+                turn.profile_id,
+                proposal.memory_type,
+            )
             source_metadata = _source_metadata(
                 turn,
                 proposal.source_expression,
@@ -263,6 +298,11 @@ class CandidateProcessor:
                         proposal.original_time_expression,
                         source_metadata["source_message_id"],
                         source_metadata["source_tool_name"],
+                        source_metadata["source_uri"],
+                        source_metadata["source_title"],
+                        source_metadata["source_publisher"],
+                        source_metadata["content_hash"],
+                        source_metadata["citation_locator"],
                     )
                     if isinstance(value, str)
                 )
@@ -293,6 +333,21 @@ class CandidateProcessor:
                 expression_basis=proposal.expression_basis,
                 observed_at=turn.observed_at,
                 created_at=self._clock(),
+                verification_status=(
+                    VerificationStatus.USER_ASSERTED
+                    if source_metadata["source_role"] is MessageRole.USER
+                    else VerificationStatus.UNVERIFIED
+                ),
+                sensitivity_level=metadata_policy.sensitivity_level,
+                # normalized_time 描述文本中的业务时间（如“下周”），并不表示
+                # 这条记忆从未来才开始可见。有效期始终从可信事件时间计算。
+                valid_from=turn.observed_at,
+                valid_until=(
+                    turn.observed_at + timedelta(days=metadata_policy.validity_days)
+                    if metadata_policy.validity_days is not None
+                    else None
+                ),
+                last_verified_at=None,
                 business_progress=proposal.business_progress,
                 original_time_expression=proposal.original_time_expression,
                 normalized_time=proposal.normalized_time,
@@ -328,6 +383,7 @@ class CandidateProcessor:
                     profile_id=candidate.profile_id,
                     subject=candidate.subject,
                     memory_type=candidate.memory_type,
+                    effective_at=self._clock(),
                 )
             target = current_scope[0] if len(current_scope) == 1 else None
             if len(current_scope) > 1:
@@ -430,7 +486,7 @@ def _source_metadata(
     turn: TurnEnvelope,
     source_expression: str,
     guard: SensitiveContentGuard,
-) -> dict[str, MessageRole | str | None]:
+) -> dict[str, object]:
     """只从可信消息块派生来源身份，不信任模型字段。"""
 
     matching: list[TurnMessage] = []
@@ -443,6 +499,14 @@ def _source_metadata(
             "source_role": None,
             "source_message_id": None,
             "source_tool_name": None,
+            "source_type": EvidenceSourceType.CONVERSATION,
+            "source_uri": None,
+            "source_title": None,
+            "source_publisher": None,
+            "published_at": None,
+            "retrieved_at": None,
+            "content_hash": None,
+            "citation_locator": None,
         }
     selected = next(
         (message for message in matching if message.role is MessageRole.USER),
@@ -452,6 +516,21 @@ def _source_metadata(
         "source_role": selected.role,
         "source_message_id": selected.message_id,
         "source_tool_name": selected.tool_name,
+        "source_type": (
+            selected.source_type
+            or (
+                EvidenceSourceType.TOOL
+                if selected.role is MessageRole.TOOL
+                else EvidenceSourceType.CONVERSATION
+            )
+        ),
+        "source_uri": selected.source_uri,
+        "source_title": selected.source_title,
+        "source_publisher": selected.source_publisher,
+        "published_at": selected.published_at,
+        "retrieved_at": selected.retrieved_at,
+        "content_hash": selected.content_hash,
+        "citation_locator": selected.citation_locator,
     }
 
 

@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from memory_mcp.core.domain import (
@@ -77,6 +77,7 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         *,
         active_only: bool,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         records = (
             record
@@ -84,10 +85,12 @@ class InMemoryMemoryRepository:
             if record.item.owner_id == principal.owner_id
         )
         if active_only:
+            resolved_time = effective_at or datetime.now(UTC)
             records = (
                 record
                 for record in records
                 if record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+                and _is_effective(record.current_revision, resolved_time)
             )
         return tuple(sorted(records, key=lambda value: value.item.created_at))
 
@@ -98,16 +101,19 @@ class InMemoryMemoryRepository:
         profile_id: str,
         subject: str | None = None,
         memory_type: str | None = None,
+        effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
         """先按可信 owner 和活动 current 集合收窄，再做规范化 subject 匹配。"""
 
         subject_key = normalize_memory_text(subject) if subject is not None else None
+        resolved_time = effective_at or datetime.now(UTC)
         records = (
             record
             for record in self._records.values()
             if record.item.owner_id == principal.owner_id
             and record.item.profile_id == profile_id
             and record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+            and _is_effective(record.current_revision, resolved_time)
             and (memory_type is None or record.item.memory_type == memory_type)
             and (
                 subject_key is None
@@ -119,6 +125,30 @@ class InMemoryMemoryRepository:
                 records, key=lambda value: (value.item.created_at, value.item.memory_id)
             )
         )
+
+    def revoke(
+        self,
+        principal: PrincipalContext,
+        memory_id: UUID,
+    ) -> MemoryRecord | None:
+        record = self.get(principal, memory_id)
+        if record is None:
+            return None
+        revision = record.current_revision
+        if revision.lifecycle_status is LifecycleStatus.REVOKED:
+            return record
+        if revision.lifecycle_status is not LifecycleStatus.ACTIVE:
+            return None
+        revoked = replace(revision, lifecycle_status=LifecycleStatus.REVOKED)
+        updated = replace(record, current_revision=revoked)
+        self._records[memory_id] = updated
+        self._history[memory_id] = tuple(
+            replace(entry, revision=revoked)
+            if entry.revision.revision_id == revision.revision_id
+            else entry
+            for entry in self._history[memory_id]
+        )
+        return updated
 
     def get_history(
         self,
@@ -586,6 +616,12 @@ class InMemoryMemoryRepository:
             or revision.business_progress != candidate.business_progress
             or revision.save_rationale != candidate.save_rationale
             or revision.observed_at != candidate.observed_at
+            or revision.extraction_confidence != candidate.confidence
+            or revision.verification_status.value != "user_confirmed"
+            or revision.sensitivity_level is not candidate.sensitivity_level
+            or revision.valid_from != candidate.valid_from
+            or revision.valid_until != candidate.valid_until
+            or revision.last_verified_at != candidate.last_verified_at
             or revision.original_time_expression != candidate.original_time_expression
             or revision.normalized_time != candidate.normalized_time
             or source.conversation_id != candidate.conversation_id
@@ -594,5 +630,19 @@ class InMemoryMemoryRepository:
             or source.source_role is not candidate.source_role
             or source.source_message_id != candidate.source_message_id
             or source.source_tool_name != candidate.source_tool_name
+            or source.source_type is not candidate.source_type
+            or source.source_uri != candidate.source_uri
+            or source.source_title != candidate.source_title
+            or source.source_publisher != candidate.source_publisher
+            or source.published_at != candidate.published_at
+            or source.retrieved_at != candidate.retrieved_at
+            or source.content_hash != candidate.content_hash
+            or source.citation_locator != candidate.citation_locator
         ):
             raise ValueError("confirmed memory must match pending candidate")
+
+
+def _is_effective(revision: MemoryRevision, at_time: datetime) -> bool:
+    return revision.valid_from <= at_time and (
+        revision.valid_until is None or revision.valid_until > at_time
+    )

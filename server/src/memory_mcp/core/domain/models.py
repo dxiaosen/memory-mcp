@@ -36,6 +36,33 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
+class VerificationStatus(StrEnum):
+    """记忆内容目前获得了哪一类验证，不代表绝对事实。"""
+
+    UNVERIFIED = "unverified"
+    USER_ASSERTED = "user_asserted"
+    USER_CONFIRMED = "user_confirmed"
+    SOURCE_VERIFIED = "source_verified"
+
+
+class SensitivityLevel(StrEnum):
+    """允许持久化内容的治理级别；禁止内容仍由敏感守卫阻断。"""
+
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    CONFIDENTIAL = "confidential"
+    RESTRICTED = "restricted"
+
+
+class EvidenceSourceType(StrEnum):
+    """Evidence 所引用来源的通用类别。"""
+
+    CONVERSATION = "conversation"
+    TOOL = "tool"
+    DOCUMENT = "document"
+    WEB = "web"
+
+
 class LifecycleStatus(StrEnum):
     """由 Core 管理、记忆配置不得重新定义的有效状态。"""
 
@@ -95,6 +122,12 @@ class MemoryRevision:
     save_rationale: str
     observed_at: datetime
     created_at: datetime
+    extraction_confidence: float | None
+    verification_status: VerificationStatus
+    sensitivity_level: SensitivityLevel
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
     is_current: bool = True
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
@@ -121,6 +154,21 @@ class MemoryRevision:
         )
         _require_aware_datetime(self.observed_at, "observed_at")
         _require_aware_datetime(self.created_at, "created_at")
+        if self.extraction_confidence is not None and not (
+            0.0 <= self.extraction_confidence <= 1.0
+        ):
+            raise ValueError("extraction_confidence must be between 0 and 1")
+        if not isinstance(self.verification_status, VerificationStatus):
+            raise ValueError("verification_status must be a VerificationStatus")
+        if not isinstance(self.sensitivity_level, SensitivityLevel):
+            raise ValueError("sensitivity_level must be a SensitivityLevel")
+        _require_aware_datetime(self.valid_from, "valid_from")
+        if self.valid_until is not None:
+            _require_aware_datetime(self.valid_until, "valid_until")
+            if self.valid_until <= self.valid_from:
+                raise ValueError("valid_until must be later than valid_from")
+        if self.last_verified_at is not None:
+            _require_aware_datetime(self.last_verified_at, "last_verified_at")
         if self.original_time_expression is not None:
             object.__setattr__(
                 self,
@@ -150,6 +198,14 @@ class Evidence:
     source_role: MessageRole | None = None
     source_message_id: str | None = None
     source_tool_name: str | None = None
+    source_type: EvidenceSourceType = EvidenceSourceType.CONVERSATION
+    source_uri: str | None = None
+    source_title: str | None = None
+    source_publisher: str | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
+    content_hash: str | None = None
+    citation_locator: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))
@@ -175,7 +231,17 @@ class Evidence:
             MessageRole,
         ):
             raise ValueError("source_role must be a MessageRole")
-        for field_name in ("source_message_id", "source_tool_name"):
+        if not isinstance(self.source_type, EvidenceSourceType):
+            raise ValueError("source_type must be an EvidenceSourceType")
+        for field_name in (
+            "source_message_id",
+            "source_tool_name",
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "content_hash",
+            "citation_locator",
+        ):
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(
@@ -188,6 +254,10 @@ class Evidence:
             and self.source_role is not MessageRole.TOOL
         ):
             raise ValueError("source_tool_name is only valid for tool sources")
+        for field_name in ("published_at", "retrieved_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_aware_datetime(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from memory_mcp.core.domain.models import AssertionKind, MessageRole
+from memory_mcp.core.domain.models import (
+    AssertionKind,
+    EvidenceSourceType,
+    MessageRole,
+    SensitivityLevel,
+    VerificationStatus,
+)
 
 
 def _required_text(value: str, field_name: str) -> str:
@@ -55,6 +61,14 @@ class RecallSourceSummary:
     source_expression: str
     observed_at: datetime
     source_role: MessageRole | None
+    source_type: EvidenceSourceType
+    source_uri: str | None
+    source_title: str | None
+    source_publisher: str | None
+    published_at: datetime | None
+    retrieved_at: datetime | None
+    content_hash: str | None
+    citation_locator: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +83,12 @@ class RecalledMemory:
     content: str
     assertion_kind: AssertionKind
     observed_at: datetime
+    extraction_confidence: float | None
+    verification_status: VerificationStatus
+    sensitivity_level: SensitivityLevel
+    valid_from: datetime
+    valid_until: datetime | None
+    last_verified_at: datetime | None
     sources: tuple[RecallSourceSummary, ...]
     relevance_score: float
 

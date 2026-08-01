@@ -14,6 +14,7 @@ from memory_mcp.core.domain import (
     CaptureResult,
     CaptureStatus,
     Evidence,
+    EvidenceSourceType,
     ExpressionBasis,
     ExtractionMetadata,
     LifecycleStatus,
@@ -23,6 +24,8 @@ from memory_mcp.core.domain import (
     MessageRole,
     ReviewItem,
     ReviewStatus,
+    SensitivityLevel,
+    VerificationStatus,
 )
 
 
@@ -86,6 +89,11 @@ def to_review(row: Mapping[str, Any]) -> ReviewItem:
         expression_basis=ExpressionBasis(row["expression_basis"]),
         observed_at=as_datetime(row["observed_at"]),
         created_at=as_datetime(row["candidate_created_at"]),
+        verification_status=VerificationStatus(row["verification_status"]),
+        sensitivity_level=SensitivityLevel(row["sensitivity_level"]),
+        valid_from=as_datetime(row["valid_from"]),
+        valid_until=optional_datetime(row["valid_until"]),
+        last_verified_at=optional_datetime(row["last_verified_at"]),
         business_progress=row["business_progress"],
         original_time_expression=row["original_time_expression"],
         normalized_time=optional_datetime(row["normalized_time"]),
@@ -94,6 +102,14 @@ def to_review(row: Mapping[str, Any]) -> ReviewItem:
         ),
         source_message_id=row["source_message_id"],
         source_tool_name=row["source_tool_name"],
+        source_type=EvidenceSourceType(row["source_type"]),
+        source_uri=row["source_uri"],
+        source_title=row["source_title"],
+        source_publisher=row["source_publisher"],
+        published_at=optional_datetime(row["published_at"]),
+        retrieved_at=optional_datetime(row["retrieved_at"]),
+        content_hash=row["content_hash"],
+        citation_locator=row["citation_locator"],
     )
     return ReviewItem(
         review_id=as_uuid(row["review_id"]),
@@ -141,6 +157,12 @@ def to_revision(row: Mapping[str, Any]) -> MemoryRevision:
         save_rationale=row["save_rationale"],
         observed_at=as_datetime(observed_at),
         created_at=as_datetime(created_at),
+        extraction_confidence=row["extraction_confidence"],
+        verification_status=VerificationStatus(row["verification_status"]),
+        sensitivity_level=SensitivityLevel(row["sensitivity_level"]),
+        valid_from=as_datetime(row["valid_from"]),
+        valid_until=optional_datetime(row["valid_until"]),
+        last_verified_at=optional_datetime(row["last_verified_at"]),
         is_current=row["is_current"],
         original_time_expression=row["original_time_expression"],
         normalized_time=optional_datetime(row["normalized_time"]),
@@ -170,13 +192,23 @@ def load_evidence(
             ),
             source_message_id=source["source_message_id"],
             source_tool_name=source["source_tool_name"],
+            source_type=EvidenceSourceType(source["source_type"]),
+            source_uri=source["source_uri"],
+            source_title=source["source_title"],
+            source_publisher=source["source_publisher"],
+            published_at=optional_datetime(source["published_at"]),
+            retrieved_at=optional_datetime(source["retrieved_at"]),
+            content_hash=source["content_hash"],
+            citation_locator=source["citation_locator"],
         )
         for source in connection.execute(
             """
             SELECT evidence_id, memory_id, revision_id, owner_id,
                    conversation_id, source_turn_id, source_expression,
                    observed_at, created_at, source_role,
-                   source_message_id, source_tool_name
+                   source_message_id, source_tool_name, source_type,
+                   source_uri, source_title, source_publisher, published_at,
+                   retrieved_at, content_hash, citation_locator
             FROM memory_evidence
             WHERE owner_id = %s AND revision_id = %s
             ORDER BY created_at, evidence_id

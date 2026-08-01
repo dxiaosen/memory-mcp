@@ -12,6 +12,7 @@ from memory_mcp.core.domain import (
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
+    VerificationStatus,
     normalize_memory_text,
 )
 from memory_mcp.core.exceptions import ReviewNotFoundError
@@ -100,6 +101,7 @@ class ReviewService:
             profile_id=review.candidate.profile_id,
             subject=review.candidate.subject,
             memory_type=review.candidate.memory_type,
+            effective_at=self._clock(),
         )
         if len(current_scope) > 1:
             raise ValueError("review lifecycle target is ambiguous")
@@ -119,9 +121,13 @@ class ReviewService:
                 replacement = self._materializer.replacement(
                     target,
                     review.candidate,
+                    verification_status=VerificationStatus.USER_CONFIRMED,
                 )
         else:
-            memory = self._materializer.record(review.candidate)
+            memory = self._materializer.record(
+                review.candidate,
+                verification_status=VerificationStatus.USER_CONFIRMED,
+            )
         resolved = self._repository.resolve_review(
             principal,
             review_id,

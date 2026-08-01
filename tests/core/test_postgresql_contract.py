@@ -52,6 +52,8 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
         "0001_memory_core.sql",
         "0002_lifecycle_recall.sql",
         "0003_profile_naming.sql",
+        "0004_memory_metadata.sql",
+        "0005_metadata_rollback_compat.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -77,6 +79,23 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     ):
         assert required_fragment in profile_migration
 
+    metadata_migration = migrations[3].sql
+    for required_fragment in (
+        "extraction_confidence",
+        "verification_status",
+        "sensitivity_level",
+        "valid_from",
+        "source_type",
+        "citation_locator",
+        "memory_revisions_owner_effective_idx",
+    ):
+        assert required_fragment in metadata_migration
+
+    rollback_compatibility_migration = migrations[4].sql
+    assert "ALTER COLUMN valid_from SET DEFAULT CURRENT_TIMESTAMP" in (
+        rollback_compatibility_migration
+    )
+
 
 def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
     required_methods = {
@@ -85,6 +104,7 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "get",
         "list",
         "find_current",
+        "revoke",
         "get_history",
         "get_capture",
         "commit_capture",

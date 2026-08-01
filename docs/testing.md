@@ -37,13 +37,16 @@ uv run ruff check .
 git diff --check
 openspec-cn validate add-general-memory-core --strict
 openspec-cn validate add-agent-active-memory --strict
+openspec-cn validate enhance-memory-metadata --strict
+openspec-cn validate add-investment-research-profile --strict
 ```
 
 未显式提供 `MEMORY_MCP_TEST_DATABASE_URL` 时，6 个 PostgreSQL 外部用例应 skip，
-而不是读取 `.env` 后静默清库。2026-07-31 主动记忆实现后的本地结果为：
+而不是读取 `.env` 后静默清库。当前提交的精确测试数以本页最后一次验收记录为准，
+不要把 skip 描述成已验证数据库。
 
 ```text
-109 passed, 6 skipped
+117 passed, 6 skipped
 ```
 
 ## 3. PostgreSQL 安全前置检查
@@ -88,8 +91,10 @@ raise SystemExit(pytest.main([
 '
 ```
 
-本轮真实 PostgreSQL 结果为 `8 passed`，覆盖 Repository contract、migration/
-health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭环。
+2026-08-01 已在当前 RDS 配置上成功应用元数据与回滚兼容 migration，随后
+`memory-mcp-db health` 通过。该数据库名称不满足测试库的 `test` 防误删条件，因此
+本轮没有在它上面运行会 truncate 的 6 个 PostgreSQL pytest；需要完整 SQL 写入回归
+时，应另建名称包含 `test` 的可清空数据库再运行本节命令。
 
 ## 4. 自动化覆盖清单
 
@@ -104,14 +109,22 @@ health、MCP 跨进程重启、鉴权、幂等以及 Hook 跨 Agent/跨用户闭
 - pending confirm/reject 的 owner 隔离和原子状态变化；
 - reprocess-required 后使用相同 event 继续处理；
 - schema migration 顺序、checksum、必需表和约束健康检查，包括保留历史 checksum
-  的 `0003_profile_naming.sql`；
+  的 `0003_profile_naming.sql`、新增元数据约束的 `0004_memory_metadata.sql`，以及
+  保证旧版短期回滚写入的 `0005_metadata_rollback_compat.sql`；
+- revision confidence、verification、sensitivity、validity 的领域不变量和 SQL 映射；
+- Evidence document/web/tool citation 字段的消息归属、敏感阻断和持久化往返；
+- 到期 revision 在 owner-scoped Repository 查询阶段被排除，但详情/history 保留；
+- `revoke_memory` 的 owner 隔离、幂等、立即停止召回和 Evidence 保留；
+- `general-work` 与 `investment-research` 的完整 Profile 注册和 Core 依赖边界；
+- 投研 thesis/evidence 共存、同原子论点冲突 pending、期限策略、交易内容阻断与非法
+  progress 安全失败；
 - 进程重启后记忆仍可召回。
 
 ### 4.2 MCP transport
 
 - 未认证请求为 401；
 - Token 只在服务端映射为 Principal；
-- 七个工具的输入 schema 禁止额外字段和 owner 参数；
+- 八个工具的输入 schema 禁止额外字段和 owner 参数；
 - read/write/review scope 分离；
 - DTO `contract_version=1`、稳定 fingerprint 和字符上限；
 - 服务错误转换为稳定、无敏感正文的错误码；
@@ -274,6 +287,10 @@ named `tool_choice`。该行为有单元测试，且本轮已用真实 API 验�
 | 相同 event、不同 payload | `idempotency_conflict` |
 | Token 未映射/Scope 不足 | 401 或稳定 forbidden 错误 |
 | 不同 owner 猜测 memory id | not found，不泄露存在性 |
+| 到期或 revoked memory | 普通 list/recall 不返回，详情/history 仍可审计 |
+| citation 带凭据文本 | 候选 blocked，禁止值不落库、不响应、不记录日志 |
+| 高 confidence 的外部证据 | 保留 confidence，但不能自动标为 `source_verified` |
+| 投研候选使用非法 progress | capture failed，无部分写入 |
 | 记忆服务短暂失败 | 默认 Hook warning，Agent 主任务继续 |
 
 ## 9. 部署后验收

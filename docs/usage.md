@@ -98,6 +98,15 @@ Memory PostgreSQL is healthy
 和索引 rename 原地保留记忆数据；执行成功后工具字段统一为 `profile_id`，旧客户端
 如果仍提交 `scenario` 会被严格 DTO 拒绝，需要与 Server 一起升级。
 
+首次升级到元数据版本还会显示
+`Applied PostgreSQL migrations: 0004_memory_metadata.sql`。它保留旧 revision 和
+Evidence：历史 `extraction_confidence` 为 null，`valid_from` 从原 `observed_at`
+回填，并增加 verification、sensitivity、validity 与 citation 字段。随后还会应用
+`0005_metadata_rollback_compat.sql`，保证保留向前 schema 时旧版 Server 仍能短期
+回滚写入。显示 `PostgreSQL schema is up to date` 代表五条 migration 都已应用且
+checksum 一致，
+不是“没有数据库表”。
+
 启动服务：
 
 ```bash
@@ -181,6 +190,59 @@ tool choice 不兼容的默认 thinking。
 
 真实模型 smoke 测试先不要传 `--subject`。`subject` 是精确过滤器，而模型可能把
 同一概念归纳成不同规范名；错误 subject 会在相关性计算前过滤掉正确记忆。
+
+### 4.1 手工验证投研 Profile
+
+Server 已同时注册 `general-work` 与 `investment-research`，但不会从正文猜测场景。
+通用 Agent 默认继续使用前者；投研产品集成应在代码中固定后者。仓库手工验证可只
+为测试进程临时覆盖 Profile：
+
+```bash
+MEMORY_HOOK_PROFILE_ID=investment-research \
+  .venv/bin/python examples/hook_runner.py \
+  --env-file examples/agent.env \
+  --conversation-id research-a \
+  --turn-id research-a-1 \
+  --input '我长期要求投研结论同时列出支持证据和反方风险。'
+```
+
+新轮次召回：
+
+```bash
+MEMORY_HOOK_PROFILE_ID=investment-research \
+  .venv/bin/python examples/hook_runner.py \
+  --env-file examples/agent.env \
+  --conversation-id research-b \
+  --turn-id research-b-1 \
+  --input '这次投研结论应该采用什么证据结构？'
+```
+
+直接 MCP 调用也可以显式传 `profile_id="investment-research"`。八种合法类型为
+`research_preference`、`research_question`、`thesis`、`evidence_claim`、`risk`、
+`catalyst`、`ongoing_research` 和 `research_decision`。真实模型可能选择 pending；
+这属于保守准入，不应为了演示强制 auto-save。
+
+文档、网页或工具来源可以在 `messages[]` 对应消息中提交 `source_type`、URI、标题、
+发布者、发布/获取时间、hash 和 locator。它们会跟随 Evidence 返回，但不会自动把
+verification 设成 `source_verified`。投研 subject 应细化到实体/主题与指标、期间、
+事件或问题焦点；无法保证 canonical subject 时，召回仍应省略 subject。
+
+### 4.2 查看元数据、到期和撤销
+
+`list_memories`、`get_memory(include_history=true)` 和 `recall_memory` 会返回
+extraction confidence、verification、sensitivity、validity；详情/history 还返回
+完整 Evidence citation。到达 `valid_until` 后普通 list/recall 不再返回该项，但
+`get_memory` 和 history 仍可审计。
+
+需要立即停用一条 current memory 时，使用 `memory:review` scope 调用：
+
+```text
+revoke_memory {"memory_id":"<UUID>"}
+```
+
+调用是 owner-scoped 且幂等的：重复调用返回同一 revoked revision，另一 owner 猜中
+UUID 时只得到 `memory_unavailable`。revoke 不等于物理删除，Evidence 和 history
+继续保留。
 
 ## 5. 确定性自动化闭环
 
@@ -402,7 +464,7 @@ Key、provider 异常正文和敏感规则拦截的原文在任何模式下都�
 ```
 
 `client.py` 只演示只读操作。pending confirm/reject 和完整 DTO 可通过任意 MCP
-Inspector/Client 调用七个注册工具。Token 始终从 Agent 进程环境或其显式 env
+Inspector/Client 调用八个注册工具。Token 始终从 Agent 进程环境或其显式 env
 文件读取。
 
 ## 12. 部署访问

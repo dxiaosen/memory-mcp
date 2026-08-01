@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -8,12 +8,16 @@ from memory_mcp.core import (
     InvalidMemoryTypeError,
     InvalidProfileProgressError,
     LifecycleStatus,
+    MemoryMetadataPolicy,
     MemoryNotFoundError,
     MemoryService,
     PrincipalContext,
     ProfileNotRegisteredError,
     ProfileRegistry,
+    RecallQuery,
     SensitiveContentBlockedError,
+    SensitivityLevel,
+    VerificationStatus,
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
@@ -41,6 +45,13 @@ def test_manual_create_preserves_owner_source_kind_and_current_state() -> None:
     assert record.item.memory_type == "preference"
     assert record.current_revision.content == "项目周报默认使用表格"
     assert record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+    assert record.current_revision.extraction_confidence is None
+    assert (
+        record.current_revision.verification_status is VerificationStatus.USER_ASSERTED
+    )
+    assert record.current_revision.sensitivity_level is SensitivityLevel.CONFIDENTIAL
+    assert record.current_revision.valid_from == record.current_revision.observed_at
+    assert record.current_revision.valid_until is None
     assert record.current_revision.save_rationale
     assert record.evidence[0].source_turn_id == "session-1-turn-1"
     assert record.evidence[0].source_expression == "以后项目周报默认用表格"
@@ -154,6 +165,68 @@ def test_malformed_profile_policy_is_rejected_before_use() -> None:
 
     with pytest.raises(InvalidMemoryProfileError):
         service.register_profile(TestMemoryProfile(profile_id=" project-work "))
+
+    with pytest.raises(InvalidMemoryProfileError, match="metadata_policies"):
+        service.register_profile(TestMemoryProfile(metadata_policies={}))
+
+
+def test_revision_metadata_invariants_reject_invalid_values() -> None:
+    record = _service().create_memory(
+        PrincipalContext("analyst-a"),
+        project_preference_command(),
+    )
+
+    with pytest.raises(ValueError, match="extraction_confidence"):
+        replace(record.current_revision, extraction_confidence=1.01)
+    with pytest.raises(ValueError, match="valid_until"):
+        replace(
+            record.current_revision,
+            valid_until=record.current_revision.valid_from,
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replace(record.current_revision, valid_from=datetime(2026, 7, 29, 10))
+
+
+def test_profile_validity_policy_filters_expired_memory_without_scheduler() -> None:
+    observed_at = datetime(2026, 7, 29, 10, tzinfo=UTC)
+    current_time = [observed_at]
+    policies = {
+        memory_type: MemoryMetadataPolicy(
+            sensitivity_level=SensitivityLevel.INTERNAL,
+            validity_days=(1 if memory_type == "preference" else None),
+        )
+        for memory_type in ("preference", "ongoing_item", "stable_context")
+    }
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(
+        repository,
+        ProfileRegistry(),
+        sensitive_guard=RegexSensitiveContentGuard(),
+        clock=lambda: current_time[0],
+    )
+    service.register_profile(TestMemoryProfile(metadata_policies=policies))
+    principal = PrincipalContext("analyst-a")
+
+    record = service.create_memory(principal, project_preference_command())
+
+    assert record.current_revision.valid_until == observed_at + timedelta(days=1)
+    assert record.current_revision.sensitivity_level is SensitivityLevel.INTERNAL
+    assert service.list_memories(principal) == (record,)
+
+    current_time[0] = observed_at + timedelta(days=1)
+
+    assert service.list_memories(principal) == ()
+    assert service.list_memories(principal, include_inactive=True) == (record,)
+    assert (
+        service.recall_memory(
+            principal,
+            RecallQuery(
+                profile_id="project-work",
+                query="项目周报默认使用表格",
+            ),
+        ).items
+        == ()
+    )
 
 
 def test_repository_registration_failure_does_not_mutate_registry() -> None:

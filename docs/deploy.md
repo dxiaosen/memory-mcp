@@ -267,8 +267,11 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 7. 执行一次跨 Agent 捕获、召回和跨用户负向测试。
 
 `0003_profile_naming.sql` 是保留数据的命名迁移：把旧 profile 相关表和
-`scenario/policy_version` 列原地重命名为 `profile_id/profile_version`。不要修改
-`0001/0002` 历史文件，否则已部署数据库会因 checksum 不一致拒绝启动。由于 MCP
+`scenario/policy_version` 列原地重命名为 `profile_id/profile_version`。
+`0004_memory_metadata.sql` 在保留旧 revision/Evidence 的基础上增加 confidence、
+verification、sensitivity、validity 和 citation 字段；
+`0005_metadata_rollback_compat.sql` 保证旧版 Server 短期回滚仍可写入。不要修改任何已执行 migration，
+否则已部署数据库会因 checksum 不一致拒绝启动。由于 MCP
 DTO 同步改为 `profile_id`，Server 与主动记忆 Agent Client 应在同一发布窗口升级。
 
 Server 应用回滚时恢复上一个代码版本并重新同步锁定依赖。Agent Client 独立按

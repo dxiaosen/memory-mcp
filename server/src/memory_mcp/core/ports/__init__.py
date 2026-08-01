@@ -6,7 +6,11 @@ from memory_mcp.core.ports.capture import (
     SensitiveContentGuard,
     SensitiveInspection,
 )
-from memory_mcp.core.ports.profiles import MemoryProfile, ProfileRegistry
+from memory_mcp.core.ports.profiles import (
+    MemoryMetadataPolicy,
+    MemoryProfile,
+    ProfileRegistry,
+)
 from memory_mcp.core.ports.repositories import (
     CaptureWrite,
     DuplicateEvidenceWrite,
@@ -19,6 +23,7 @@ __all__ = [
     "CaptureWrite",
     "DuplicateEvidenceWrite",
     "ExtractionRequest",
+    "MemoryMetadataPolicy",
     "MemoryProfile",
     "MemoryRepository",
     "ProfileRegistry",

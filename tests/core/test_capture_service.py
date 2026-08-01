@@ -7,13 +7,16 @@ from memory_mcp.core import (
     AssertionKind,
     CandidateDurability,
     CaptureStatus,
+    EvidenceSourceType,
     ExpressionBasis,
     MessageRole,
     PrincipalContext,
     ReviewNotFoundError,
     ReviewStatus,
+    SensitivityLevel,
     TurnEnvelope,
     TurnMessage,
+    VerificationStatus,
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
@@ -108,6 +111,10 @@ def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> Non
         record for record in memories if record.item.memory_type == "ongoing_item"
     )
     assert ongoing.current_revision.original_time_expression == "下周"
+    assert ongoing.current_revision.extraction_confidence == 0.95
+    assert ongoing.current_revision.verification_status is VerificationStatus.UNVERIFIED
+    assert ongoing.current_revision.sensitivity_level is SensitivityLevel.CONFIDENTIAL
+    assert ongoing.current_revision.valid_from == _OBSERVED_AT
     assert ongoing.current_revision.normalized_time == datetime(
         2026,
         8,
@@ -295,7 +302,7 @@ def test_sensitive_source_metadata_is_blocked_before_persistence() -> None:
             TurnMessage(
                 role=MessageRole.USER,
                 content=f"{source}。",
-                message_id=f"api_key={secret}",
+                source_uri=f"https://example.invalid/?api_key={secret}",
             ),
         ),
     )
@@ -306,6 +313,74 @@ def test_sensitive_source_metadata_is_blocked_before_persistence() -> None:
         AdmissionDecision.BLOCKED
     ]
     assert service.list_memories(PrincipalContext("analyst-a")) == ()
+
+
+def test_tool_document_source_is_preserved_after_user_confirmation() -> None:
+    source_expression = "示例公司 2025 年收入同比增长 18%"
+    published_at = datetime(2026, 3, 20, 9, tzinfo=UTC)
+    retrieved_at = datetime(2026, 7, 29, 9, tzinfo=UTC)
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                source_expression,
+                subject="example-company-revenue",
+                memory_type="stable_context",
+                content="示例公司 2025 年收入同比增长 18%",
+                assertion_kind=AssertionKind.EXTERNAL_FACT,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-document-1",
+        content=source_expression,
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.TOOL,
+                content=source_expression,
+                message_id="tool-message-1",
+                tool_name="document_reader",
+                source_type=EvidenceSourceType.DOCUMENT,
+                source_uri="https://research.example/reports/annual-2025",
+                source_title="示例公司 2025 年报",
+                source_publisher="示例交易所",
+                published_at=published_at,
+                retrieved_at=retrieved_at,
+                content_hash="sha256:example-report",
+                citation_locator="p.42",
+            ),
+        ),
+    )
+
+    capture = service.capture_turn(principal, turn)
+
+    assert capture.outcomes[0].decision is AdmissionDecision.PENDING
+    review_id = capture.outcomes[0].review_id
+    assert review_id is not None
+    pending = service.get_review(principal, review_id)
+    assert pending.candidate.verification_status is VerificationStatus.UNVERIFIED
+
+    memory = service.confirm_review(principal, review_id)
+    source = memory.evidence[0]
+    assert (
+        memory.current_revision.verification_status is VerificationStatus.USER_CONFIRMED
+    )
+    assert source.source_type is EvidenceSourceType.DOCUMENT
+    assert source.source_uri == "https://research.example/reports/annual-2025"
+    assert source.source_title == "示例公司 2025 年报"
+    assert source.source_publisher == "示例交易所"
+    assert source.published_at == published_at
+    assert source.retrieved_at == retrieved_at
+    assert source.content_hash == "sha256:example-report"
+    assert source.citation_locator == "p.42"
 
 
 def test_backend_exception_message_is_not_logged(

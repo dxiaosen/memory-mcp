@@ -53,6 +53,20 @@ def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
                 "role": "assistant",
                 "content": "好的。",
             },
+            {
+                "role": "tool",
+                "content": "年报第 42 页披露收入数据。",
+                "message_id": "tool-message-1",
+                "tool_name": "document_reader",
+                "source_type": "document",
+                "source_uri": "https://research.example/annual-2025",
+                "source_title": "示例公司 2025 年报",
+                "source_publisher": "示例交易所",
+                "published_at": "2026-03-20T09:00:00+08:00",
+                "retrieved_at": "2026-07-30T09:00:00+08:00",
+                "content_hash": "sha256:example-report",
+                "citation_locator": "p.42",
+            },
         ],
     }
 
@@ -65,6 +79,9 @@ def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
     assert turn.contract_version == "1"
     assert "[user]\n以后项目周报默认用表格" in turn.content
     assert turn.observed_at.isoformat() == "2026-07-30T10:00:00+08:00"
+    assert turn.messages[2].source_type == "document"
+    assert turn.messages[2].source_uri == ("https://research.example/annual-2025")
+    assert turn.messages[2].citation_locator == "p.42"
 
     with pytest.raises(ValidationError):
         CompletedTurnEventV1.model_validate({**payload, "owner_id": "other-user"})
@@ -91,6 +108,7 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
         "confirm_pending_memory",
         "reject_pending_memory",
         "recall_memory",
+        "revoke_memory",
     }
     capture = next(tool for tool in tools if tool.name == "capture_completed_turn")
     serialized_schema = json.dumps(capture.inputSchema)

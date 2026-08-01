@@ -17,7 +17,13 @@ _FORBIDDEN_CORE_DEPENDENCIES = {
     "memory_mcp",
 }
 _FORBIDDEN_CORE_TYPE_CONSTANTS = {
+    "evidence_claim",
     "hypothesis",
+    "ongoing_research",
+    "research_decision",
+    "research_preference",
+    "research_question",
+    "thesis",
     "validation_condition",
     "risk",
     "catalyst",
