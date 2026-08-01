@@ -51,10 +51,10 @@
 - [x] 5.1 建立独立轻量 `memory-mcp-agent` 发行包、`MemoryHookSettings`、单一远程 `MemoryMcpClient`、框架无关 HookContext 和可供无原生 Hook Host 调用的 Hook Bridge；Server 生产包不提供 Hook 命令
 - [x] 5.2 实现 BeforeRun Hook：每个用户任务只召回一次，空结果不注入，失败安全继续
 - [x] 5.3 实现 AfterRun Hook：只提交成功完成轮次，生成稳定 event id，并用同一 id 有限重试
-- [x] 5.4 接入一个真实 OpenAI-compatible 结构化模型 backend，在默认服务组合根按配置创建 `CandidateExtractor`，同时保留固定离线 backend、确定性夹具和安全启动失败
+- [x] 5.4 接入一个真实 OpenAI-compatible 结构化模型 backend，在默认服务组合根按配置创建 `CandidateExtractor`，并以测试支持层 Fake 提供确定性夹具和安全启动失败验证
 - [x] 5.5 增加 `uv + systemd` Linux 部署单元、独立 migration 命令、私网直连/可选云负载均衡 HTTPS 和 ECS 发布/回滚说明，不引入 Docker 或 Nginx
 - [x] 5.6 接入两个平台无关的独立 Runner/客户端配置，真实 Agent Host 只作为兼容性 smoke path；生成阶段五整体设计、测试说明和端到端使用文档
-- [x] 5.7 使用真实 MCP HTTP、固定 backend 和 PostgreSQL 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的自动化端到端验收，并提供真实模型手工 smoke 步骤
+- [x] 5.7 使用真实 MCP HTTP、测试支持层 Fake 和 PostgreSQL 完成“用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B / Agent B 不可见”的自动化端到端验收，并提供真实模型手工 smoke 步骤
 - [x] 5.8 强化 Hook 异步边界：BeforeRun 前台 await、AfterRun 默认 await receipt、不引入外部队列；实现有界 run cache、payload fingerprint 冲突、可复用 HTTP Client 生命周期、完整 capture summary/failure 返回和对应并发/关闭测试
 - [x] 5.9 将 `chat_models.py`、`model_extraction.py` 和模型专用 settings 收敛到 `extraction/` 包，删除未使用日志 settings/getter；让组合根/adapter 包入口保持轻量，移出 PostgreSQL adapter 对 Server Settings 的反向 CLI 依赖，并整理测试 support/import
 - [x] 5.10 在不改变公开契约和事务边界的前提下拆分 CaptureService 的候选处理/Review 协调，以及 PostgreSQL Repository 的 row mapping/write validation；保留公开 facade，补依赖守卫并完成全量与真实 PostgreSQL 回归
@@ -68,9 +68,9 @@
 - [ ] 6.5 准备 5～7 分钟现场脚本与录屏，固化 token、真实模型配置检查、云服务检查和测试注入的确定性证据
 - [ ] 6.6 运行格式、静态检查、全量测试、PostgreSQL/MCP 端到端测试和 OpenSpec strict validation，记录最终验收结果
 - [x] 6.7 规范化数据库、服务、静态认证、抽取、日志和 Hook 配置；去除运行时 demo/test 命名；实现默认关闭的核心内容日志及手工启用说明
-- [x] 6.8 按独立部署单元重构配置：服务端生产模板不含多 Agent 身份配置或 fixed 夹具，抽取配置收敛到单一服务端命名空间，Agent Host 只要求 `MEMORY_MCP_URL/TOKEN`（旧名称兼容），增加静态 Token 最低长度校验并迁移示例、文档与测试
+- [x] 6.8 按独立部署单元重构配置：服务端生产模板不含多 Agent 身份配置或候选夹具，抽取配置收敛到单一服务端命名空间，Agent Host 只接受 `MEMORY_MCP_URL/TOKEN`，增加静态 Token 最低长度校验并迁移示例、文档与测试
 - [x] 6.9 将面向部署者的候选抽取变量改为 `MEMORY_MCP_MODEL_*`，将静态映射入口缩短为 `MEMORY_MCP_AUTH_TOKENS`，并把生产模板与本地验收配置中的身份值统一为中性的 tenant/subject/owner/Agent ID
-- [x] 6.10 删除运行时 fixed backend 与候选 JSON 配置，改为测试依赖注入；由 tenant/subject 派生 owner、由静态 Token 摘要派生审计 client 并删除冗余 agent_id；同步配置、测试、文档和核心源码中文注释
+- [x] 6.10 删除生产源码中的确定性候选 backend 与候选 JSON 配置，改为 `tests/support` Fake 依赖注入；由 tenant/subject 派生 owner、由静态 Token 摘要派生审计 client 并删除冗余 agent_id；同步配置、测试、文档和核心源码中文注释
 - [x] 6.11 将两个发行包整理为对称的 `server/agent` virtual workspace，移除包内重复 Server 层，将 scenario 契约和 PostgreSQL schema 迁移为 `profile_id/profile_version`，同步全部文档并完成回归
 
 ## 明确延期，不进入本期任务

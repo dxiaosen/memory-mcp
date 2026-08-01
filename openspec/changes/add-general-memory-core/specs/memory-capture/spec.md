@@ -62,8 +62,8 @@ MemoryProfile and MUST NOT require the user to say “remember this”.
 ### Requirement: Provide configured structured extraction
 The runnable MCP Server SHALL construct a CandidateExtractor from protected runtime
 configuration using one real OpenAI-compatible structured model backend. Automated
-tests MAY inject a deterministic fixed adapter implementing the same CandidateExtractor
-contract, but runtime configuration MUST NOT expose a fixed-backend selector or
+tests MAY inject a deterministic test double implementing the same CandidateExtractor
+contract, but runtime configuration MUST NOT expose a test-backend selector or
 candidate payload. Adapter selection MUST NOT change trusted identity, provenance,
 admission, lifecycle, or persistence rules.
 
@@ -73,7 +73,7 @@ admission, lifecycle, or persistence rules.
 - **AND** validated candidates continue through the common admission pipeline
 
 #### Scenario: A test injects deterministic extraction
-- **WHEN** an automated test injects the fixed adapter through the application composition boundary
+- **WHEN** an automated test injects a test-owned extractor through the application composition boundary
 - **THEN** the server produces deterministic test-owned candidates without external network access
 - **AND** the MCP and Hook contracts remain identical to the real-backend path
 

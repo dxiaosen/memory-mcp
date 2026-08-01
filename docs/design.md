@@ -1526,11 +1526,11 @@ Public Agent
 | 层 | Repository | Extractor | 网络 |
 | --- | --- | --- | --- |
 | Core 单元 | InMemory | Fake | 无 |
-| Extraction 单元 | 无 | fixed/Structured fake | 无 |
+| Extraction 单元 | 无 | Structured fake | 无 |
 | MCP transport | InMemory | Fake | 本机真实 HTTP |
 | Hook 单元 | Fake Client | 无 | 无 |
 | PostgreSQL contract | PostgreSQL test DB | Fake | DB |
-| PostgreSQL MCP E2E | PostgreSQL test DB | 注入 fixed adapter | 真实 MCP HTTP |
+| PostgreSQL MCP E2E | PostgreSQL test DB | 注入测试 Fake | 真实 MCP HTTP |
 | Real-model smoke | PostgreSQL test DB | 真实 provider | MCP + Model API |
 | Agent wheel isolation | 无 | 无 | 隔离 venv、发行元数据与 console script |
 
@@ -1541,7 +1541,7 @@ Public Agent
 - `FakeRelationExtractor`：按请求中的可信端点生成确定关系建议；
 - `_StructuredModel`：验证 LangChain schema 边界；
 - `_agent`：只提供业务 Agent 接线示例；
-- fixed adapter：测试中的确定性候选源；不属于生产配置，也不是整个系统 mock。
+- `FakeCandidateExtractor` 由 `tests/support` 提供确定性候选；不进入生产源码或发行包。
 
 ### 19.3 必须真实验证
 
@@ -1562,6 +1562,23 @@ Public Agent
 外部测试只接受数据库名包含 `test` 的专用库，并在每个 fixture 前后 truncate。
 普通本地 pytest 不自动读取 `.env` 清库；必须显式提供
 `MEMORY_MCP_TEST_DATABASE_URL`。
+
+### 19.5 投研质量评估
+
+顶层 `evals/` 是不进入发行包的开发边界。当前 investment v2 基准使用 47 个中文案例
+覆盖八类投研记忆、六类关系、语义/报告期/实体召回和金融敏感边界。默认运行完全
+离线且只评估 recall/safety；candidate/relation 显示为未评测，不允许用金标回放产生
+模型分数。显式 `--live-model` 才运行 candidate/relation，recall/safety 继续运行生产
+确定性实现，报告必须标明两者区别。
+
+召回的业务语义通过 `MemoryProfile.recall_hints` 声明，Core 只提供有界类型信号，
+不认识投研类型名。自动关系除 Profile 端点校验外，还拒绝明确否定关系的来源表达；
+关系 prompt 禁止为适配合法策略而交换端点。两项规则都不得依赖评测 case ID。
+
+安全结果只包含数据集 hash、模型/prompt/schema 标识、耗时、聚合/分类指标和失败
+case ID。结果不包含案例正文、owner、Token、DSN 或 API Key，也不连接 PostgreSQL。
+一次真实结果只能作为版本快照，不能解释为事实核验、投资建议、统计显著性或 SLA。
+详细基准和当前结果见[投研记忆评测](evaluation.md)。
 
 完整命令、当前结果和故障矩阵见[测试文档](testing.md)。
 
@@ -1662,7 +1679,7 @@ Agent/Server
 
 - `tools` 的拆分粒度合适；
 - `extraction` 命名和职责已统一；
-- 生产模型配置不再携带测试 backend/fixture，fixed adapter 只由测试注入；
+- 生产模型配置不携带测试 backend/fixture，测试替身只存在于测试目录；
 - 静态身份只配置 tenant/subject/scopes，owner 与审计 client 均由服务端派生；
 - `runtime_logging` 已收敛为直观的 `logging.py`；
 - Hook 已拆为独立 `memory-mcp-agent`，远程 Agent 不安装 Server；

@@ -1,109 +1,94 @@
+"""评测数据、隔离边界和安全输出的最小回归集。"""
+
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from evals.metrics import evaluate_dataset
-from evals.runner import _live_predictions, run_evaluation
-from evals.schema import CandidateCase, RelationCase, load_dataset
+from evals.runner import _live_predictions, _run_payload, _validate_output_path, main
+from evals.schema import (
+    INVESTMENT_MEMORY_TYPES,
+    INVESTMENT_RELATION_TYPES,
+    CandidateCase,
+    RelationCase,
+    load_dataset,
+)
 
 _DATASET = Path("evals/cases.json")
 
 
-def test_offline_evaluation_meets_thresholds_without_live_predictor() -> None:
+def test_offline_benchmark_is_honest_deterministic_and_safe() -> None:
     dataset = load_dataset(_DATASET)
 
-    def forbidden_live_predictor(_dataset):
-        raise AssertionError("offline evaluation must not create a model client")
+    payload = _run_payload(dataset, dataset_path=_DATASET, live_model=False)
+    rendered = json.dumps(payload, ensure_ascii=False)
 
-    report = run_evaluation(
-        dataset,
-        live_model=False,
-        live_predictor=forbidden_live_predictor,
-    )
-
-    assert report.thresholds_met is True
-    assert report.failed_case_ids == ()
-    assert report.case_counts == {
-        "candidate": 6,
-        "relation": 4,
-        "recall": 3,
-        "safety": 4,
+    assert payload["candidate"] is None
+    assert payload["relation"] is None
+    assert payload["recall_at_k"] == 1.0
+    assert payload["safety_pass_rate"] == 1.0
+    assert payload["thresholds_met"] is True
+    assert payload["failed_case_ids"] == ()
+    assert payload["categories"]["durable-research-context"] == {
+        "case_count": 9,
+        "evaluated_count": 0,
+        "failed_count": 0,
+        "pass_rate": None,
     }
+    assert payload["categories"]["semantic-recall"]["pass_rate"] == 1.0
+    assert payload["run"]["model_tasks"] == []
+    assert payload["run"]["deterministic_tasks"] == ["recall", "safety"]
+    assert "以后写公司深度报告时" not in rendered
+    assert "research-pass-2026" not in rendered
 
 
-def test_false_positive_reduces_candidate_precision() -> None:
-    dataset = load_dataset(_DATASET)
-    negative = next(
-        case
-        for case in dataset.cases
-        if isinstance(case, CandidateCase) and not case.expected
-    )
-
-    report = evaluate_dataset(
-        dataset,
-        model_predictions={negative.id: frozenset({"preference"})},
-    )
-
-    assert report.candidate.false_positive == 1
-    assert report.candidate.precision < 1.0
-    assert report.thresholds_met is False
-    assert negative.id in report.failed_case_ids
-
-
-def test_live_mode_uses_explicit_predictor_and_label_sets() -> None:
-    dataset = load_dataset(_DATASET)
-    called = False
-
-    def predictor(current_dataset):
-        nonlocal called
-        called = True
-        return {
-            case.id: case.baseline
-            for case in current_dataset.cases
-            if isinstance(case, CandidateCase | RelationCase)
-        }
-
-    report = run_evaluation(
-        dataset,
-        live_model=True,
-        live_predictor=predictor,
-    )
-
-    assert called is True
-    assert report.thresholds_met is True
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    (
-        {"task": "unknown"},
-        {"owner_id": "forged-owner"},
-        {"token": "forged-token"},
-    ),
-)
-def test_invalid_case_contract_fails_before_evaluation(
+def test_dataset_contract_covers_investment_dimensions_and_rejects_identity(
     tmp_path: Path,
-    mutation: dict[str, str],
 ) -> None:
-    payload = json.loads(_DATASET.read_text(encoding="utf-8"))
-    payload["cases"][0].update(mutation)
-    target = tmp_path / "invalid.json"
-    target.write_text(json.dumps(payload), encoding="utf-8")
+    dataset = load_dataset(_DATASET)
+    candidate_types = {
+        label
+        for case in dataset.cases
+        if isinstance(case, CandidateCase)
+        for label in case.expected
+    }
+    relation_types = {
+        label.split("|", maxsplit=1)[0]
+        for case in dataset.cases
+        if isinstance(case, RelationCase)
+        for label in case.expected
+    }
+    assert candidate_types == INVESTMENT_MEMORY_TYPES
+    assert relation_types == INVESTMENT_RELATION_TYPES
 
+    raw = json.loads(_DATASET.read_text(encoding="utf-8"))
+    raw["cases"][0]["owner_id"] = "forged-owner"
+    target = tmp_path / "invalid.json"
+    target.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValidationError):
         load_dataset(target)
 
 
-def test_duplicate_case_id_is_rejected(tmp_path: Path) -> None:
-    payload = json.loads(_DATASET.read_text(encoding="utf-8"))
-    payload["cases"][1]["id"] = payload["cases"][0]["id"]
-    target = tmp_path / "duplicate.json"
-    target.write_text(json.dumps(payload), encoding="utf-8")
+def test_output_contract_rejects_missing_parent_and_writes_safe_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="parent directory"):
+        _validate_output_path(tmp_path / "missing" / "report.json")
 
-    with pytest.raises(ValidationError, match="case ids"):
-        load_dataset(target)
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["evals.runner", "--dataset", str(_DATASET), "--output", str(output)],
+    )
+    assert main() == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["run"]["mode"] == "offline"
+    assert payload["candidate"] is None
+    assert payload["relation"] is None
 
 
 def test_live_model_requires_existing_model_configuration(

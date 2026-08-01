@@ -40,6 +40,13 @@ class TestMemoryProfile:
             "stable_context": 10,
         }
     )
+    recall_hints: dict[str, frozenset[str]] = field(
+        default_factory=lambda: {
+            "preference": frozenset({"偏好", "默认"}),
+            "ongoing_item": frozenset({"下一步", "继续"}),
+            "stable_context": frozenset({"背景", "现状"}),
+        }
+    )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {
             memory_type: MemoryMetadataPolicy()
@@ -60,6 +67,12 @@ class AlternateMemoryProfile:
     relation_policies: dict[str, MemoryRelationPolicy] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(
         default_factory=lambda: {"note": 20, "commitment": 30}
+    )
+    recall_hints: dict[str, frozenset[str]] = field(
+        default_factory=lambda: {
+            "note": frozenset({"笔记"}),
+            "commitment": frozenset({"承诺", "约定"}),
+        }
     )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {

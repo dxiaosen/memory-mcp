@@ -1,5 +1,6 @@
 """Profile 驱动的自动关系端点选择与保守准入。"""
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +34,15 @@ from memory_mcp.core.ports import (
 )
 
 AUTO_RELATION_CONFIDENCE_THRESHOLD = 0.90
+_NEGATED_RELATION_EVIDENCE = re.compile(
+    r"(?:不|并不|不能|无法|未能|没有|并未|不再)\s*"
+    r"(?:明确|直接|真正|足以|构成)?\s*"
+    r"(?:支持|挑战|威胁|催化|推动|回答|解决)"
+    r"|\b(?:does not|do not|did not|cannot|can not|can't|never|fails? to)\s+"
+    r"(?:(?:clearly|directly|necessarily)\s+)?"
+    r"(?:support|challenge|threaten|catalyze|address|resolve)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +238,7 @@ class AutomaticRelationPlanner:
                 raise InvalidModelOutputError(
                     "relation does not match the trusted profile policy"
                 ) from exc
+            policy = profile.relation_policies[proposal.relation_type]
             key = (
                 proposal.source_memory_id,
                 proposal.target_memory_id,
@@ -236,6 +247,18 @@ class AutomaticRelationPlanner:
             if (
                 proposal.expression_basis is not ExpressionBasis.EXPLICIT
                 or proposal.confidence < AUTO_RELATION_CONFIDENCE_THRESHOLD
+                or _has_insufficient_endpoint_evidence(
+                    proposal.source_expression,
+                    source,
+                    target,
+                )
+                or _has_negated_relation_evidence(proposal.source_expression)
+                or _has_clearly_reversed_direction(
+                    proposal.source_expression,
+                    source,
+                    target,
+                    policy.direction_cues,
+                )
                 or key in accepted_keys
                 or (
                     trusted_user_sources is not None
@@ -330,3 +353,84 @@ def _bigrams(value: str) -> frozenset[str]:
     if len(compact) < 2:
         return frozenset({compact}) if compact else frozenset()
     return frozenset(compact[index : index + 2] for index in range(len(compact) - 1))
+
+
+def _has_negated_relation_evidence(source_expression: str) -> bool:
+    """明确否定关系动词时拒绝自动建边，避免模型反向解释原文。"""
+
+    return _NEGATED_RELATION_EVIDENCE.search(source_expression) is not None
+
+
+def _has_insufficient_endpoint_evidence(
+    source_expression: str,
+    source: MemoryRecord,
+    target: MemoryRecord,
+) -> bool:
+    expression = _compact_text(source_expression)
+    return (
+        min(
+            _endpoint_match_length(source, expression),
+            _endpoint_match_length(target, expression),
+        )
+        < 2
+    )
+
+
+def _has_clearly_reversed_direction(
+    source_expression: str,
+    source: MemoryRecord,
+    target: MemoryRecord,
+    direction_cues: frozenset[str],
+) -> bool:
+    """仅在 cue 两侧的端点文本给出明显反向证据时拒绝。"""
+
+    expression = _compact_text(source_expression)
+    for raw_cue in direction_cues:
+        cue = _compact_text(raw_cue)
+        if not cue:
+            continue
+        offset = 0
+        while (cue_at := expression.find(cue, offset)) >= 0:
+            left = expression[:cue_at]
+            right = expression[cue_at + len(cue) :]
+            source_left = _endpoint_match_length(source, left)
+            source_right = _endpoint_match_length(source, right)
+            target_left = _endpoint_match_length(target, left)
+            target_right = _endpoint_match_length(target, right)
+            forward_score = source_left + target_right
+            reverse_score = target_left + source_right
+            if (
+                min(target_left, source_right) >= 2
+                and reverse_score >= forward_score + 3
+            ):
+                return True
+            offset = cue_at + len(cue)
+    return False
+
+
+def _endpoint_match_length(record: MemoryRecord, text: str) -> int:
+    return max(
+        _longest_common_span(_compact_text(record.item.subject), text),
+        _longest_common_span(_compact_text(record.current_revision.content), text),
+    )
+
+
+def _compact_text(value: str) -> str:
+    return "".join(
+        character for character in normalize_memory_text(value) if character.isalnum()
+    )
+
+
+def _longest_common_span(left: str, right: str) -> int:
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    longest = 0
+    for left_character in left:
+        current = [0]
+        for index, right_character in enumerate(right, start=1):
+            length = previous[index - 1] + 1 if left_character == right_character else 0
+            current.append(length)
+            longest = max(longest, length)
+        previous = current
+    return longest

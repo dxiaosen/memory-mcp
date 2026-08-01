@@ -3,7 +3,6 @@
 from memory_mcp.extraction.backends import (
     CandidateBatch,
     CandidateOutput,
-    FixedCandidateBackend,
     LangChainCandidateBackend,
     LangChainRelationBackend,
     RelationBatch,
@@ -26,7 +25,6 @@ __all__ = [
     "ConfiguredExtractors",
     "ExtractionProvider",
     "ExtractionSettings",
-    "FixedCandidateBackend",
     "LangChainCandidateBackend",
     "LangChainRelationBackend",
     "RelationBatch",

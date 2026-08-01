@@ -17,6 +17,7 @@ PostgreSQL 持久化由服务端统一负责。
 - 真实 OpenAI-compatible/DeepSeek 结构化候选与关系抽取，以及测试注入的确定性替身；
 - `general-work` 与 `investment-research` 两套正式 MemoryProfile；
 - owner-scoped 一跳记忆关系、投研关系策略、AfterRun 自动建边和关系感知召回；
+- 47 个中文投研案例的离线/真实模型质量基准和可复现结果快照；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
@@ -103,8 +104,8 @@ Health: http://127.0.0.1:8765/health
   --input '项目周报 表格'
 ```
 
-生产进程始终使用真实模型抽取，不提供 fixed 运行时开关。无需模型网络的确定性
-验证由 PostgreSQL MCP 端到端测试在代码中注入固定候选；MCP、鉴权、Core、
+生产进程始终使用真实模型抽取。无需模型网络的确定性验证由 PostgreSQL MCP
+端到端测试注入测试提取器；MCP、鉴权、Core、
 PostgreSQL 和 Hook 仍走真实链路。真实模型、确定性测试和多身份隔离步骤见使用
 文档。
 
@@ -141,6 +142,7 @@ BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置
 - [Agent 主动记忆](docs/agents.md)
 - [端到端使用](docs/usage.md)
 - [测试与验收](docs/testing.md)
+- [投研记忆评测](docs/evaluation.md)
 - [日志规范](docs/logging.md)
 - [部署指南](docs/deploy.md)
 
@@ -153,6 +155,7 @@ OpenSpec 只承担规范和变更管理：
 - [通用记忆关系](openspec/changes/add-memory-relations/)
 - [自动记忆关系](openspec/changes/automate-memory-relations/)
 - [关系证据链与质量评估](openspec/changes/harden-memory-relations/)
+- [投研记忆评测基准](openspec/changes/benchmark-investment-memory-quality/)
 
 ## 验证
 
@@ -167,6 +170,7 @@ openspec-cn validate add-investment-research-profile --strict
 openspec-cn validate add-memory-relations --strict
 openspec-cn validate automate-memory-relations --strict
 openspec-cn validate harden-memory-relations --strict
+openspec-cn validate benchmark-investment-memory-quality --strict
 .venv/bin/python -m evals.runner
 ```
 

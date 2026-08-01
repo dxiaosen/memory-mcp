@@ -88,14 +88,14 @@ checksum，不为了预发布修正额外叠加 migration。`0006` 及更早已�
 
 ### 6. 评估数据与 runner 留在开发边界
 
-顶层 `evals/` 保存无 Secret 的 JSON 案例和 runner，不进入轻量 Agent 包。离线模式使用确定性 case 输出评估：
+顶层 `evals/` 保存无 Secret 的 JSON 案例和 runner，不进入轻量 Agent 包。案例覆盖：
 
 - 候选是否应保存及期望 memory type；
 - 关系是否应建立及期望方向；
 - 查询应命中的 memory 标签；
 - 越权、低置信、Assistant-only 等安全负例。
 
-runner 输出 micro precision/recall、Recall@K 和安全负例通过率，阈值不满足返回非零退出码。普通 `pytest` 校验数据 schema、计分和当前 deterministic baseline；显式 `--live-model` 才读取现有 `MEMORY_MCP_MODEL_*` 并产生外部调用。评估结果只写标准输出汇总，不回写样本文本或生产数据库。
+默认 runner 只运行生产确定性的 Recall@K 和安全负例通过率，candidate/relation 标记为未评测；显式 `--live-model` 才读取现有 `MEMORY_MCP_MODEL_*`、运行候选/关系并输出 precision/recall。普通 `pytest` 校验数据 schema、离线隔离、安全输出和确定性产品行为，不用金标 baseline 模拟模型质量。阈值不满足返回非零退出码；评估结果只写安全汇总，不回写样本文本或生产数据库。当前细化合同与结果见后续 `benchmark-investment-memory-quality` 变更和 `docs/evaluation.md`。
 
 ## Risks / Trade-offs
 

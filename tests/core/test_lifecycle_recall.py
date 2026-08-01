@@ -117,6 +117,7 @@ def test_general_work_policy_declares_formal_minimum() -> None:
     }
     assert profile.relation_policies == {}
     assert set(profile.recall_priorities) == profile.memory_types
+    assert set(profile.recall_hints) == profile.memory_types
 
 
 def test_investment_research_profile_declares_complete_built_in_contract() -> None:
@@ -152,7 +153,11 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
     supports = profile.relation_policies["supports"]
     assert supports.source_memory_types == {"evidence_claim"}
     assert supports.target_memory_types == {"thesis"}
+    assert "支持" in supports.direction_cues
     assert set(profile.recall_priorities) == profile.memory_types
+    assert set(profile.recall_hints) == profile.memory_types
+    assert "下一步" in profile.recall_hints["ongoing_research"]
+    assert "最终" in profile.recall_hints["research_decision"]
     assert set(profile.metadata_policies) == profile.memory_types
     assert profile.metadata_policies["research_preference"].validity_days is None
     assert profile.metadata_policies["research_decision"].validity_days is None
@@ -167,6 +172,56 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
         "general-work",
         "investment-research",
     ]
+
+
+def test_investment_recall_hints_prioritize_research_workflow_intent() -> None:
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [InvestmentResearchProfile()],
+    )
+    principal = PrincipalContext("owner-a")
+    records = (
+        ("ongoing_research", "渠道库存访谈", "继续访谈渠道商并确认库存", "turn-1"),
+        ("evidence_claim", "渠道库存数据", "一季度库存同比增长20%", "turn-2"),
+        ("research_decision", "本轮研究范围", "只分析国内企业客户", "turn-3"),
+        ("research_question", "研究范围问题", "是否纳入海外消费业务", "turn-4"),
+    )
+    created = {}
+    for memory_type, subject, content, source_turn_id in records:
+        created[memory_type] = service.create_memory(
+            principal,
+            replace(
+                project_preference_command(),
+                profile_id="investment-research",
+                subject=subject,
+                memory_type=memory_type,
+                content=content,
+                source_expression=content,
+                source_turn_id=source_turn_id,
+            ),
+        )
+
+    next_step = service.recall_memory(
+        principal,
+        RecallQuery(
+            profile_id="investment-research",
+            query="库存问题下一步还要做什么调研？",
+            max_items=1,
+        ),
+    )
+    settled_scope = service.recall_memory(
+        principal,
+        RecallQuery(
+            profile_id="investment-research",
+            query="这轮研究范围最终是怎么定的？",
+            max_items=1,
+        ),
+    )
+
+    assert next_step.items[0].memory_id == created["ongoing_research"].item.memory_id
+    assert (
+        settled_scope.items[0].memory_id == created["research_decision"].item.memory_id
+    )
 
 
 def test_investment_research_capture_separates_thesis_evidence_and_conflict() -> None:

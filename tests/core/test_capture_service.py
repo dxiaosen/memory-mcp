@@ -948,6 +948,39 @@ def test_relation_admission_is_explicit_high_confidence_and_deduplicated() -> No
     assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
 
 
+def test_untrusted_relation_evidence_is_not_auto_saved() -> None:
+    cases = (
+        ("周报偏好不能支持持续事项", "周报偏好不能支持持续事项"),
+        ("周报偏好明确支持持续事项", "支持"),
+        ("持续事项明确支持周报偏好", "持续事项明确支持周报偏好"),
+    )
+
+    for text, source_expression in cases:
+        service = create_memory_service(
+            InMemoryMemoryRepository(),
+            [_relation_profile()],
+            candidate_extractor=_two_relation_candidates(),
+            relation_extractor=FakeRelationExtractor(
+                lambda request, expression=source_expression: (
+                    _relation_proposal(request, expression),
+                )
+            ),
+        )
+        principal = PrincipalContext("analyst-a")
+
+        result = service.capture_turn(principal, _turn(text))
+
+        source = next(
+            record
+            for record in service.list_memories(principal)
+            if record.item.memory_type == "preference"
+        )
+        assert result.status is CaptureStatus.COMPLETED, text
+        assert service.list_memory_relations(principal, source.item.memory_id) == (), (
+            text
+        )
+
+
 def test_assistant_only_relation_expression_is_not_auto_saved() -> None:
     relation_text = "周报偏好明确支持持续事项"
     service = create_memory_service(
@@ -1195,6 +1228,7 @@ def _relation_profile():
                 source_memory_types=frozenset({"preference"}),
                 target_memory_types=frozenset({"ongoing_item"}),
                 description="A preference supports an ongoing item.",
+                direction_cues=frozenset({"支持"}),
             )
         },
     )

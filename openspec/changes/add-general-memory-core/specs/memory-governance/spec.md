@@ -118,14 +118,14 @@ Timeout, policy, and retry settings MUST have built-in defaults.
 Multi-identity acceptance settings, deterministic candidate fixtures, destructive-test
 database URLs, and other verification-only values MUST NOT appear in the production
 service template. Real-model configuration MUST use the service-owned
-`MEMORY_MCP_MODEL_*` namespace. Fixed extraction MUST be available only through test
-dependency injection, not a runtime setting. The static token-to-principal JSON mapping MUST use the neutral
+`MEMORY_MCP_MODEL_*` namespace. Deterministic extraction MUST be supplied only by
+test-owned dependency injection, not a runtime setting. The static token-to-principal JSON mapping MUST use the neutral
 `MEMORY_MCP_AUTH_TOKENS` setting.
 
 #### Scenario: Operator prepares a service deployment
 - **WHEN** the operator copies the production service environment template
 - **THEN** it contains no Agent A/B identity variables or verification candidate payloads
-- **AND** it contains no runtime fixed-backend selector
+- **AND** it contains no runtime test-backend selector
 - **AND** example principal values contain only neutral tenant, subject, and scopes
 
 #### Scenario: Agent Host prepares its integration

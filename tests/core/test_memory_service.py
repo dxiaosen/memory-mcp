@@ -209,6 +209,9 @@ def test_malformed_profile_policy_is_rejected_before_use() -> None:
     with pytest.raises(InvalidMemoryProfileError, match="recall_priorities"):
         service.register_profile(TestMemoryProfile(recall_priorities={}))
 
+    with pytest.raises(InvalidMemoryProfileError, match="recall_hints"):
+        service.register_profile(TestMemoryProfile(recall_hints={}))
+
     invalid_relation = MemoryRelationPolicy(
         source_memory_types=frozenset({"unknown"}),
         target_memory_types=frozenset({"preference"}),

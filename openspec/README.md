@@ -17,6 +17,8 @@ add-general-memory-core
 │       └── add-memory-relations
 │           └── automate-memory-relations
 │               └── harden-memory-relations
+│                   └── benchmark-investment-memory-quality
+└── streamline-project-maintenance
 ```
 
 `add-general-memory-core` 继续保留公网 HTTPS/安全组、现场脚本和录屏等交付任务；这些

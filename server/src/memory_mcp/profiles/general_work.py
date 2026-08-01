@@ -28,6 +28,16 @@ class GeneralWorkProfile:
             "stable_context": 20,
         }
     )
+    recall_hints: dict[str, frozenset[str]] = field(
+        default_factory=lambda: {
+            "preference": frozenset({"偏好", "习惯", "默认", "格式", "prefer"}),
+            "stable_context": frozenset({"背景", "现状", "环境", "context"}),
+            "ongoing_item": frozenset(
+                {"下一步", "继续", "跟进", "待办", "计划", "follow up"}
+            ),
+            "decision": frozenset({"决定", "决策", "最终", "确定", "decided"}),
+        }
+    )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {
             memory_type: MemoryMetadataPolicy()

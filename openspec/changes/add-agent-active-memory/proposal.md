@@ -18,8 +18,8 @@ BeforeRun/AfterRun。需要补齐通用生命周期适配，并先提供 Codex�
   `capture_completed_turn`，并保持服务端幂等。
 - 增加权限受限、原子写入、自动清理的本地轮次状态，用于关联两个独立 Hook
   进程；状态不进入模型上下文或运行日志。
-- 将 Agent Host 的必需配置收敛为 `MEMORY_MCP_URL` 和
-  `MEMORY_MCP_TOKEN`，保留现有 `MEMORY_HOOK_*` 名称作为兼容别名；`profile_id`、
+- 将 Agent Host 的必需连接配置收敛为且只接受 `MEMORY_MCP_URL` 和
+  `MEMORY_MCP_TOKEN`；`profile_id`、
   超时、预算和重试均使用代码默认值。
 - 将 Hook Client 从服务端发行包拆为独立的 `memory-mcp-agent` 轻量发行包；
   Agent Host 不安装 PostgreSQL、LangChain、模型 Provider 或服务端入口依赖。
@@ -47,8 +47,8 @@ BeforeRun/AfterRun。需要补齐通用生命周期适配，并先提供 Codex�
 - 受影响代码：独立 `memory_mcp_agent` 包、MCP 工具默认参数、Python CLI 入口。
 - 受影响打包：仓库改为包含 `server` 与 `agent` 两个对称 member 的 virtual uv workspace；
   `memory-mcp-hook` 只由轻量 Agent 包提供。
-- 受影响配置：Agent Host 推荐变量由 `MEMORY_HOOK_*` 收敛为两个
-  `MEMORY_MCP_*` 变量；旧变量继续兼容。
+- 受影响配置：Agent Host 连接变量统一为两个 `MEMORY_MCP_*` 变量，旧连接变量
+  不再接受。
 - 新增本地运行状态：Agent 工作目录下 `.memory-mcp/hooks/`，仅用于短期轮次关联。
 - 新增宿主配置与文档：Codex `hooks.json`/`config.toml` 和 Claude Code
   `settings.json`/`settings.local.json`。

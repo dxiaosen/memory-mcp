@@ -53,31 +53,37 @@ class InvestmentResearchProfile:
                 frozenset({"evidence_claim"}),
                 frozenset({"thesis"}),
                 "Externally sourced evidence supports a thesis.",
+                frozenset({"支持", "support", "supports"}),
             ),
             "challenges": MemoryRelationPolicy(
                 frozenset({"evidence_claim"}),
                 frozenset({"thesis"}),
                 "Externally sourced evidence challenges a thesis.",
+                frozenset({"挑战", "challenge", "challenges"}),
             ),
             "threatens": MemoryRelationPolicy(
                 frozenset({"risk"}),
                 frozenset({"thesis"}),
                 "A risk may invalidate or weaken a thesis.",
+                frozenset({"威胁", "threaten", "threatens"}),
             ),
             "could_catalyze": MemoryRelationPolicy(
                 frozenset({"catalyst"}),
                 frozenset({"thesis"}),
                 "A future event may change how a thesis develops.",
+                frozenset({"催化", "catalyze", "catalyzes"}),
             ),
             "addresses": MemoryRelationPolicy(
                 frozenset({"ongoing_research"}),
                 frozenset({"research_question"}),
                 "An ongoing research task addresses an open question.",
+                frozenset({"回答", "address", "addresses"}),
             ),
             "resolves": MemoryRelationPolicy(
                 frozenset({"research_decision"}),
                 frozenset({"research_question"}),
                 "A research conclusion resolves an open question.",
+                frozenset({"解决", "resolve", "resolves"}),
             ),
         }
     )
@@ -91,6 +97,24 @@ class InvestmentResearchProfile:
             "research_question": 34,
             "catalyst": 32,
             "evidence_claim": 30,
+        }
+    )
+    recall_hints: dict[str, frozenset[str]] = field(
+        default_factory=lambda: {
+            "research_preference": frozenset(
+                {"偏好", "习惯", "格式", "怎么写", "如何组织"}
+            ),
+            "research_question": frozenset(
+                {"问题", "待确认", "是否", "未解决", "需要核实"}
+            ),
+            "thesis": frozenset({"论点", "判断", "核心看法", "逻辑"}),
+            "evidence_claim": frozenset({"证据", "依据", "数据", "披露"}),
+            "risk": frozenset({"风险", "威胁", "破坏", "不利因素"}),
+            "catalyst": frozenset({"催化", "事件", "推动", "加速"}),
+            "ongoing_research": frozenset(
+                {"下一步", "后续", "继续", "调研", "访谈", "跟进", "还要做"}
+            ),
+            "research_decision": frozenset({"决定", "最终", "怎么定", "范围", "结论"}),
         }
     )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(

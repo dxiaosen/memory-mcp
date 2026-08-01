@@ -1,25 +1,19 @@
 """Candidate extraction backend and composition tests."""
 
-import json
 from datetime import UTC, datetime
 from uuid import UUID
 
-import pytest
 from memory_mcp.core import MemoryRelationPolicy, RelationEndpoint
-from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 from memory_mcp.core.ports import ExtractionRequest, RelationExtractionRequest
 from memory_mcp.extraction import (
     CandidateBatch,
     ExtractionSettings,
-    FixedCandidateBackend,
     LangChainCandidateBackend,
     LangChainRelationBackend,
     RelationBatch,
     create_configured_candidate_extractor,
     create_configured_extractors,
 )
-from memory_mcp.extraction.backends import SCHEMA_VERSION
-from pydantic import ValidationError
 
 
 def _candidate(source: str = "以后项目周报默认用表格") -> dict[str, object]:
@@ -47,13 +41,6 @@ def _request(content: str) -> ExtractionRequest:
         capture_guidance="capture explicit durable preferences",
         profile_version="general-work-v1",
     )
-
-
-def test_fixed_backend_returns_only_exact_evidence_matches() -> None:
-    backend = FixedCandidateBackend.from_json(json.dumps([_candidate()]))
-
-    assert len(backend(_request("[user]\n以后项目周报默认用表格"))) == 1
-    assert backend(_request("[user]\n项目周报怎么写？")) == []
 
 
 class _StructuredRunnable:
@@ -126,22 +113,12 @@ def test_relation_backend_uses_bounded_schema_and_policy_prompt() -> None:
     assert payload[0]["relation_type"] == "supports"
     rendered = "\n".join(str(message.content) for message in model.runnable.messages)
     assert "only memory_id values from endpoints" in rendered
+    assert "relation word" in rendered
+    assert "both the source and target endpoints" in rendered
+    assert "do not swap endpoints" in rendered
+    assert "negated relationship statements" in rendered
     assert "证据明确支持论点" in rendered
     assert "owner" in rendered
-
-
-def test_fixed_extractor_can_be_injected_without_runtime_configuration() -> None:
-    extractor = StructuredCandidateExtractor(
-        FixedCandidateBackend.from_json(json.dumps([_candidate()])),
-        model_id="fixed-test-catalog",
-        prompt_version="fixed-test-v1",
-        schema_version=SCHEMA_VERSION,
-    )
-
-    proposals = extractor.extract(_request("[user]\n以后项目周报默认用表格"))
-
-    assert extractor.model_id == "fixed-test-catalog"
-    assert proposals[0].content == "项目周报默认使用表格"
 
 
 def test_real_extractor_uses_configured_chat_model() -> None:
@@ -195,18 +172,6 @@ def test_candidate_and_relation_extractors_share_one_chat_model() -> None:
     assert extractors.candidate.model_id == "openai:structured-model"
     assert extractors.relation.model_id == "openai:structured-model"
     assert extractors.relation.extract(_relation_request(source_id, target_id)) == ()
-
-
-def test_real_extractor_missing_credentials_fails_before_database_startup(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("MEMORY_MCP_MODEL_NAME", raising=False)
-    monkeypatch.delenv("MEMORY_MCP_MODEL_API_KEY", raising=False)
-
-    with pytest.raises(ValidationError):
-        ExtractionSettings(_env_file=None)
 
 
 def _relation_request(

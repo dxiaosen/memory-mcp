@@ -29,9 +29,8 @@ and command Hook JSON rendering MUST remain separate boundaries.
 An Agent Host SHALL require only `MEMORY_MCP_URL` and `MEMORY_MCP_TOKEN` to use the
 default active-memory flow after its static Hook command is registered. Profile ID,
 recall budget, timeout, retry, state location, owner, client, and Agent identifiers
-MUST NOT be required user configuration. Existing
-`MEMORY_HOOK_MCP_URL` and `MEMORY_HOOK_BEARER_TOKEN` variables SHALL remain accepted as
-compatibility aliases, with the new names taking precedence.
+MUST NOT be required user configuration. Connection settings MUST use these canonical
+names and MUST NOT silently read deprecated Hook-specific URL or Token variables.
 
 #### Scenario: Agent supplies only address and token
 - **WHEN** the Hook process receives valid `MEMORY_MCP_URL` and `MEMORY_MCP_TOKEN`
@@ -43,10 +42,10 @@ compatibility aliases, with the new names taking precedence.
 - **THEN** the server derives the owner from the authenticated Token mapping
 - **AND** no Hook input, `profile_id`, session, turn, client, or Agent field can override that owner
 
-#### Scenario: Legacy Agent variables remain deployed
-- **WHEN** only the two existing `MEMORY_HOOK_*` connection variables are present
-- **THEN** the Hook continues to connect with the same values
-- **AND** no Secret value is written to stdout or operational logs
+#### Scenario: Only deprecated connection variables remain
+- **WHEN** the two canonical connection variables are absent
+- **THEN** Hook settings validation fails before making a network request
+- **AND** no deprecated Secret value is written to stdout or operational logs
 
 ### Requirement: Ship the Hook Client as a lightweight Agent distribution
 The system SHALL provide `memory-mcp-agent` as a separately installable distribution

@@ -1,6 +1,6 @@
 ## 1. 配置与公共合同
 
-- [x] 1.1 将 Agent Host 首选连接变量收敛为 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`，保留旧变量兼容并测试优先级
+- [x] 1.1 将 Agent Host 连接变量收敛为且只接受 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`，测试旧变量不能建立连接
 - [x] 1.2 为 `recall_memory` 和 `capture_completed_turn` 增加内部 `general-work` 默认值，并更新合同测试
 
 ## 2. 主动记忆适配器

@@ -14,7 +14,7 @@ PostgreSQL 持久化。
 - `general-work` 记忆配置、duplicate Evidence、明确 replacement 和 owner-first
   recall；
 - 框架无关 BeforeRun/AfterRun Hook、三份独立 Agent 配置、真实模型抽取与测试
-  注入的确定性 fixed adapter；
+  支持层注入的确定性 Fake；
 - systemd 部署模板、真实 PostgreSQL/MCP/Hook/模型本地闭环。
 
 尚未完成的内容只在 `tasks.md` 维护，主要是部署环境的公网 HTTPS/安全组验收、
@@ -59,7 +59,7 @@ PostgreSQL 持久化。
 - 保持来源、认识论标签、幂等、当前/历史和用户确认边界；
 - 使用 PostgreSQL 提供跨进程重启的权威状态和事务一致性；
 - 允许本地/私网直接访问服务地址，公网由云负载均衡终止 HTTPS；
-- 保持测试专用 fixed adapter，使自动化验证可重复且不依赖外部模型；
+- 保持测试支持层的确定性 Fake，使自动化验证可重复且不依赖外部模型；
 - 让生产服务模板默认走真实抽取并在缺少凭据时启动失败；
 - 通过依赖方向和小型 adapter 保持 Agent、模型 provider 与存储可替换。
 
@@ -284,8 +284,8 @@ Host 可以在发出 final response 后调度 AfterRun，但普通 `create_task`
 
 - 生产运行时：通过 LangChain 调用受支持的 OpenAI/DeepSeek provider，返回严格
   `CandidateBatch`；
-- 自动化测试：通过 `candidate_extractor` 依赖注入使用精确匹配
-  `source_expression` 的 `FixedCandidateBackend`，不读取运行时环境。
+- 自动化测试：通过 `candidate_extractor` 端口注入 `tests/support` 中的
+  `FakeCandidateExtractor`，不读取运行时环境。
 
 模型输入只包含脱敏后的完成轮次和当前 MemoryProfile，不包含 owner、Token、
 DSN 或 API Key。模型可以建议 subject、memory type、assertion kind、durability、
@@ -429,13 +429,12 @@ Memory MCP Server 与 Agent Host 是两个独立部署单元，不共享配置�
 - Logging：级别、文件轮转和独立内容日志开关；
 
 Agent Host 使用独立模板，普通使用者只提供该进程的 `MEMORY_MCP_URL` 和
-`MEMORY_MCP_TOKEN`。profile_id、预算、重试和 fail-open 使用代码默认值；旧
-`MEMORY_HOOK_*` 连接变量仅作为迁移别名。多个 Agent 由多个环境或
+`MEMORY_MCP_TOKEN`。profile_id、预算、重试和 fail-open 使用代码默认值。多个 Agent 由多个环境或
 EnvironmentFile 表达，不通过动态身份前缀把其他 Agent 的凭据装入同一进程。
 
 生产进程始终构造真实模型 adapter，必须提供完整抽取凭据，不提供 backend 选择
-开关和 fixed candidate JSON。确定性 fixed adapter 及其候选 payload 只由测试
-代码显式构造和注入。测试数据库 URL 也只由测试进程显式注入。
+开关或候选 fixture。确定性 Fake 及其候选 payload 只存在于测试代码并显式注入。
+测试数据库 URL 也只由测试进程显式注入。
 
 配置实现拆成 `MemoryServerSettings` 和 `ExtractionSettings`，前者只负责数据库、
 HTTP、认证和日志，后者负责候选抽取使用的完整模型配置。`ExtractionSettings`
@@ -501,9 +500,9 @@ memory-mcp/
 ```
 
 `tools` 按 capture/memory/recall/review 拆分；其余 Server 文件职责单一且体量
-有限，不再增加 `api/transport/mcp` 等重复目录。`extraction` 统一真实/固定模型
-适配能力，但运行时 factory 只组合真实模型；fixed backend 保留在同一契约层供
-测试注入。settings、provider factory、backend/schema 和 composition 分文件。
+有限，不再增加 `api/transport/mcp` 等重复目录。`extraction` 只承载生产模型
+适配能力，测试提取器由 `tests/support` 通过同一端口注入。settings、provider
+factory、backend/schema 和 composition 分文件。
 
 PostgreSQL Repository 保留单一 facade 与事务边界，row mapping、write validation
 和 schema/migration 分离。CaptureService 保留公开用例 facade，候选处理和 Review
@@ -544,7 +543,7 @@ prompt、SQL 和第三方 API 参数。这些字符串属于协议、运行数�
   Host 可接受丢失风险后置调度，可靠投递需求再引入 durable queue。
 - **[公网端点扩大攻击面]** → HTTPS、逐请求认证、受限安全组、私网 PostgreSQL 和
   Secret 注入；部署证据在阶段六单独验收。
-- **[真实模型或云服务影响现场稳定性]** → 测试注入的 fixed adapter、本地测试库、
+- **[真实模型或云服务影响现场稳定性]** → 测试支持层注入的 Fake、本地测试库、
   锁定依赖和录屏提供自动化与展示证据，但不伪装为生产运行时故障降级。
 - **[单实例限制吞吐和可用性]** → 当前不宣称 SLA；通过真实负载数据决定是否引入
   worker、queue 或连接池扩容。

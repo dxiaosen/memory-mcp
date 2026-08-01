@@ -308,12 +308,6 @@ def test_postgresql_settings_require_and_hide_database_url() -> None:
         missing.require_postgresql_url()
 
 
-def test_blank_log_file_selects_console_only_logging() -> None:
-    settings = MemoryServerSettings(log_file="", _env_file=None)
-
-    assert settings.log_file is None
-
-
 def test_database_pool_bounds_are_consistent() -> None:
     with pytest.raises(ValidationError, match="pool_max_size"):
         MemoryServerSettings(

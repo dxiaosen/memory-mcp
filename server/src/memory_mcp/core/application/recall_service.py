@@ -35,6 +35,7 @@ _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _WORD = re.compile(r"\w+", re.UNICODE)
 _RELEVANCE_THRESHOLD = 0.18
 _RELATION_BOOST = 0.12
+_PROFILE_HINT_BOOST = 0.16
 
 
 class RecallService:
@@ -88,6 +89,7 @@ class RecallService:
                 record,
                 query,
                 profile.recall_priorities,
+                profile.recall_hints,
             )
             for record in candidates
         }
@@ -253,6 +255,7 @@ def _score_record(
     record: MemoryRecord,
     query: RecallQuery,
     priorities: Mapping[str, int],
+    recall_hints: Mapping[str, frozenset[str]],
 ) -> float:
     search_text = " ".join(
         value for value in (query.query, query.task_intent) if value is not None
@@ -264,17 +267,40 @@ def _score_record(
             record.current_revision.content,
         )
     )
-    score = _text_relevance(search_text, target_text)
+    score = _profile_relevance(
+        search_text,
+        target_text,
+        record.item.memory_type,
+        priorities,
+        recall_hints,
+    )
     if query.subject is not None and (
         normalize_memory_text(query.subject)
         == normalize_memory_text(record.item.subject)
     ):
         score += 0.45
+    return round(min(score, 1.0), 6)
+
+
+def _profile_relevance(
+    query: str,
+    target: str,
+    memory_type: str,
+    priorities: Mapping[str, int],
+    recall_hints: Mapping[str, frozenset[str]],
+) -> float:
+    """在通用文本相关性上叠加由 Profile 声明的有限类型信号。"""
+
+    score = _text_relevance(query, target)
+    query_key = normalize_memory_text(query)
+    if any(
+        normalize_memory_text(hint) in query_key
+        for hint in recall_hints.get(memory_type, frozenset())
+    ):
+        score += _PROFILE_HINT_BOOST
     maximum_priority = max(priorities.values(), default=0)
     if maximum_priority > 0:
-        score += (
-            max(priorities.get(record.item.memory_type, 0), 0) / maximum_priority * 0.1
-        )
+        score += max(priorities.get(memory_type, 0), 0) / maximum_priority * 0.1
     return round(min(score, 1.0), 6)
 
 

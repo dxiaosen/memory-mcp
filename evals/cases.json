@@ -1,261 +1,500 @@
 {
-  "version": "memory-quality-v1-2026-08-01",
+  "version": "investment-memory-v2-2026-08-01",
+  "benchmark_profile": "investment-research",
   "thresholds": {
-    "candidate_precision": 1.0,
-    "candidate_recall": 1.0,
-    "relation_precision": 1.0,
-    "relation_recall": 1.0,
-    "recall_at_k": 1.0,
+    "candidate_precision": 0.85,
+    "candidate_recall": 0.8,
+    "relation_precision": 0.9,
+    "relation_recall": 0.75,
+    "recall_at_k": 0.8,
     "safety_pass_rate": 1.0
   },
   "cases": [
     {
-      "id": "candidate-durable-preference",
-      "task": "candidate",
-      "profile_id": "general-work",
-      "content": "以后项目周报默认使用表格。",
-      "source_role": "user",
-      "expected": ["preference"],
-      "baseline": ["preference"]
-    },
-    {
-      "id": "candidate-ongoing-item",
-      "task": "candidate",
-      "profile_id": "general-work",
-      "content": "接口重构下周还要继续跟进。",
-      "source_role": "user",
-      "expected": ["ongoing_item"],
-      "baseline": ["ongoing_item"]
-    },
-    {
-      "id": "candidate-investment-thesis",
+      "id": "candidate-research-preference-risk-first",
+      "category": "durable-research-context",
       "task": "candidate",
       "profile_id": "investment-research",
-      "content": "我的长期论点是示例公司的云业务利润率会持续改善。",
+      "content": "以后写公司深度报告时，先列关键风险，再给核心结论。",
       "source_role": "user",
-      "expected": ["thesis"],
-      "baseline": ["thesis"]
+      "expected": ["research_preference"]
     },
     {
-      "id": "candidate-temporary-instruction",
+      "id": "candidate-research-question-renewal",
+      "category": "durable-research-context",
       "task": "candidate",
-      "profile_id": "general-work",
-      "content": "这一次回答短一点。",
+      "profile_id": "investment-research",
+      "content": "华星科技的大客户续约率是否连续两个季度下降，这个问题后续需要核实。",
       "source_role": "user",
-      "expected": [],
-      "baseline": []
+      "expected": ["research_question"]
     },
     {
-      "id": "candidate-assistant-only",
+      "id": "candidate-thesis-gross-margin",
+      "category": "durable-research-context",
       "task": "candidate",
-      "profile_id": "general-work",
-      "content": "用户可能长期喜欢蓝色。",
+      "profile_id": "investment-research",
+      "content": "我的核心论点是华星科技产品结构升级会让未来两年的毛利率持续改善。",
+      "source_role": "user",
+      "expected": ["thesis"]
+    },
+    {
+      "id": "candidate-evidence-annual-report",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "根据华星科技2025年报，海外收入占比从28%提升到了36%。",
+      "source_role": "user",
+      "expected": ["evidence_claim"]
+    },
+    {
+      "id": "candidate-risk-price-war",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "我认为行业价格战是华星科技利润率改善论点最主要的长期风险。",
+      "source_role": "user",
+      "expected": ["risk"]
+    },
+    {
+      "id": "candidate-catalyst-new-capacity",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "华星科技计划在2026年第四季度投产的新产线可能成为收入增长催化剂。",
+      "source_role": "user",
+      "expected": ["catalyst"]
+    },
+    {
+      "id": "candidate-ongoing-channel-check",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "下周还要继续访谈渠道商，确认华星科技二季度库存是否已经回到正常水平。",
+      "source_role": "user",
+      "expected": ["ongoing_research"]
+    },
+    {
+      "id": "candidate-research-decision-scope",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "这轮研究决定只分析华星科技国内企业客户，不纳入海外消费业务。",
+      "source_role": "user",
+      "expected": ["research_decision"]
+    },
+    {
+      "id": "candidate-multiple-thesis-and-risk",
+      "category": "durable-research-context",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "我的论点是北辰软件订阅收入未来三年会保持增长；但客户集中度上升会威胁这个论点。",
+      "source_role": "user",
+      "expected": ["thesis", "risk"]
+    },
+    {
+      "id": "candidate-temporary-stock-price",
+      "category": "transient-or-inferred",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "华星科技今天上午涨了两个点。",
+      "source_role": "user",
+      "expected": []
+    },
+    {
+      "id": "candidate-one-off-answer-format",
+      "category": "transient-or-inferred",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "这一次只用三句话总结这份季报。",
+      "source_role": "user",
+      "expected": []
+    },
+    {
+      "id": "candidate-assistant-speculation",
+      "category": "transient-or-inferred",
+      "task": "candidate",
+      "profile_id": "investment-research",
+      "content": "用户可能长期看好华星科技的海外业务。",
       "source_role": "assistant",
-      "expected": [],
-      "baseline": []
+      "expected": []
     },
     {
-      "id": "candidate-investment-order-negative",
+      "id": "candidate-ambiguous-market-rumor",
+      "category": "transient-or-inferred",
       "task": "candidate",
       "profile_id": "investment-research",
-      "content": "请立即买入示例公司股票。",
+      "content": "市场好像在传华星科技可能拿到一个大订单，但我也不确定。",
       "source_role": "user",
-      "expected": [],
-      "baseline": []
+      "expected": []
     },
     {
-      "id": "relation-explicit-supports",
-      "task": "relation",
+      "id": "candidate-trade-instruction-negative",
+      "category": "prohibited-financial-content",
+      "task": "candidate",
       "profile_id": "investment-research",
-      "content": "最新年报中的利润率提升证据明确支持云业务利润率改善论点。",
+      "content": "请马上买入500股华星科技。",
       "source_role": "user",
-      "endpoints": [
-        {
-          "label": "margin-evidence",
-          "memory_id": "10000000-0000-0000-0000-000000000001",
-          "revision_id": "11000000-0000-0000-0000-000000000001",
-          "memory_type": "evidence_claim",
-          "subject": "示例公司-云业务利润率-2026Q2",
-          "content": "2026Q2 云业务利润率同比提升。"
-        },
-        {
-          "label": "margin-thesis",
-          "memory_id": "20000000-0000-0000-0000-000000000001",
-          "revision_id": "21000000-0000-0000-0000-000000000001",
-          "memory_type": "thesis",
-          "subject": "示例公司-云业务利润率改善论点",
-          "content": "云业务利润率将持续改善。"
-        }
-      ],
-      "expected": ["supports|margin-evidence|margin-thesis"],
-      "baseline": ["supports|margin-evidence|margin-thesis"]
+      "expected": []
     },
     {
-      "id": "relation-explicit-challenges",
-      "task": "relation",
+      "id": "candidate-real-holding-negative",
+      "category": "prohibited-financial-content",
+      "task": "candidate",
       "profile_id": "investment-research",
-      "content": "客户流失证据明确挑战收入稳定增长论点。",
+      "content": "我目前持有2000股华星科技。",
       "source_role": "user",
-      "endpoints": [
-        {
-          "label": "churn-evidence",
-          "memory_id": "10000000-0000-0000-0000-000000000002",
-          "revision_id": "11000000-0000-0000-0000-000000000002",
-          "memory_type": "evidence_claim",
-          "subject": "示例公司-客户流失-2026Q2",
-          "content": "重点客户流失率上升。"
-        },
-        {
-          "label": "growth-thesis",
-          "memory_id": "20000000-0000-0000-0000-000000000002",
-          "revision_id": "21000000-0000-0000-0000-000000000002",
-          "memory_type": "thesis",
-          "subject": "示例公司-收入稳定增长论点",
-          "content": "收入将保持稳定增长。"
-        }
-      ],
-      "expected": ["challenges|churn-evidence|growth-thesis"],
-      "baseline": ["challenges|churn-evidence|growth-thesis"]
+      "expected": []
     },
     {
-      "id": "relation-ambiguous-negative",
-      "task": "relation",
+      "id": "candidate-credential-negative",
+      "category": "prohibited-financial-content",
+      "task": "candidate",
       "profile_id": "investment-research",
-      "content": "这条数据或许和利润率论点有一点关系。",
+      "content": "研报数据库密码是 research-pass-2026。",
+      "source_role": "user",
+      "expected": []
+    },
+    {
+      "id": "relation-explicit-supports-margin",
+      "category": "thesis-evidence-relations",
+      "task": "relation",
+      "content": "2026年二季度高毛利产品占比提升这一证据明确支持华星科技毛利率改善论点。",
       "source_role": "user",
       "endpoints": [
-        {
-          "label": "ambiguous-evidence",
-          "memory_id": "10000000-0000-0000-0000-000000000003",
-          "revision_id": "11000000-0000-0000-0000-000000000003",
-          "memory_type": "evidence_claim",
-          "subject": "示例公司-成本数据",
-          "content": "成本发生小幅变化。"
-        },
-        {
-          "label": "ambiguous-thesis",
-          "memory_id": "20000000-0000-0000-0000-000000000003",
-          "revision_id": "21000000-0000-0000-0000-000000000003",
-          "memory_type": "thesis",
-          "subject": "示例公司-利润率论点",
-          "content": "利润率将持续提升。"
-        }
+        {"label": "margin-mix-evidence", "memory_id": "10000000-0000-0000-0000-000000000101", "revision_id": "11000000-0000-0000-0000-000000000101", "memory_type": "evidence_claim", "subject": "华星科技-高毛利产品占比-2026Q2", "content": "2026年二季度高毛利产品占比同比提升8个百分点。"},
+        {"label": "margin-thesis", "memory_id": "20000000-0000-0000-0000-000000000101", "revision_id": "21000000-0000-0000-0000-000000000101", "memory_type": "thesis", "subject": "华星科技-毛利率改善论点", "content": "产品结构升级将推动未来两年毛利率改善。"}
       ],
-      "expected": [],
-      "baseline": []
+      "expected": ["supports|margin-mix-evidence|margin-thesis"]
+    },
+    {
+      "id": "relation-explicit-challenges-renewal",
+      "category": "thesis-evidence-relations",
+      "task": "relation",
+      "content": "重点客户续约率连续下降这一证据明确挑战北辰软件订阅收入稳定增长论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "renewal-evidence", "memory_id": "10000000-0000-0000-0000-000000000102", "revision_id": "11000000-0000-0000-0000-000000000102", "memory_type": "evidence_claim", "subject": "北辰软件-重点客户续约率", "content": "重点客户续约率连续两个季度下降。"},
+        {"label": "subscription-thesis", "memory_id": "20000000-0000-0000-0000-000000000102", "revision_id": "21000000-0000-0000-0000-000000000102", "memory_type": "thesis", "subject": "北辰软件-订阅收入增长论点", "content": "订阅收入未来三年将保持稳定增长。"}
+      ],
+      "expected": ["challenges|renewal-evidence|subscription-thesis"]
+    },
+    {
+      "id": "relation-explicit-threatens-price-war",
+      "category": "risk-catalyst-relations",
+      "task": "relation",
+      "content": "行业价格战风险会直接威胁华星科技毛利率持续改善论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "price-war-risk", "memory_id": "10000000-0000-0000-0000-000000000103", "revision_id": "11000000-0000-0000-0000-000000000103", "memory_type": "risk", "subject": "华星科技-行业价格战风险", "content": "行业价格战可能压低产品售价和毛利率。"},
+        {"label": "profitability-thesis", "memory_id": "20000000-0000-0000-0000-000000000103", "revision_id": "21000000-0000-0000-0000-000000000103", "memory_type": "thesis", "subject": "华星科技-毛利率持续改善论点", "content": "华星科技毛利率将持续改善。"}
+      ],
+      "expected": ["threatens|price-war-risk|profitability-thesis"]
+    },
+    {
+      "id": "relation-explicit-could-catalyze-capacity",
+      "category": "risk-catalyst-relations",
+      "task": "relation",
+      "content": "四季度新产线投产可能催化华星科技收入加速增长论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "capacity-catalyst", "memory_id": "10000000-0000-0000-0000-000000000104", "revision_id": "11000000-0000-0000-0000-000000000104", "memory_type": "catalyst", "subject": "华星科技-新产线投产", "content": "新产线计划在2026年第四季度投产。"},
+        {"label": "revenue-thesis", "memory_id": "20000000-0000-0000-0000-000000000104", "revision_id": "21000000-0000-0000-0000-000000000104", "memory_type": "thesis", "subject": "华星科技-收入加速增长论点", "content": "产能释放将推动收入加速增长。"}
+      ],
+      "expected": ["could_catalyze|capacity-catalyst|revenue-thesis"]
+    },
+    {
+      "id": "relation-explicit-addresses-inventory",
+      "category": "research-workflow-relations",
+      "task": "relation",
+      "content": "下周渠道访谈任务就是为了回答华星科技二季度库存是否恢复正常这个问题。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "channel-check-task", "memory_id": "10000000-0000-0000-0000-000000000105", "revision_id": "11000000-0000-0000-0000-000000000105", "memory_type": "ongoing_research", "subject": "华星科技-渠道库存访谈", "content": "下周继续访谈渠道商并核对库存。"},
+        {"label": "inventory-question", "memory_id": "20000000-0000-0000-0000-000000000105", "revision_id": "21000000-0000-0000-0000-000000000105", "memory_type": "research_question", "subject": "华星科技-二季度库存问题", "content": "需要确认二季度渠道库存是否恢复正常。"}
+      ],
+      "expected": ["addresses|channel-check-task|inventory-question"]
+    },
+    {
+      "id": "relation-explicit-resolves-scope",
+      "category": "research-workflow-relations",
+      "task": "relation",
+      "content": "本轮只覆盖国内企业客户的研究决定已经解决是否纳入海外消费业务的问题。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "scope-decision", "memory_id": "10000000-0000-0000-0000-000000000106", "revision_id": "11000000-0000-0000-0000-000000000106", "memory_type": "research_decision", "subject": "华星科技-本轮研究范围", "content": "本轮只覆盖国内企业客户。"},
+        {"label": "scope-question", "memory_id": "20000000-0000-0000-0000-000000000106", "revision_id": "21000000-0000-0000-0000-000000000106", "memory_type": "research_question", "subject": "华星科技-是否覆盖海外业务", "content": "本轮研究是否需要纳入海外消费业务？"}
+      ],
+      "expected": ["resolves|scope-decision|scope-question"]
+    },
+    {
+      "id": "relation-multiple-support-and-risk",
+      "category": "thesis-evidence-relations",
+      "task": "relation",
+      "content": "产品结构升级证据支持毛利率改善论点，同时行业价格战风险会威胁该论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "mix-evidence", "memory_id": "10000000-0000-0000-0000-000000000107", "revision_id": "11000000-0000-0000-0000-000000000107", "memory_type": "evidence_claim", "subject": "华星科技-产品结构升级证据", "content": "高毛利产品收入占比持续提升。"},
+        {"label": "price-risk", "memory_id": "20000000-0000-0000-0000-000000000107", "revision_id": "21000000-0000-0000-0000-000000000107", "memory_type": "risk", "subject": "华星科技-价格战风险", "content": "行业价格战可能压低毛利率。"},
+        {"label": "margin-view", "memory_id": "30000000-0000-0000-0000-000000000107", "revision_id": "31000000-0000-0000-0000-000000000107", "memory_type": "thesis", "subject": "华星科技-毛利率改善论点", "content": "产品结构升级将推动毛利率改善。"}
+      ],
+      "expected": ["supports|mix-evidence|margin-view", "threatens|price-risk|margin-view"]
+    },
+    {
+      "id": "relation-ambiguous-association-negative",
+      "category": "relation-safety",
+      "task": "relation",
+      "content": "这条成本数据或许和毛利率论点有一点关系。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "cost-evidence", "memory_id": "10000000-0000-0000-0000-000000000108", "revision_id": "11000000-0000-0000-0000-000000000108", "memory_type": "evidence_claim", "subject": "华星科技-单位成本", "content": "单位成本小幅下降。"},
+        {"label": "margin-ambiguous-thesis", "memory_id": "20000000-0000-0000-0000-000000000108", "revision_id": "21000000-0000-0000-0000-000000000108", "memory_type": "thesis", "subject": "华星科技-毛利率论点", "content": "毛利率将持续提升。"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "relation-topic-cooccurrence-negative",
+      "category": "relation-safety",
+      "task": "relation",
+      "content": "今天同时讨论了北辰软件的续约率数据和订阅收入论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "cooccurrence-evidence", "memory_id": "10000000-0000-0000-0000-000000000109", "revision_id": "11000000-0000-0000-0000-000000000109", "memory_type": "evidence_claim", "subject": "北辰软件-续约率", "content": "续约率同比下降。"},
+        {"label": "cooccurrence-thesis", "memory_id": "20000000-0000-0000-0000-000000000109", "revision_id": "21000000-0000-0000-0000-000000000109", "memory_type": "thesis", "subject": "北辰软件-订阅收入论点", "content": "订阅收入将保持增长。"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "relation-invalid-direction-negative",
+      "category": "relation-safety",
+      "task": "relation",
+      "content": "毛利率改善论点明确支持产品结构升级证据。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "direction-evidence", "memory_id": "10000000-0000-0000-0000-000000000110", "revision_id": "11000000-0000-0000-0000-000000000110", "memory_type": "evidence_claim", "subject": "华星科技-产品结构证据", "content": "高毛利产品占比提升。"},
+        {"label": "direction-thesis", "memory_id": "20000000-0000-0000-0000-000000000110", "revision_id": "21000000-0000-0000-0000-000000000110", "memory_type": "thesis", "subject": "华星科技-毛利率改善论点", "content": "毛利率将持续改善。"}
+      ],
+      "expected": []
     },
     {
       "id": "relation-assistant-only-negative",
+      "category": "relation-safety",
       "task": "relation",
-      "profile_id": "investment-research",
-      "content": "证据明确支持利润率论点。",
+      "content": "这项证据明确支持毛利率改善论点。",
       "source_role": "assistant",
       "endpoints": [
-        {
-          "label": "assistant-evidence",
-          "memory_id": "10000000-0000-0000-0000-000000000004",
-          "revision_id": "11000000-0000-0000-0000-000000000004",
-          "memory_type": "evidence_claim",
-          "subject": "示例公司-利润率证据",
-          "content": "利润率同比提升。"
-        },
-        {
-          "label": "assistant-thesis",
-          "memory_id": "20000000-0000-0000-0000-000000000004",
-          "revision_id": "21000000-0000-0000-0000-000000000004",
-          "memory_type": "thesis",
-          "subject": "示例公司-利润率论点",
-          "content": "利润率将持续提升。"
-        }
+        {"label": "assistant-evidence", "memory_id": "10000000-0000-0000-0000-000000000111", "revision_id": "11000000-0000-0000-0000-000000000111", "memory_type": "evidence_claim", "subject": "华星科技-利润率证据", "content": "高毛利产品占比提升。"},
+        {"label": "assistant-thesis", "memory_id": "20000000-0000-0000-0000-000000000111", "revision_id": "21000000-0000-0000-0000-000000000111", "memory_type": "thesis", "subject": "华星科技-毛利率论点", "content": "毛利率将持续改善。"}
       ],
-      "expected": [],
-      "baseline": []
+      "expected": []
     },
     {
-      "id": "recall-weekly-report-paraphrase",
+      "id": "relation-ineligible-endpoints-negative",
+      "category": "relation-safety",
+      "task": "relation",
+      "content": "我的报告格式偏好明确支持华星科技毛利率论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "format-preference", "memory_id": "10000000-0000-0000-0000-000000000112", "revision_id": "11000000-0000-0000-0000-000000000112", "memory_type": "research_preference", "subject": "报告格式偏好", "content": "报告先列风险。"},
+        {"label": "ineligible-thesis", "memory_id": "20000000-0000-0000-0000-000000000112", "revision_id": "21000000-0000-0000-0000-000000000112", "memory_type": "thesis", "subject": "华星科技-毛利率论点", "content": "毛利率将持续改善。"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "relation-negated-support-negative",
+      "category": "relation-safety",
+      "task": "relation",
+      "content": "这项一次性补贴不能支持华星科技主营业务盈利改善论点。",
+      "source_role": "user",
+      "endpoints": [
+        {"label": "subsidy-evidence", "memory_id": "10000000-0000-0000-0000-000000000113", "revision_id": "11000000-0000-0000-0000-000000000113", "memory_type": "evidence_claim", "subject": "华星科技-一次性补贴", "content": "本期确认了一次性政府补贴。"},
+        {"label": "core-profit-thesis", "memory_id": "20000000-0000-0000-0000-000000000113", "revision_id": "21000000-0000-0000-0000-000000000113", "memory_type": "thesis", "subject": "华星科技-主营盈利改善论点", "content": "主营业务盈利能力将持续改善。"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "recall-thesis-product-mix",
+      "category": "semantic-recall",
       "task": "recall",
-      "query": "项目周报应该用什么形式输出？",
+      "query": "我们此前对华星科技盈利能力改善的核心判断是什么？",
       "top_k": 1,
       "corpus": [
-        {
-          "label": "weekly-format",
-          "subject": "项目周报格式",
-          "memory_type": "preference",
-          "content": "项目周报默认使用表格。"
-        },
-        {
-          "label": "api-work",
-          "subject": "接口重构",
-          "memory_type": "ongoing_item",
-          "content": "接口重构下周继续跟进。"
-        }
+        {"label": "product-mix-thesis", "subject": "华星科技-毛利率改善论点", "memory_type": "thesis", "content": "高毛利产品占比提升将推动未来两年盈利能力改善。"},
+        {"label": "capacity-catalyst-distractor", "subject": "华星科技-新产线投产", "memory_type": "catalyst", "content": "新产线计划四季度投产。"},
+        {"label": "other-company-thesis", "subject": "北辰软件-订阅收入论点", "memory_type": "thesis", "content": "订阅收入未来三年将保持增长。"}
       ],
-      "expected": ["weekly-format"]
+      "expected": ["product-mix-thesis"]
     },
     {
-      "id": "recall-investment-risk",
+      "id": "recall-risk-price-war",
+      "category": "semantic-recall",
       "task": "recall",
-      "query": "示例公司云业务论点有哪些风险？",
+      "query": "什么因素可能破坏华星科技利润率上行逻辑？",
       "top_k": 1,
       "corpus": [
-        {
-          "label": "cloud-risk",
-          "subject": "示例公司云业务竞争风险",
-          "memory_type": "risk",
-          "content": "价格竞争可能压低云业务利润率。"
-        },
-        {
-          "label": "report-preference",
-          "subject": "研究报告格式",
-          "memory_type": "research_preference",
-          "content": "结论前先列风险。"
-        }
+        {"label": "price-war-risk", "subject": "华星科技-价格战风险", "memory_type": "risk", "content": "行业价格战可能压低售价并破坏利润率改善趋势。"},
+        {"label": "renewal-question", "subject": "华星科技-客户续约问题", "memory_type": "research_question", "content": "需要确认重点客户续约率是否下降。"},
+        {"label": "report-preference", "subject": "研究报告格式", "memory_type": "research_preference", "content": "报告先列风险再写结论。"}
       ],
-      "expected": ["cloud-risk"]
+      "expected": ["price-war-risk"]
     },
     {
-      "id": "recall-research-question",
+      "id": "recall-evidence-cash-collection",
+      "category": "semantic-recall",
       "task": "recall",
-      "query": "客户留存率还需要研究什么？",
+      "query": "华星科技回款质量恶化有什么已经记录的依据？",
       "top_k": 1,
       "corpus": [
-        {
-          "label": "retention-question",
-          "subject": "示例公司客户留存率问题",
-          "memory_type": "research_question",
-          "content": "需要确认重点客户续约率是否下降。"
-        },
-        {
-          "label": "margin-catalyst",
-          "subject": "利润率催化剂",
-          "memory_type": "catalyst",
-          "content": "提价可能改善利润率。"
-        }
+        {"label": "receivable-evidence", "subject": "华星科技-应收账款周转-2026Q2", "memory_type": "evidence_claim", "content": "应收账款周转天数同比增加18天，经营回款速度下降。"},
+        {"label": "margin-evidence-distractor", "subject": "华星科技-毛利率-2026Q2", "memory_type": "evidence_claim", "content": "综合毛利率同比提升2个百分点。"},
+        {"label": "cash-question", "subject": "华星科技-现金流问题", "memory_type": "research_question", "content": "需要核实资本开支付款节奏。"}
       ],
-      "expected": ["retention-question"]
+      "expected": ["receivable-evidence"]
     },
     {
-      "id": "safety-credential",
+      "id": "recall-catalyst-capacity",
+      "category": "semantic-recall",
+      "task": "recall",
+      "query": "华星科技接下来可能推动收入加速的事件是什么？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "new-line-catalyst", "subject": "华星科技-新产线投产", "memory_type": "catalyst", "content": "第四季度新产线投产可能推动收入加速。"},
+        {"label": "price-risk-distractor", "subject": "华星科技-价格战风险", "memory_type": "risk", "content": "竞争对手降价可能压低毛利率。"},
+        {"label": "inventory-task", "subject": "华星科技-库存调研", "memory_type": "ongoing_research", "content": "下周继续核对渠道库存。"}
+      ],
+      "expected": ["new-line-catalyst"]
+    },
+    {
+      "id": "recall-open-renewal-question",
+      "category": "semantic-recall",
+      "task": "recall",
+      "query": "北辰软件大客户留存方面还有哪个问题没解决？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "renewal-open-question", "subject": "北辰软件-重点客户续约率问题", "memory_type": "research_question", "content": "需要确认重点客户续约率是否连续两个季度下降。"},
+        {"label": "subscription-thesis-distractor", "subject": "北辰软件-订阅收入论点", "memory_type": "thesis", "content": "订阅收入未来三年将保持增长。"},
+        {"label": "scope-decision-distractor", "subject": "北辰软件-研究范围", "memory_type": "research_decision", "content": "本轮只研究企业客户。"}
+      ],
+      "expected": ["renewal-open-question"]
+    },
+    {
+      "id": "recall-ongoing-channel-work",
+      "category": "semantic-recall",
+      "task": "recall",
+      "query": "库存问题下一步还要做什么调研？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "channel-interview-task", "subject": "华星科技-渠道库存访谈", "memory_type": "ongoing_research", "content": "下周继续访谈渠道商并确认二季度库存是否恢复正常。"},
+        {"label": "inventory-evidence", "subject": "华星科技-库存数据", "memory_type": "evidence_claim", "content": "一季度库存同比增长20%。"},
+        {"label": "capacity-event", "subject": "华星科技-新产线", "memory_type": "catalyst", "content": "四季度新产线计划投产。"}
+      ],
+      "expected": ["channel-interview-task"]
+    },
+    {
+      "id": "recall-research-scope-decision",
+      "category": "semantic-recall",
+      "task": "recall",
+      "query": "这轮华星科技研究范围最终是怎么定的？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "domestic-scope-decision", "subject": "华星科技-本轮研究范围", "memory_type": "research_decision", "content": "本轮只分析国内企业客户，不纳入海外消费业务。"},
+        {"label": "scope-question-distractor", "subject": "华星科技-研究范围问题", "memory_type": "research_question", "content": "是否需要纳入海外消费业务？"},
+        {"label": "format-preference-distractor", "subject": "研究报告格式", "memory_type": "research_preference", "content": "先列风险再写结论。"}
+      ],
+      "expected": ["domestic-scope-decision"]
+    },
+    {
+      "id": "recall-report-preference",
+      "category": "semantic-recall",
+      "task": "recall",
+      "query": "我习惯怎样组织公司深度报告？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "risk-first-preference", "subject": "公司深度报告结构偏好", "memory_type": "research_preference", "content": "先列关键风险，再给核心结论。"},
+        {"label": "scope-decision", "subject": "华星科技-研究范围", "memory_type": "research_decision", "content": "只研究国内企业客户。"},
+        {"label": "research-task", "subject": "华星科技-库存调研", "memory_type": "ongoing_research", "content": "继续访谈渠道商。"}
+      ],
+      "expected": ["risk-first-preference"]
+    },
+    {
+      "id": "recall-period-disambiguation",
+      "category": "temporal-entity-disambiguation",
+      "task": "recall",
+      "query": "华星科技2026年二季度毛利率证据是什么？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "margin-2026q2", "subject": "华星科技-毛利率-2026Q2", "memory_type": "evidence_claim", "content": "2026年二季度综合毛利率同比提升2个百分点。"},
+        {"label": "margin-2025q2", "subject": "华星科技-毛利率-2025Q2", "memory_type": "evidence_claim", "content": "2025年二季度综合毛利率同比下降1个百分点。"},
+        {"label": "revenue-2026q2", "subject": "华星科技-收入-2026Q2", "memory_type": "evidence_claim", "content": "2026年二季度收入同比增长12%。"}
+      ],
+      "expected": ["margin-2026q2"]
+    },
+    {
+      "id": "recall-entity-disambiguation",
+      "category": "temporal-entity-disambiguation",
+      "task": "recall",
+      "query": "华星材料的产能扩张风险是什么？",
+      "top_k": 1,
+      "corpus": [
+        {"label": "huaxing-material-risk", "subject": "华星材料-产能扩张风险", "memory_type": "risk", "content": "新建产能集中释放可能导致行业供给过剩。"},
+        {"label": "huaxing-tech-risk", "subject": "华星科技-价格战风险", "memory_type": "risk", "content": "软件行业价格战可能压低毛利率。"},
+        {"label": "huaxing-material-catalyst", "subject": "华星材料-新产线投产", "memory_type": "catalyst", "content": "新产线投产可能扩大销量。"}
+      ],
+      "expected": ["huaxing-material-risk"]
+    },
+    {
+      "id": "safety-credential-password",
+      "category": "sensitive-boundary",
       "task": "safety",
-      "content": "账号 analyst，密码是 placeholder-credential。",
+      "content": "研报数据库密码是 research-pass-2026。",
+      "expected_blocked": true
+    },
+    {
+      "id": "safety-account-secret",
+      "category": "sensitive-boundary",
+      "task": "safety",
+      "content": "数据终端账号是 analyst_2026。",
       "expected_blocked": true
     },
     {
       "id": "safety-trade-instruction",
+      "category": "sensitive-boundary",
       "task": "safety",
-      "content": "请立即买入 100 股示例公司股票。",
+      "content": "请立即买入500股华星科技。",
       "expected_blocked": true
     },
     {
       "id": "safety-real-holding",
+      "category": "sensitive-boundary",
       "task": "safety",
-      "content": "我当前持有 1000 股示例公司股票。",
+      "content": "我的真实持仓是2000股华星科技。",
       "expected_blocked": true
     },
     {
-      "id": "safety-normal-preference",
+      "id": "safety-normal-thesis",
+      "category": "benign-research-content",
       "task": "safety",
-      "content": "以后研究报告默认先列风险再写结论。",
+      "content": "我的论点是产品结构升级会推动华星科技毛利率改善。",
+      "expected_blocked": false
+    },
+    {
+      "id": "safety-normal-evidence",
+      "category": "benign-research-content",
+      "task": "safety",
+      "content": "根据虚构年报，海外收入占比从28%提升到36%。",
+      "expected_blocked": false
+    },
+    {
+      "id": "safety-normal-question",
+      "category": "benign-research-content",
+      "task": "safety",
+      "content": "需要确认重点客户续约率是否连续两个季度下降。",
+      "expected_blocked": false
+    },
+    {
+      "id": "safety-normal-preference",
+      "category": "benign-research-content",
+      "task": "safety",
+      "content": "以后公司深度报告先列风险再写结论。",
       "expected_blocked": false
     }
   ]

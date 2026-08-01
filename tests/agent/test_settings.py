@@ -1,5 +1,6 @@
 import pytest
 from memory_mcp_agent import MemoryHookSettings, MemoryMcpClient
+from pydantic import ValidationError
 
 
 def test_agent_process_settings_use_minimal_names_and_hide_token(
@@ -15,30 +16,17 @@ def test_agent_process_settings_use_minimal_names_and_hide_token(
     assert "agent-process-secret" not in repr(settings)
 
 
-def test_agent_process_settings_accept_legacy_names(
+def test_legacy_agent_connection_names_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MEMORY_HOOK_MCP_URL", "https://legacy.internal/mcp")
     monkeypatch.setenv("MEMORY_HOOK_BEARER_TOKEN", "legacy-secret")
+    monkeypatch.delenv("MEMORY_MCP_URL", raising=False)
+    monkeypatch.delenv("MEMORY_MCP_TOKEN", raising=False)
 
-    settings = MemoryHookSettings()
-
-    assert str(settings.mcp_url) == "https://legacy.internal/mcp"
-    assert settings.token_value() == "legacy-secret"
-
-
-def test_new_agent_connection_names_take_precedence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MEMORY_MCP_URL", "https://current.internal/mcp")
-    monkeypatch.setenv("MEMORY_MCP_TOKEN", "current-secret")
-    monkeypatch.setenv("MEMORY_HOOK_MCP_URL", "https://legacy.internal/mcp")
-    monkeypatch.setenv("MEMORY_HOOK_BEARER_TOKEN", "legacy-secret")
-
-    settings = MemoryHookSettings()
-
-    assert str(settings.mcp_url) == "https://current.internal/mcp"
-    assert settings.token_value() == "current-secret"
+    with pytest.raises(ValidationError) as error:
+        MemoryHookSettings()
+    assert "legacy-secret" not in str(error.value)
 
 
 def test_empty_agent_token_is_rejected_during_configuration() -> None:

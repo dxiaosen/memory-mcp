@@ -15,9 +15,7 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from memory_mcp.app import create_memory_mcp_server
-from memory_mcp.core.adapters.structured_model import StructuredCandidateExtractor
 from memory_mcp.core.ports import CandidateExtractor
-from memory_mcp.extraction.backends import SCHEMA_VERSION, FixedCandidateBackend
 from memory_mcp.settings import MemoryServerSettings
 from pydantic import SecretStr
 
@@ -79,8 +77,6 @@ def _event() -> dict[str, object]:
 def _running_server(
     database_url: SecretStr,
     extractor: CandidateExtractor | None = None,
-    *,
-    fixed_candidates_payload: str | None = None,
 ) -> Iterator[str]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -95,13 +91,6 @@ def _running_server(
         port=port,
         log_file=None,
     )
-    if extractor is None and fixed_candidates_payload is not None:
-        extractor = StructuredCandidateExtractor(
-            FixedCandidateBackend.from_json(fixed_candidates_payload),
-            model_id="fixed-test-catalog",
-            prompt_version="fixed-test-v1",
-            schema_version=SCHEMA_VERSION,
-        )
     server = create_memory_mcp_server(
         settings,
         candidate_extractor=extractor,
@@ -277,21 +266,15 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         MemoryMcpClient,
     )
 
-    fixed_candidates_payload = json.dumps(
-        [
-            {
-                "subject": "weekly-report",
-                "memory_type": "preference",
-                "content": "项目周报默认使用表格",
-                "assertion_kind": "user_view",
-                "source_expression": "以后项目周报默认用表格",
-                "save_rationale": "用户明确表达了长期格式偏好",
-                "confidence": 0.98,
-                "durability": "durable",
-                "expression_basis": "explicit",
-            }
-        ],
-        ensure_ascii=False,
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "以后项目周报默认用表格",
+                content="项目周报默认使用表格",
+                confidence=0.98,
+                save_rationale="用户明确表达了长期格式偏好",
+            ),
+        )
     )
 
     async def agent(
@@ -369,7 +352,7 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
     try:
         with _running_server(
             database_url,
-            fixed_candidates_payload=fixed_candidates_payload,
+            extractor,
         ) as url:
             anyio.run(profile_id, url)
     finally:

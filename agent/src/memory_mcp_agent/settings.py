@@ -12,21 +12,14 @@ class MemoryHookSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MEMORY_HOOK_",
         extra="ignore",
-        populate_by_name=True,
     )
 
     mcp_url: AnyHttpUrl = Field(
-        validation_alias=AliasChoices(
-            "MEMORY_MCP_URL",
-            "MEMORY_HOOK_MCP_URL",
-        )
+        validation_alias=AliasChoices("MEMORY_MCP_URL", "mcp_url"),
     )
     bearer_token: SecretStr = Field(
         min_length=1,
-        validation_alias=AliasChoices(
-            "MEMORY_MCP_TOKEN",
-            "MEMORY_HOOK_BEARER_TOKEN",
-        ),
+        validation_alias=AliasChoices("MEMORY_MCP_TOKEN", "bearer_token"),
     )
     profile_id: str = Field(default="general-work", min_length=1)
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)

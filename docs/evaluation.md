@@ -1,0 +1,122 @@
+# 投研跨会话记忆评测
+
+本文是投研记忆评测方法和当前结果的唯一维护位置。它回答“模型能否提取值得跨会话
+保存的研究记忆、能否保守建立关系、召回能否找回相关内容”，不评价投资观点是否
+正确，也不生成投资建议。
+
+## 1. 数据集与边界
+
+数据集 `investment-memory-v2-2026-08-01` 使用虚构公司和虚构数据，共 47 个中文案例：
+
+| 任务 | 数量 | 评估对象 | 执行方式 |
+| --- | ---: | --- | --- |
+| Candidate | 16 | 八类投研记忆、临时/推断/禁止负例 | 仅 `--live-model` 使用模型 |
+| Relation | 13 | 六类合法关系、方向/否定/角色/歧义负例 | 仅 `--live-model` 使用模型和准入保护 |
+| Recall | 10 | 近义表达、研究状态、报告期和实体干扰项 | 生产确定性排序 |
+| Safety | 8 | 凭据、持仓、交易指令和正常研究文本 | 生产 SensitiveContentGuard |
+
+候选覆盖 `research_preference`、`research_question`、`thesis`、
+`evidence_claim`、`risk`、`catalyst`、`ongoing_research` 和
+`research_decision`。关系覆盖 `supports`、`challenges`、`threatens`、
+`could_catalyze`、`addresses` 和 `resolves`。
+
+每个案例只有稳定 ID、category、输入夹具和金标；严格 schema 禁止额外 owner、
+tenant、Token 等字段。真实模型使用 InMemory Repository，不连接 PostgreSQL，也不
+读取运行用户数据。结果文件不保存案例正文或 provider 异常文本。
+
+## 2. 指标与门槛
+
+| 指标 | 门槛 | 关注风险 |
+| --- | ---: | --- |
+| Candidate precision | 0.85 | 错误保存长期记忆 |
+| Candidate recall | 0.80 | 漏掉有价值记忆 |
+| Relation precision | 0.90 | 错误关系污染召回和解释 |
+| Relation recall | 0.75 | 漏掉明确关系 |
+| Recall@K | 0.80 | 新任务找不到历史上下文 |
+| Safety pass rate | 1.00 | 禁止内容漏拦或正常研究被误拦 |
+
+关系 precision 高于 recall，因为漏建关系只损失辅助信息，误建关系可能错误解释论点
+与证据方向。
+
+## 3. 运行方式
+
+离线门禁：
+
+```bash
+.venv/bin/python -m evals.runner
+```
+
+离线只计分 Recall 和 Safety。Candidate/Relation 输出 `null`，相关分类的
+`evaluated_count=0`、`pass_rate=null`；项目不再用金标 baseline 生成虚假的 1.0。
+
+真实模型：
+
+```bash
+set -a
+source server/.env
+set +a
+.venv/bin/python -m evals.runner \
+  --live-model \
+  --output evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json
+```
+
+完整安全快照见
+[`evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json`](../evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json)。
+
+## 4. 本轮质量改进
+
+- 删除 candidate/relation 金标 baseline 和测试专用 live predictor；真实 provider 质量
+  只通过显式 benchmark 留证。
+- 关系 schema/prompt v3 要求 `source_expression` 是同时包含 source/target 可识别表达
+  的完整子句，单独的“支持”等关系词不再是有效证据。
+- 关系准入拒绝明确否定表达，并使用 Profile 声明的 `direction_cues` 保守识别明显
+  反向证据；Core 不依赖公司名、case ID 或投研 memory type。
+- `MemoryProfile.recall_hints` 声明各类型的查询语义，Core 只提供有界加分，并继续结合
+  文本相关性、类型优先级、置信度和时间排序。
+
+这些改动针对的是首轮暴露出的通用缺陷，没有修改金标、降低门槛或删除失败案例。
+
+## 5. 2026-08-01 最终结果
+
+运行标识：
+
+| 字段 | 值 |
+| --- | --- |
+| mode | `live-model` |
+| model | `deepseek:deepseek-v4-flash` |
+| candidate prompt/schema | `general-memory-extraction-v1` / `candidate-v1` |
+| relation prompt/schema | `memory-relation-extraction-v3` / `relation-v1` |
+| dataset SHA-256 | `73b2298dcca910f90e24fb6f3e7fa4219398644529150eaf838b6aa71d4d7dcb` |
+| duration | 43.066 秒 |
+
+聚合结果：
+
+| 指标 | 首轮 | 最终 | 门槛 | 状态 |
+| --- | ---: | ---: | ---: | --- |
+| Candidate precision | 1.00 | 1.00 | 0.85 | 通过 |
+| Candidate recall | 1.00 | 1.00 | 0.80 | 通过 |
+| Relation precision | 0.80 | 1.00 | 0.90 | 通过 |
+| Relation recall | 1.00 | 1.00 | 0.75 | 通过 |
+| Recall@K | 0.80 | 1.00 | 0.80 | 通过 |
+| Safety pass rate | 1.00 | 1.00 | 1.00 | 通过 |
+
+最终 `thresholds_met=true`。候选为 10 TP、0 FP、0 FN；关系为 8 TP、0 FP、
+0 FN。11 个 category 的通过率均为 1.0，`failed_case_ids` 为空。
+
+首轮四个失败入口均已保留在数据集中并通过：
+
+| Case ID | 原问题 | 当前保护 |
+| --- | --- | --- |
+| `relation-invalid-direction-negative` | 模型把反向表述改写成合法方向 | 完整子句证据 + cue 方向校验 |
+| `relation-negated-support-negative` | “不能支持”被识别为 supports | 否定证据拒绝 |
+| `recall-ongoing-channel-work` | “下一步”未优先 ongoing research | Profile recall hints |
+| `recall-research-scope-decision` | “最终怎么定”未区分决定和问题 | Profile recall hints |
+
+## 6. 结果限制
+
+- 这是 47 个案例、单模型、单次运行，不具备统计显著性，也不是 SLA；
+- Recall 和 Safety 是确定性实现的结果，不是大模型指标；
+- 候选 precision/recall 不代表记忆内容在现实世界中为真；
+- 关系 recall 只覆盖显式一跳关系，不代表知识图谱或多跳推理质量；
+- 满分只说明当前固定案例全部通过，后续仍应扩充表达、行业和模型覆盖；
+- 结果不代表投资收益、投资建议质量、生产吞吐或 P95 延迟。

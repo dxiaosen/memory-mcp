@@ -1,10 +1,12 @@
 """命令行评估入口；默认运行绝不会创建模型客户端。"""
 
 import argparse
+import hashlib
 import json
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from memory_mcp.core import (
@@ -25,6 +27,12 @@ from memory_mcp.core import (
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.application.automatic_relations import AutomaticRelationPlanner
 from memory_mcp.core.composition import create_memory_service
+from memory_mcp.extraction.backends import (
+    PROMPT_VERSION,
+    RELATION_PROMPT_VERSION,
+    RELATION_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+)
 from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.profiles import GeneralWorkProfile, InvestmentResearchProfile
@@ -41,13 +49,12 @@ def run_evaluation(
     dataset: EvaluationDataset,
     *,
     live_model: bool = False,
-    live_predictor: Callable[[EvaluationDataset], dict[str, Prediction]] | None = None,
 ) -> EvaluationReport:
     """只有显式 live_model 才解析模型配置并创建外部客户端。"""
 
     predictions = None
     if live_model:
-        predictions = (live_predictor or _live_predictions)(dataset)
+        predictions = _live_predictions(dataset)
     return evaluate_dataset(dataset, model_predictions=predictions)
 
 
@@ -196,17 +203,68 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly call the configured external model",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="write the safe JSON report to a file whose parent already exists",
+    )
     return parser
+
+
+def _run_payload(
+    dataset: EvaluationDataset,
+    *,
+    dataset_path: Path,
+    live_model: bool,
+) -> dict[str, Any]:
+    started_at = datetime.now(UTC)
+    started = perf_counter()
+    settings = ExtractionSettings() if live_model else None
+    report = run_evaluation(
+        dataset,
+        live_model=live_model,
+    )
+    model_id = (
+        f"{settings.provider}:{settings.require_model_name()}"
+        if settings is not None
+        else None
+    )
+    return {
+        "run": {
+            "mode": "live-model" if live_model else "offline",
+            "model_id": model_id,
+            "model_tasks": ["candidate", "relation"] if live_model else [],
+            "deterministic_tasks": ["recall", "safety"],
+            "candidate_prompt_version": PROMPT_VERSION,
+            "candidate_schema_version": SCHEMA_VERSION,
+            "relation_prompt_version": RELATION_PROMPT_VERSION,
+            "relation_schema_version": RELATION_SCHEMA_VERSION,
+            "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
+            "started_at": started_at.isoformat(),
+            "duration_ms": round((perf_counter() - started) * 1000, 3),
+        },
+        **report.as_dict(),
+    }
+
+
+def _validate_output_path(path: Path | None) -> None:
+    if path is not None and not path.parent.is_dir():
+        raise ValueError("output parent directory must already exist")
 
 
 def main() -> int:
     args = _parser().parse_args()
-    report = run_evaluation(
+    _validate_output_path(args.output)
+    payload = _run_payload(
         load_dataset(args.dataset),
+        dataset_path=args.dataset,
         live_model=args.live_model,
     )
-    print(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
-    return 0 if report.thresholds_met else 1
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if args.output is not None:
+        args.output.write_text(f"{rendered}\n", encoding="utf-8")
+    print(rendered)
+    return 0 if payload["thresholds_met"] else 1
 
 
 if __name__ == "__main__":

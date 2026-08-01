@@ -12,6 +12,7 @@ class StrictCase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    category: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
 
 
 class CandidateCase(StrictCase):
@@ -20,7 +21,6 @@ class CandidateCase(StrictCase):
     content: str = Field(min_length=1)
     source_role: Literal["user", "assistant"] = "user"
     expected: frozenset[str]
-    baseline: frozenset[str]
 
 
 class RelationEndpointCase(BaseModel):
@@ -41,7 +41,6 @@ class RelationCase(StrictCase):
     source_role: Literal["user", "assistant"] = "user"
     endpoints: tuple[RelationEndpointCase, ...] = Field(min_length=2, max_length=40)
     expected: frozenset[str]
-    baseline: frozenset[str]
 
     @model_validator(mode="after")
     def validate_endpoints(self) -> RelationCase:
@@ -111,6 +110,7 @@ class EvaluationDataset(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: str = Field(min_length=1)
+    benchmark_profile: Literal["investment-research"]
     thresholds: EvaluationThresholds
     cases: tuple[EvaluationCase, ...]
 
@@ -123,7 +123,55 @@ class EvaluationDataset(BaseModel):
         required = {"candidate", "relation", "recall", "safety"}
         if tasks != required:
             raise ValueError("evaluation dataset must cover all supported tasks")
+        candidate_types = frozenset(
+            label
+            for case in self.cases
+            if isinstance(case, CandidateCase)
+            for label in case.expected
+        )
+        missing_types = INVESTMENT_MEMORY_TYPES - candidate_types
+        if missing_types:
+            raise ValueError(
+                "investment benchmark is missing candidate types: "
+                + ", ".join(sorted(missing_types))
+            )
+        relation_types = frozenset(
+            label.split("|", maxsplit=1)[0]
+            for case in self.cases
+            if isinstance(case, RelationCase)
+            for label in case.expected
+        )
+        missing_relations = INVESTMENT_RELATION_TYPES - relation_types
+        if missing_relations:
+            raise ValueError(
+                "investment benchmark is missing relation types: "
+                + ", ".join(sorted(missing_relations))
+            )
         return self
+
+
+INVESTMENT_MEMORY_TYPES = frozenset(
+    {
+        "research_preference",
+        "research_question",
+        "thesis",
+        "evidence_claim",
+        "risk",
+        "catalyst",
+        "ongoing_research",
+        "research_decision",
+    }
+)
+INVESTMENT_RELATION_TYPES = frozenset(
+    {
+        "supports",
+        "challenges",
+        "threatens",
+        "could_catalyze",
+        "addresses",
+        "resolves",
+    }
+)
 
 
 def load_dataset(path: str | Path) -> EvaluationDataset:

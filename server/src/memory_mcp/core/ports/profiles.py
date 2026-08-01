@@ -36,6 +36,7 @@ class MemoryRelationPolicy:
     source_memory_types: frozenset[str]
     target_memory_types: frozenset[str]
     description: str
+    direction_cues: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not _contains_only_normalized_text(self.source_memory_types):
@@ -52,6 +53,8 @@ class MemoryRelationPolicy:
             or self.description != self.description.strip()
         ):
             raise ValueError("description must be normalized non-empty text")
+        if not _contains_only_normalized_text(self.direction_cues):
+            raise ValueError("direction_cues must contain normalized text")
 
 
 class MemoryProfile(Protocol):
@@ -96,6 +99,12 @@ class MemoryProfile(Protocol):
     @property
     def recall_priorities(self) -> Mapping[str, int]:
         """返回后续召回阶段使用的类型优先级。"""
+
+        ...
+
+    @property
+    def recall_hints(self) -> Mapping[str, frozenset[str]]:
+        """返回各记忆类型对应的查询语义提示；值可为空集合。"""
 
         ...
 
@@ -163,6 +172,18 @@ class ProfileRegistry:
         ):
             raise InvalidMemoryProfileError(
                 "recall_priorities must contain non-negative integers"
+            )
+        if set(profile.recall_hints) != set(profile.memory_types):
+            raise InvalidMemoryProfileError(
+                "recall_hints must define every memory type exactly once"
+            )
+        if any(
+            not isinstance(hints, frozenset)
+            or not _contains_only_normalized_text(hints)
+            for hints in profile.recall_hints.values()
+        ):
+            raise InvalidMemoryProfileError(
+                "recall_hints must contain frozensets of normalized text"
             )
         if not _contains_only_normalized_text(frozenset(profile.relation_policies)):
             raise InvalidMemoryProfileError(

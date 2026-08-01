@@ -81,9 +81,6 @@ client_id 或 agent_id。同一用户的不同 Agent 可以使用不同 Token，
 | 本地状态 | `<事件 cwd>/.memory-mcp/hooks/` |
 | 状态 TTL | 24 小时 |
 
-旧的 `MEMORY_HOOK_MCP_URL` 和 `MEMORY_HOOK_BEARER_TOKEN` 只作为迁移别名；新旧
-同时存在时新名称优先。
-
 `general-work` 是通用 Hook 的代码默认值。投研产品集成应在封装层固定
 `HookContext(profile_id="investment-research", ...)`，终端用户仍只接触 URL 和
 Token；Server 和 Hook 都不会根据对话正文猜测场景。仓库手工联调时可以临时设置

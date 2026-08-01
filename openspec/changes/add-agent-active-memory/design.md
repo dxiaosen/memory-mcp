@@ -91,7 +91,7 @@ Codex `turn_id`、Claude Code `prompt_id` 和通用 `run_id` 都可归一化；�
 - 解析 transcript：两个官方文档都不把 transcript JSON 当成稳定接口，并且
   Stop 已直接提供最终助手文本。
 
-### 2. 两个公开必需配置，旧名称只做兼容
+### 2. 连接配置只保留两个公开名称
 
 Agent Host 推荐变量为：
 
@@ -100,9 +100,8 @@ MEMORY_MCP_URL
 MEMORY_MCP_TOKEN
 ```
 
-`MemoryHookSettings` 使用显式环境别名兼容现有
-`MEMORY_HOOK_MCP_URL`/`MEMORY_HOOK_BEARER_TOKEN`。其余参数继续保留代码默认值，
-只作为高级调优项，不进入快速开始配置。`profile_id` 固定默认
+`MemoryHookSettings` 只从这两个公开环境变量读取连接信息。其余参数继续保留代码
+默认值，只作为高级调优项，不进入快速开始配置。`profile_id` 固定默认
 `general-work`；MCP 工具参数也提供同一默认值。
 
 服务端 `MEMORY_MCP_*` 配置与 Agent Host 在不同进程中加载。服务端 settings
@@ -240,16 +239,16 @@ Core。Server 发行包不再提供 Hook CLI，也不把 Agent 包作为生产�
   fail-open；后续可在不改变合同的前提下优化服务端检索。
 - **[其他 Stop Hook 继续当前轮次]** → 文档声明限制；本 Hook 本身永不返回
   block/continue 决策。
-- **[新旧环境变量并存且值冲突]** → 新名称优先，测试覆盖优先级，日志只报告
-  配置来源类别而不报告值。
+- **[旧连接变量残留造成误配置]** → 配置校验拒绝缺少公开 URL/Token 的进程，测试
+  验证旧变量不能单独建立连接，日志不报告 Secret 值。
 - **[workspace 拆包后 import 或发布漂移]** → Agent 单元测试从独立包导入，构建
   wheel 后在隔离环境检查依赖元数据、console script 和禁止的服务端模块。
 
 ## Migration Plan
 
 1. 先发布 Server 包，再构建并发布独立 `memory-mcp-agent` 包。
-2. Agent 进程设置 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；现有
-   `MEMORY_HOOK_*` 配置无需立即迁移。
+2. Agent 进程设置 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`，并在升级前迁移旧的
+   Hook 连接变量。
 3. Agent Host 只安装 `memory-mcp-agent`，注册其提供的相同命令并检查
    Hook 信任/加载状态。
 4. 先用一个测试 owner 完成“偏好声明 → 下一轮召回”闭环，再逐步启用其他用户。
