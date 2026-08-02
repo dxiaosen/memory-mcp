@@ -1,5 +1,5 @@
 {
-  "version": "investment-memory-v2-2026-08-01",
+  "version": "investment-memory-v3-2026-08-02",
   "benchmark_profile": "investment-research",
   "thresholds": {
     "candidate_precision": 0.85,
@@ -440,6 +440,23 @@
         {"label": "huaxing-material-catalyst", "subject": "华星材料-新产线投产", "memory_type": "catalyst", "content": "新产线投产可能扩大销量。"}
       ],
       "expected": ["huaxing-material-risk"]
+    },
+    {
+      "id": "recall-older-durable-cash-quality",
+      "category": "long-horizon-recall",
+      "task": "recall",
+      "query": "我们长期分析华星科技现金创造质量时最关注什么？",
+      "top_k": 1,
+      "candidate_limit": 3,
+      "corpus": [
+        {"label": "older-cash-quality-preference", "subject": "华星科技-长期分析重点", "memory_type": "research_preference", "content": "长期分析华星科技时优先关注自由现金流和利润含金量。", "observed_days_ago": 720},
+        {"label": "recent-meeting-1", "subject": "华星科技-会议安排一", "memory_type": "ongoing_research", "content": "下周安排渠道访谈。", "observed_days_ago": 1},
+        {"label": "recent-meeting-2", "subject": "华星科技-会议安排二", "memory_type": "ongoing_research", "content": "本周整理管理层会议纪要。", "observed_days_ago": 2},
+        {"label": "recent-capacity", "subject": "华星科技-产线进度", "memory_type": "catalyst", "content": "新产线计划四季度投产。", "observed_days_ago": 3},
+        {"label": "recent-risk", "subject": "华星科技-价格风险", "memory_type": "risk", "content": "竞争对手降价可能压低毛利率。", "observed_days_ago": 4},
+        {"label": "recent-question", "subject": "华星科技-续约问题", "memory_type": "research_question", "content": "需要确认重点客户续约率。", "observed_days_ago": 5}
+      ],
+      "expected": ["older-cash-quality-preference"]
     },
     {
       "id": "safety-credential-password",

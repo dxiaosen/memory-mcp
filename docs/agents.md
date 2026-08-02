@@ -73,7 +73,7 @@ client_id 或 agent_id。同一用户的不同 Agent 可以使用不同 Token，
 
 | 项目 | 默认值 |
 | --- | --- |
-| `profile_id` | `general-work` |
+| `profile_id` | Agent 不发送；使用当前 Token 的服务端 `default_profile_id` |
 | MCP 超时 | 15 秒 |
 | fail-open | 开启 |
 | recall | 最多 5 条、600 token |
@@ -81,11 +81,10 @@ client_id 或 agent_id。同一用户的不同 Agent 可以使用不同 Token，
 | 本地状态 | `<事件 cwd>/.memory-mcp/hooks/` |
 | 状态 TTL | 24 小时 |
 
-`general-work` 是通用 Hook 的代码默认值。投研产品集成应在封装层固定
-`HookContext(profile_id="investment-research", ...)`，终端用户仍只接触 URL 和
-Token；Server 和 Hook 都不会根据对话正文猜测场景。仓库手工联调时可以临时设置
-`MEMORY_HOOK_PROFILE_ID=investment-research`，它属于集成调试，不应做成每轮用户
-选择项。
+Server Principal 的 `default_profile_id` 缺省为 `general-work`。投研产品应把该
+Agent Token 在服务端映射为 `investment-research`，终端用户仍只接触 URL 和 Token；
+Server 和 Hook 都不会根据对话正文猜测场景。高级集成或仓库手工联调仍可临时设置
+`MEMORY_HOOK_PROFILE_ID=investment-research` 显式覆盖，但不应做成每轮用户选择项。
 
 投研关系能力不会增加 Agent 环境变量。AfterRun 仍只提交一次完成轮次，关系识别在
 Server 的 Capture 流程内自动发生：先完成候选准入，再从本轮 auto-save 和同 owner/
@@ -406,7 +405,20 @@ event="agent_hook.capture.completed"
 
 ### 7.4 投研集成
 
-验证内置投研 Profile 时，在启动宿主的环境中临时增加：
+验证内置投研 Profile 时，推荐先在 Server 的 Token 映射中配置：
+
+```json
+{
+  "<agent-token>": {
+    "tenant_id": "tenant-001",
+    "subject_id": "subject-001",
+    "default_profile_id": "investment-research"
+  }
+}
+```
+
+重启 Server 后 Agent 仍只使用 URL 和 Token。若不能修改服务端配置，可在启动宿主的
+环境中临时增加高级覆盖：
 
 ```bash
 export MEMORY_HOOK_PROFILE_ID=investment-research
@@ -415,7 +427,8 @@ export MEMORY_HOOK_PROFILE_ID=investment-research
 先输入一条明确、长期且不含交易指令的研究偏好，再在新轮次询问该偏好。服务端可能
 保存为 `research_preference`，也可能因模型置信度进入 pending。`thesis`、
 `evidence_claim`、`risk`、`catalyst` 等是服务端抽取语义，不需要用户在正文里说出
-类型名。联调结束后删除该环境变量即可恢复 `general-work`。
+类型名。删除覆盖后会恢复该 Token 的服务端默认 Profile，而不是固定恢复
+`general-work`。
 
 ## 8. 本地状态与日志
 

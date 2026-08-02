@@ -21,7 +21,7 @@ class MemoryHookSettings(BaseSettings):
         min_length=1,
         validation_alias=AliasChoices("MEMORY_MCP_TOKEN", "bearer_token"),
     )
-    profile_id: str = Field(default="general-work", min_length=1)
+    profile_id: str | None = Field(default=None, min_length=1)
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)
     fail_open: bool = True
     recall_max_items: int = Field(default=5, ge=1, le=10)

@@ -11,13 +11,15 @@ PostgreSQL 持久化由服务端统一负责。
 - duplicate Evidence、replacement revision 和 history；
 - 十个带认证和 scope 的 MCP 工具，包括幂等记忆/关系撤销；
 - revision 的抽取置信度、验证状态、敏感级别、有效期，以及可引用的来源元数据；
-- owner-first recall 和安全 rendered context；
+- owner-first 的 PostgreSQL trigram/近期混合召回和安全 rendered context；
+- 服务端周期物化到期记忆、超龄 pending review 和失效关系的维护闭环；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
 - 独立轻量 `memory-mcp-agent` 发行包，Agent Host 不安装数据库、模型或 Server；
 - 真实 OpenAI-compatible/DeepSeek 结构化候选与关系抽取，以及测试注入的确定性替身；
 - `general-work` 与 `investment-research` 两套正式 MemoryProfile；
+- Profile v2 策略指纹审计、跨版本捕获幂等和 Token 默认 Profile 路由；
 - owner-scoped 一跳记忆关系、投研关系策略、AfterRun 自动建边和关系感知召回；
-- 47 个中文投研案例的离线/真实模型质量基准和可复现结果快照；
+- 48 个中文投研案例的离线/真实模型质量基准和可复现结果快照；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
@@ -52,8 +54,9 @@ chmod 600 examples/agent.env
 ```
 
 Agent Host 只填写 `MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`；Token 必须与服务端
-Token 映射中的一枚 key 完全相同。`profile_id`、owner、超时、预算和重试无需用户
-配置。生产部署应通过 Secret Manager、systemd
+Token 映射中的一枚 key 完全相同。Agent 默认省略 `profile_id`，Server 使用该 Token
+配置的 `default_profile_id`（兼容缺省为 `general-work`）；owner、超时、预算和重试
+无需用户配置。生产部署应通过 Secret Manager、systemd
 `EnvironmentFile` 或编排平台注入，而不是长期保留在项目目录。
 
 Agent 不与 Server 同机时，只需安装轻量 Agent wheel：
@@ -131,7 +134,8 @@ BeforeRun/AfterRun 合同，并内置兼容 Codex 与 Claude Code；首批配置
 | `revoke_memory_relation` | `memory:review` | 幂等撤销关系并保留审计历史 |
 
 工具参数不接受 owner。服务端只从可信 Token 映射构造 owner；同一用户的不同 Agent
-可以共享记忆，不同用户即使猜中 memory/review ID 也不能读取。
+可以共享记忆，不同用户即使猜中 memory/review ID 也不能读取。capture/recall 未传
+Profile 时由认证主体默认值路由，高级调用方可显式覆盖但不能借此改变 owner。
 
 ## 文档
 
@@ -156,6 +160,8 @@ OpenSpec 只承担规范和变更管理：
 - [自动记忆关系](openspec/changes/automate-memory-relations/)
 - [关系证据链与质量评估](openspec/changes/harden-memory-relations/)
 - [投研记忆评测基准](openspec/changes/benchmark-investment-memory-quality/)
+- [策略路由与 Recall 加固](openspec/changes/harden-policy-routing-recall/)
+- [记忆维护与混合召回](openspec/changes/harden-memory-maintenance-recall/)
 
 ## 验证
 
@@ -171,6 +177,8 @@ openspec-cn validate add-memory-relations --strict
 openspec-cn validate automate-memory-relations --strict
 openspec-cn validate harden-memory-relations --strict
 openspec-cn validate benchmark-investment-memory-quality --strict
+openspec-cn validate harden-policy-routing-recall --strict
+openspec-cn validate harden-memory-maintenance-recall --strict
 .venv/bin/python -m evals.runner
 ```
 

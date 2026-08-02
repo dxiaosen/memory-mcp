@@ -40,6 +40,11 @@ class ConfiguredPrincipal(BaseModel):
     scopes: frozenset[MemoryScopeName] = frozenset(
         {"memory:read", "memory:write", "memory:review"}
     )
+    default_profile_id: str = Field(
+        default="general-work",
+        min_length=1,
+        pattern=IDENTITY_COMPONENT_PATTERN,
+    )
 
     @property
     def owner_key(self) -> str:
@@ -71,6 +76,8 @@ class MemoryServerSettings(BaseSettings):
     max_capture_characters: int = Field(default=100_000, ge=1_000, le=1_000_000)
     recall_max_items: int = Field(default=10, ge=1, le=10)
     recall_max_token_budget: int = Field(default=1_200, ge=64, le=8_000)
+    recall_candidate_limit: int = Field(default=500, ge=1, le=10_000)
+    maintenance_interval_seconds: int = Field(default=300, ge=0, le=86_400)
 
     auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/memory-mcp-auth")
     resource_server_url: AnyHttpUrl | None = None

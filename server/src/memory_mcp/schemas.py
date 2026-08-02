@@ -155,6 +155,7 @@ class CaptureReceipt(StrictDto):
     status: str
     replayed: bool
     profile_version: str
+    profile_fingerprint: str
     summary: CaptureSummary
     created_memory_ids: tuple[UUID, ...] = ()
     pending_review_ids: tuple[UUID, ...] = ()
@@ -169,6 +170,7 @@ class CaptureReceipt(StrictDto):
             status=result.status.value,
             replayed=result.replayed,
             profile_version=result.metadata.profile_version,
+            profile_fingerprint=result.metadata.profile_fingerprint,
             summary=CaptureSummary(
                 auto_saved_count=decisions.count(AdmissionDecision.AUTO_SAVE),
                 pending_count=decisions.count(AdmissionDecision.PENDING),

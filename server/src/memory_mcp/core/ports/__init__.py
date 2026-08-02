@@ -15,11 +15,13 @@ from memory_mcp.core.ports.profiles import (
     MemoryProfile,
     MemoryRelationPolicy,
     ProfileRegistry,
+    profile_fingerprint,
 )
 from memory_mcp.core.ports.repositories import (
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryRepository,
+    RecallCandidateSet,
     ReplacementWrite,
 )
 
@@ -35,9 +37,11 @@ __all__ = [
     "MemoryRelationPolicy",
     "MemoryRepository",
     "ProfileRegistry",
+    "RecallCandidateSet",
     "RelationExtractionRequest",
     "RelationExtractor",
     "ReplacementWrite",
     "SensitiveContentGuard",
     "SensitiveInspection",
+    "profile_fingerprint",
 ]

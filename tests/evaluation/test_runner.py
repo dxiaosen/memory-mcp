@@ -7,16 +7,40 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from evals.metrics import _recall_labels
 from evals.runner import _live_predictions, _run_payload, _validate_output_path, main
 from evals.schema import (
     INVESTMENT_MEMORY_TYPES,
     INVESTMENT_RELATION_TYPES,
     CandidateCase,
+    RecallCase,
+    RecallCorpusItem,
     RelationCase,
     load_dataset,
 )
 
 _DATASET = Path("evals/cases.json")
+
+
+def test_recall_benchmark_preserves_production_empty_result() -> None:
+    case = RecallCase(
+        id="recall-unrelated-empty",
+        category="semantic-recall",
+        task="recall",
+        query="量子生物学实验进展",
+        top_k=1,
+        corpus=(
+            RecallCorpusItem(
+                label="report-format",
+                subject="公司深度报告格式",
+                memory_type="research_preference",
+                content="先列关键风险，再给核心结论。",
+            ),
+        ),
+        expected=frozenset(),
+    )
+
+    assert _recall_labels(case) == frozenset()
 
 
 def test_offline_benchmark_is_honest_deterministic_and_safe() -> None:

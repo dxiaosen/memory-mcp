@@ -161,7 +161,8 @@ def test_supported_hosts_share_active_memory_flow(
         assert capture["turn_id"] == "turn-1"
         assert capture["user_input"] == "项目周报怎么写？"
         assert capture["final_output"] == "已经按表格生成。"
-        assert capture["profile_id"] == "general-work"
+        assert capture["profile_id"] is None
+        assert client.recall_calls[0]["profile_id"] is None
 
     anyio.run(profile_id)
 
@@ -378,7 +379,7 @@ def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
         capture = client.capture_calls[0]
         assert capture["conversation_id"] == "conversation-1"
         assert capture["turn_id"] == "run-1"
-        assert capture["profile_id"] == "general-work"
+        assert capture["profile_id"] is None
         assert capture["user_input"] == "请按项目约定生成周报"
         assert capture["final_output"] == "已经生成周报。"
 

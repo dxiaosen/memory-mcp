@@ -13,6 +13,7 @@ from uuid import UUID
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from memory_mcp.core.adapters.postgresql.maintenance import run_maintenance
 from memory_mcp.core.adapters.postgresql.mapping import (
     as_uuid,
     load_evidence,
@@ -20,6 +21,9 @@ from memory_mcp.core.adapters.postgresql.mapping import (
     to_record,
     to_review,
     to_revision,
+)
+from memory_mcp.core.adapters.postgresql.recall import (
+    find_recall_candidates as query_recall_candidates,
 )
 from memory_mcp.core.adapters.postgresql.schema import validate_schema
 from memory_mcp.core.adapters.postgresql.validation import (
@@ -31,6 +35,7 @@ from memory_mcp.core.domain import (
     CaptureStatus,
     Evidence,
     ExpressionBasis,
+    MaintenanceResult,
     MemoryHistoryEntry,
     MemoryRecord,
     MemoryRelation,
@@ -50,6 +55,7 @@ from memory_mcp.core.ports import (
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryProfile,
+    RecallCandidateSet,
     ReplacementWrite,
 )
 from memory_mcp.logging import log_event, stable_reference
@@ -235,7 +241,10 @@ class PostgreSQLMemoryRepository:
         subject: str | None = None,
         memory_type: str | None = None,
         effective_at: datetime | None = None,
+        limit: int | None = None,
     ) -> Sequence[MemoryRecord]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
         conditions = [
             "i.owner_id = %s",
             "i.profile_id = %s",
@@ -253,10 +262,19 @@ class PostgreSQLMemoryRepository:
         if memory_type is not None:
             conditions.append("i.memory_type = %s")
             parameters.append(memory_type)
+        if subject is not None:
+            conditions.append(
+                "lower(regexp_replace(btrim(i.subject), '\\s+', ' ', 'g')) = "
+                "lower(regexp_replace(btrim(%s), '\\s+', ' ', 'g'))"
+            )
+            parameters.append(subject)
         query = (
             f"{_SELECT_CURRENT_RECORD} WHERE {' AND '.join(conditions)} "
-            "ORDER BY i.created_at, i.memory_id"
+            "ORDER BY r.observed_at DESC, i.memory_id DESC"
         )
+        if limit is not None:
+            query += " LIMIT %s"
+            parameters.append(limit)
         subject_key = normalize_memory_text(subject) if subject is not None else None
         with self._pool.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
@@ -270,6 +288,46 @@ class PostgreSQLMemoryRepository:
             for record in records
             if normalize_memory_text(record.item.subject) == subject_key
         )
+
+    def find_recall_candidates(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        search_text: str,
+        subject: str | None,
+        effective_at: datetime,
+        limit: int,
+    ) -> RecallCandidateSet:
+        """在 owner/Profile 边界内用 trigram 优先、近期记录补齐候选。"""
+
+        with self._pool.connection() as connection:
+            return query_recall_candidates(
+                connection,
+                principal,
+                profile_id=profile_id,
+                search_text=search_text,
+                subject=subject,
+                effective_at=effective_at,
+                limit=limit,
+            )
+
+    def maintain(
+        self,
+        *,
+        effective_at: datetime,
+        review_cutoff: datetime,
+        limit: int,
+    ) -> MaintenanceResult:
+        """原子物化一批过期 revision/review 及其关系终态。"""
+
+        with self._pool.connection() as connection:
+            return run_maintenance(
+                connection,
+                effective_at=effective_at,
+                review_cutoff=review_cutoff,
+                limit=limit,
+            )
 
     def revoke(
         self,
@@ -510,21 +568,16 @@ class PostgreSQLMemoryRepository:
         profile_id: str,
         conversation_id: str,
         source_turn_id: str,
-        profile_version: str,
         event_id: str | None = None,
     ) -> CaptureResult | None:
         if event_id is not None:
             where_clause = """
                 owner_id = %s
-                AND profile_id = %s
                 AND event_id = %s
-                AND profile_version = %s
             """
             parameters: tuple[object, ...] = (
                 principal.owner_id,
-                profile_id,
                 event_id,
-                profile_version,
             )
         else:
             where_clause = """
@@ -532,21 +585,19 @@ class PostgreSQLMemoryRepository:
                 AND profile_id = %s
                 AND conversation_id = %s
                 AND source_turn_id = %s
-                AND profile_version = %s
             """
             parameters = (
                 principal.owner_id,
                 profile_id,
                 conversation_id,
                 source_turn_id,
-                profile_version,
             )
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"""
                 SELECT capture_id, owner_id, profile_id, conversation_id,
-                       source_turn_id, profile_version, prompt_version,
-                       schema_version, model_id, status, failure_code,
+                       source_turn_id, profile_version, profile_fingerprint,
+                       prompt_version, schema_version, model_id, status, failure_code,
                        created_at, completed_at, event_id,
                        contract_version, payload_fingerprint
                 FROM memory_capture_runs
@@ -567,14 +618,13 @@ class PostgreSQLMemoryRepository:
         result = write.result
         stale_relation_count = 0
         with self._pool.connection() as connection:
-            event_or_turn = result.event_id or (
-                f"{result.conversation_id}\x1f{result.source_turn_id}"
-            )
-            idempotency_key = (
-                f"{result.owner_id}\x1f{result.profile_id}\x1f"
-                f"{event_or_turn}\x1f"
-                f"{result.metadata.profile_version}"
-            )
+            if result.event_id is not None:
+                idempotency_key = f"{result.owner_id}\x1fevent\x1f{result.event_id}"
+            else:
+                idempotency_key = (
+                    f"{result.owner_id}\x1flegacy\x1f{result.profile_id}\x1f"
+                    f"{result.conversation_id}\x1f{result.source_turn_id}"
+                )
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (idempotency_key,),
@@ -582,15 +632,11 @@ class PostgreSQLMemoryRepository:
             if result.event_id is not None:
                 where_clause = """
                     owner_id = %s
-                    AND profile_id = %s
                     AND event_id = %s
-                    AND profile_version = %s
                 """
                 parameters: tuple[object, ...] = (
                     result.owner_id,
-                    result.profile_id,
                     result.event_id,
-                    result.metadata.profile_version,
                 )
             else:
                 where_clause = """
@@ -598,14 +644,12 @@ class PostgreSQLMemoryRepository:
                     AND profile_id = %s
                     AND conversation_id = %s
                     AND source_turn_id = %s
-                    AND profile_version = %s
                 """
                 parameters = (
                     result.owner_id,
                     result.profile_id,
                     result.conversation_id,
                     result.source_turn_id,
-                    result.metadata.profile_version,
                 )
             existing = connection.execute(
                 f"""
@@ -633,7 +677,9 @@ class PostgreSQLMemoryRepository:
                 connection.execute(
                     """
                     UPDATE memory_capture_runs
-                    SET prompt_version = %s,
+                    SET profile_version = %s,
+                        profile_fingerprint = %s,
+                        prompt_version = %s,
                         schema_version = %s,
                         model_id = %s,
                         status = %s,
@@ -642,6 +688,8 @@ class PostgreSQLMemoryRepository:
                     WHERE capture_id = %s AND owner_id = %s
                     """,
                     (
+                        result.metadata.profile_version,
+                        result.metadata.profile_fingerprint,
                         result.metadata.prompt_version,
                         result.metadata.schema_version,
                         result.metadata.model_id,
@@ -923,13 +971,13 @@ class PostgreSQLMemoryRepository:
             """
             INSERT INTO memory_capture_runs (
                 capture_id, owner_id, profile_id, conversation_id,
-                source_turn_id, profile_version, prompt_version,
+                source_turn_id, profile_version, profile_fingerprint, prompt_version,
                 schema_version, model_id, status, failure_code,
                 created_at, completed_at, event_id, contract_version,
                 payload_fingerprint
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s
             )
             """,
@@ -940,6 +988,7 @@ class PostgreSQLMemoryRepository:
                 result.conversation_id,
                 result.source_turn_id,
                 result.metadata.profile_version,
+                result.metadata.profile_fingerprint,
                 result.metadata.prompt_version,
                 result.metadata.schema_version,
                 result.metadata.model_id,

@@ -41,17 +41,18 @@ class CaptureTools(ToolSupport):
             observed_at: datetime,
             messages: list[RoleMessageV1],
             ctx: Context,
-            profile_id: str = "general-work",
+            profile_id: str | None = None,
             subject_hint: str | None = None,
         ) -> CaptureReceipt | ErrorResponse:
             current_request_id = request_id(ctx)
             try:
                 principal = self._authorize(MemoryScope.WRITE)
+                resolved_profile_id = profile_id or principal.default_profile_id
                 event = CompletedTurnEventV1.model_validate(
                     {
                         "event_id": event_id,
                         "contract_version": contract_version,
-                        "profile_id": profile_id,
+                        "profile_id": resolved_profile_id,
                         "conversation_id": conversation_id,
                         "turn_id": turn_id,
                         "observed_at": observed_at,

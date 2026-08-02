@@ -9,6 +9,7 @@ from uuid import UUID
 from memory_mcp.core.domain import (
     CaptureResult,
     Evidence,
+    MaintenanceResult,
     MemoryHistoryEntry,
     MemoryRecord,
     MemoryRelation,
@@ -50,6 +51,23 @@ class ReplacementWrite:
     expected_revision_id: UUID
     revision: MemoryRevision
     evidence: tuple[Evidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecallCandidateSet:
+    """Repository 已隔离、去重并限制数量的混合召回候选。"""
+
+    records: tuple[MemoryRecord, ...]
+    lexical_count: int
+    recent_count: int
+
+    def __post_init__(self) -> None:
+        for field_name in ("lexical_count", "recent_count"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if self.lexical_count + self.recent_count != len(self.records):
+            raise ValueError("candidate source counts must match records")
 
 
 class MemoryRepository(Protocol):
@@ -97,8 +115,34 @@ class MemoryRepository(Protocol):
         subject: str | None = None,
         memory_type: str | None = None,
         effective_at: datetime | None = None,
+        limit: int | None = None,
     ) -> Sequence[MemoryRecord]:
         """在 Repository 内先完成 owner/current/active/profile_id/subject 缩小。"""
+
+        ...
+
+    def find_recall_candidates(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        search_text: str,
+        subject: str | None,
+        effective_at: datetime,
+        limit: int,
+    ) -> RecallCandidateSet:
+        """返回 owner/Profile 内词法优先、近期补齐的有界候选。"""
+
+        ...
+
+    def maintain(
+        self,
+        *,
+        effective_at: datetime,
+        review_cutoff: datetime,
+        limit: int,
+    ) -> MaintenanceResult:
+        """执行一次不经公共 Principal 暴露的系统级有界维护事务。"""
 
         ...
 
@@ -161,10 +205,9 @@ class MemoryRepository(Protocol):
         profile_id: str,
         conversation_id: str,
         source_turn_id: str,
-        profile_version: str,
         event_id: str | None = None,
     ) -> CaptureResult | None:
-        """读取同一 owner、source turn 和 profile 版本的捕获结果。"""
+        """按与策略版本无关的逻辑事件身份读取捕获结果。"""
 
         ...
 

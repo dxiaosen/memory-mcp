@@ -47,6 +47,7 @@ from memory_mcp.core.ports import (
     ProfileRegistry,
     RelationExtractor,
     SensitiveContentGuard,
+    profile_fingerprint,
 )
 from memory_mcp.logging import log_content_event, log_event, stable_reference
 
@@ -118,16 +119,16 @@ class CaptureService:
     ) -> CaptureResult:
         """进入模型抽取前串行化同一进程内的重试。"""
 
-        profile = self._profile_registry.get(turn.profile_id)
-        event_or_turn = turn.event_id or (
-            f"{turn.conversation_id}\x1f{turn.source_turn_id}"
-        )
-        key = (
-            principal.owner_id,
-            turn.profile_id,
-            event_or_turn,
-            profile.profile_version,
-        )
+        if turn.event_id is not None:
+            key = (principal.owner_id, "event", turn.event_id)
+        else:
+            key = (
+                principal.owner_id,
+                "legacy",
+                turn.profile_id,
+                turn.conversation_id,
+                turn.source_turn_id,
+            )
         with self._capture_locks.hold(key):
             return self._capture_turn_locked(principal, turn)
 
@@ -151,13 +152,13 @@ class CaptureService:
             prompt_version=extractor.prompt_version,
             schema_version=extractor.schema_version,
             profile_version=profile.profile_version,
+            profile_fingerprint=profile_fingerprint(profile),
         )
         existing = self._repository.get_capture(
             principal,
             profile_id=turn.profile_id,
             conversation_id=turn.conversation_id,
             source_turn_id=turn.source_turn_id,
-            profile_version=profile.profile_version,
             event_id=turn.event_id,
         )
         if (

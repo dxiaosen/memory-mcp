@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -5,10 +6,16 @@ from uuid import UUID
 
 import anyio
 import pytest
-from memory_mcp.app import _run_server, create_memory_mcp_server
+from memory_mcp.app import (
+    _run_maintenance_loop,
+    _run_server,
+    _validate_default_profiles,
+    create_memory_mcp_server,
+)
 from memory_mcp.auth import StaticTokenVerifier
 from memory_mcp.core import (
     ExpressionBasis,
+    MaintenanceResult,
     MemoryRelation,
     RelationOrigin,
     RelationProvenance,
@@ -190,10 +197,10 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
     assert "tenant_id" not in serialized_schema
     assert capture.inputSchema.get("additionalProperties") is False
     assert "profile_id" not in capture.inputSchema["required"]
-    assert capture.inputSchema["properties"]["profile_id"]["default"] == "general-work"
+    assert capture.inputSchema["properties"]["profile_id"]["default"] is None
     recall = next(tool for tool in tools if tool.name == "recall_memory")
     assert "profile_id" not in recall.inputSchema["required"]
-    assert recall.inputSchema["properties"]["profile_id"]["default"] == "general-work"
+    assert recall.inputSchema["properties"]["profile_id"]["default"] is None
     for relation_tool_name in ("link_memories", "revoke_memory_relation"):
         relation_tool = next(tool for tool in tools if tool.name == relation_tool_name)
         relation_schema = json.dumps(relation_tool.inputSchema)
@@ -211,6 +218,10 @@ def test_server_settings_hide_tokens_and_fail_closed_without_mapping() -> None:
     assert (
         settings.require_configured_principals()[_TOKEN_A].owner_key
         == "default:analyst-a"
+    )
+    assert (
+        settings.require_configured_principals()[_TOKEN_A].default_profile_id
+        == "general-work"
     )
 
     empty = MemoryServerSettings(
@@ -252,7 +263,36 @@ def test_static_verifier_derives_an_opaque_stable_client_id() -> None:
     assert first.client_id == second.client_id
     assert first.client_id.startswith("static-")
     assert _TOKEN_A not in first.client_id
-    assert first.claims == {"tenant_id": "default"}
+    assert first.claims == {
+        "default_profile_id": "general-work",
+        "tenant_id": "default",
+    }
+
+
+def test_configured_principal_validates_default_profile_identifier() -> None:
+    settings = MemoryServerSettings(
+        auth_tokens=SecretStr(
+            json.dumps(
+                {
+                    _TOKEN_A: {
+                        "subject_id": "analyst-a",
+                        "default_profile_id": "investment research",
+                    }
+                }
+            )
+        ),
+        _env_file=None,
+    )
+
+    with pytest.raises(ValidationError, match="default_profile_id"):
+        settings.require_configured_principals()
+
+
+def test_server_rejects_unregistered_principal_default_profile() -> None:
+    principals = _settings().require_configured_principals().values()
+
+    with pytest.raises(ValueError, match="default_profile_id is not registered"):
+        _validate_default_profiles(principals, [TestMemoryProfile()])
 
 
 def test_configured_principal_rejects_ambiguous_identity_components() -> None:
@@ -315,6 +355,56 @@ def test_database_pool_bounds_are_consistent() -> None:
             database_pool_max_size=4,
             _env_file=None,
         )
+
+
+def test_maintenance_interval_can_be_disabled_but_not_negative() -> None:
+    assert (
+        MemoryServerSettings(
+            maintenance_interval_seconds=0,
+            _env_file=None,
+        ).maintenance_interval_seconds
+        == 0
+    )
+    with pytest.raises(ValidationError, match="maintenance_interval_seconds"):
+        MemoryServerSettings(
+            maintenance_interval_seconds=-1,
+            _env_file=None,
+        )
+
+
+def test_maintenance_loop_drains_backlog_and_stops_cleanly() -> None:
+    calls = 0
+
+    def operation() -> MaintenanceResult:
+        nonlocal calls
+        calls += 1
+        return MaintenanceResult(
+            effective_at=datetime(2026, 8, 2, tzinfo=UTC),
+            expired_memory_count=1 if calls == 1 else 0,
+            expired_review_count=0,
+            stale_relation_count=0,
+            has_more=calls == 1,
+        )
+
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+
+        async def stop_after_drain() -> None:
+            while calls < 2:
+                await asyncio.sleep(0)
+            stop_event.set()
+
+        await asyncio.gather(
+            _run_maintenance_loop(
+                operation,
+                interval_seconds=60,
+                stop_event=stop_event,
+            ),
+            stop_after_drain(),
+        )
+
+    anyio.run(scenario)
+    assert calls == 2
 
 
 def test_interactive_shutdown_does_not_expose_keyboard_interrupt() -> None:

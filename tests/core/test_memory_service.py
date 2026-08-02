@@ -444,7 +444,15 @@ def test_relation_rejects_an_expired_endpoint() -> None:
     principal = PrincipalContext("analyst-a")
     source = service.create_memory(principal, project_preference_command())
     target = service.create_memory(principal, _ongoing_command())
+    relation = service.link_memories(
+        principal,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
     current_time[0] = observed_at + timedelta(days=1)
+
+    result = service.run_maintenance()
 
     with pytest.raises(InvalidMemoryRelationError, match="could not be created"):
         service.link_memories(
@@ -453,6 +461,28 @@ def test_relation_rejects_an_expired_endpoint() -> None:
             target.item.memory_id,
             "supports",
         )
+    assert result.expired_memory_count == 1
+    assert result.stale_relation_count == 1
+    assert (
+        service.get_memory(
+            principal,
+            target.item.memory_id,
+        ).current_revision.lifecycle_status
+        is LifecycleStatus.EXPIRED
+    )
+    assert service.list_memory_relations(principal, source.item.memory_id) == ()
+    history = service.list_memory_relations(
+        principal,
+        source.item.memory_id,
+        include_inactive=True,
+    )
+    assert history[0].relation.relation_id == relation.relation_id
+    assert history[0].relation.status is RelationStatus.STALE
+    assert history[0].relation.stale_reason == "endpoint_expired"
+
+    replay = service.run_maintenance()
+    assert replay.expired_memory_count == 0
+    assert replay.stale_relation_count == 0
 
 
 def test_relation_survives_endpoint_replacement_and_domain_invariants() -> None:

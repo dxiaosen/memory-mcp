@@ -19,6 +19,7 @@ from memory_mcp.core.domain.lifecycle import (
     MemoryHistoryEntry,
     normalize_memory_text,
 )
+from memory_mcp.core.domain.maintenance import MaintenanceResult
 from memory_mcp.core.domain.models import (
     AssertionKind,
     Evidence,
@@ -64,6 +65,7 @@ __all__ = [
     "ExpressionBasis",
     "ExtractionMetadata",
     "LifecycleStatus",
+    "MaintenanceResult",
     "MemoryHistoryEntry",
     "MemoryItem",
     "MemoryRecord",

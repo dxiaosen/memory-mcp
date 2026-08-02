@@ -24,7 +24,7 @@ class RecallTools(ToolSupport):
         async def recall_memory(
             query: str,
             ctx: Context,
-            profile_id: str = "general-work",
+            profile_id: str | None = None,
             subject: str | None = None,
             task_intent: str | None = None,
             max_items: int = 5,
@@ -33,6 +33,7 @@ class RecallTools(ToolSupport):
             current_request_id = request_id(ctx)
             try:
                 principal = self._authorize(MemoryScope.READ)
+                resolved_profile_id = profile_id or principal.default_profile_id
                 if max_items > self._settings.recall_max_items:
                     raise ValueError("max_items exceeds the server limit")
                 if token_budget > self._settings.recall_max_token_budget:
@@ -46,7 +47,7 @@ class RecallTools(ToolSupport):
                     self._service.recall_memory,
                     principal.to_core(),
                     RecallQuery(
-                        profile_id=profile_id,
+                        profile_id=resolved_profile_id,
                         query=query,
                         subject=subject,
                         task_intent=task_intent,

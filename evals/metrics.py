@@ -1,20 +1,40 @@
 """确定性的评估计分，不触碰模型、网络或数据库。"""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from uuid import NAMESPACE_URL, uuid5
 
+from memory_mcp.core import (
+    AssertionKind,
+    Evidence,
+    LifecycleStatus,
+    MemoryItem,
+    MemoryRecord,
+    MemoryRevision,
+    MessageRole,
+    PrincipalContext,
+    RecallQuery,
+    SensitivityLevel,
+    VerificationStatus,
+)
+from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
-from memory_mcp.core.application.recall_service import _profile_relevance
+from memory_mcp.core.composition import create_memory_service
 from memory_mcp.profiles import InvestmentResearchProfile
 
 from evals.schema import (
     CandidateCase,
     EvaluationDataset,
     RecallCase,
+    RecallCorpusItem,
     RelationCase,
     SafetyCase,
 )
 
 type Prediction = frozenset[str] | bool
+
+_RECALL_OWNER = PrincipalContext("evaluation-owner")
+_RECALL_TIME = datetime(2020, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +146,7 @@ def evaluate_dataset(
             hits = len(case.expected & predicted)
             recall_hits += hits
             recall_expected += len(case.expected)
-            if hits != len(case.expected):
+            if hits != len(case.expected) or (not case.expected and predicted):
                 failed.append(case.id)
         elif isinstance(case, SafetyCase):
             evaluated_ids.add(case.id)
@@ -211,18 +231,74 @@ def _add_set_counts(
 
 def _recall_labels(case: RecallCase) -> frozenset[str]:
     profile = InvestmentResearchProfile()
-    ranked = sorted(
-        case.corpus,
-        key=lambda item: (
-            _profile_relevance(
-                case.query,
-                " ".join((item.subject, item.memory_type, item.content)),
-                item.memory_type,
-                profile.recall_priorities,
-                profile.recall_hints,
-            ),
-            item.label,
-        ),
-        reverse=True,
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(
+        repository,
+        [profile],
+        recall_candidate_limit=case.candidate_limit,
     )
-    return frozenset(item.label for item in ranked[: case.top_k])
+    labels_by_id = {}
+    for item in case.corpus:
+        record = _recall_record(case, item)
+        repository.add(_RECALL_OWNER, record)
+        labels_by_id[record.item.memory_id] = item.label
+    result = service.recall_memory(
+        _RECALL_OWNER,
+        RecallQuery(
+            profile_id=profile.profile_id,
+            query=case.query,
+            max_items=case.top_k,
+            token_budget=8_000,
+        ),
+    )
+    return frozenset(labels_by_id[item.memory_id] for item in result.items)
+
+
+def _recall_record(case: RecallCase, item: RecallCorpusItem) -> MemoryRecord:
+    memory_id = uuid5(NAMESPACE_URL, f"recall-memory:{case.id}:{item.label}")
+    revision_id = uuid5(NAMESPACE_URL, f"recall-revision:{case.id}:{item.label}")
+    evidence_id = uuid5(NAMESPACE_URL, f"recall-evidence:{case.id}:{item.label}")
+    observed_at = _RECALL_TIME - timedelta(days=item.observed_days_ago)
+    return MemoryRecord(
+        item=MemoryItem(
+            memory_id=memory_id,
+            owner_id=_RECALL_OWNER.owner_id,
+            profile_id="investment-research",
+            subject=item.subject,
+            memory_type=item.memory_type,
+            created_at=observed_at,
+        ),
+        current_revision=MemoryRevision(
+            revision_id=revision_id,
+            memory_id=memory_id,
+            owner_id=_RECALL_OWNER.owner_id,
+            revision_number=1,
+            content=item.content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            business_progress=None,
+            save_rationale="evaluation fixture",
+            observed_at=observed_at,
+            created_at=observed_at,
+            extraction_confidence=1.0,
+            verification_status=VerificationStatus.USER_ASSERTED,
+            sensitivity_level=SensitivityLevel.INTERNAL,
+            valid_from=observed_at,
+            valid_until=None,
+            last_verified_at=None,
+        ),
+        evidence=(
+            Evidence(
+                evidence_id=evidence_id,
+                memory_id=memory_id,
+                revision_id=revision_id,
+                owner_id=_RECALL_OWNER.owner_id,
+                conversation_id=f"eval-{case.id}",
+                source_turn_id="fixture",
+                source_expression=item.content,
+                observed_at=observed_at,
+                created_at=observed_at,
+                source_role=MessageRole.USER,
+            ),
+        ),
+    )

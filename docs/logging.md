@@ -69,7 +69,9 @@ request_id="..." result_count=1 status="completed" tool_name="list_memories"
 | `capture_id` / `memory_id` / `revision_id` | 技术记录 ID |
 | `status` / `error_code` | 稳定状态 |
 | `relation_origin` / `relation_scope` | 关系来源和 item/revision 作用域 |
-| `relation_count` / `stale_relation_count` | 新建关系和 replacement 失效关系数量 |
+| `relation_count` / `stale_relation_count` | 新建关系和 replacement/到期失效关系数量 |
+| `candidate_count` / `lexical_count` / `recent_count` | 混合召回候选计数 |
+| `expired_memory_count` / `expired_review_count` | 单批维护状态转换计数 |
 | `result_count` | 结果数量 |
 | `duration_ms` | 操作耗时 |
 | `error_type` | 异常类型名，不是异常消息 |
@@ -139,6 +141,9 @@ memory.capture.incomplete
 memory.capture.processing_failed
 memory.review.confirmed
 memory.review.rejected
+memory.recall.candidates
+memory.maintenance.completed
+memory.maintenance.failed
 ```
 
 内容模式：
@@ -196,6 +201,10 @@ owner。`memory.capture.relation_candidates` 只在操作者显式启用内容�
 `memory.postgresql.capture_committed` 的 `stale_relation_count` 只表示本次 replacement
 物化失效的边数；`memory.relation.linked/revoked` 可以记录 origin/scope/status，但
 任何 operational event 都不得记录 provenance 的 conversation、turn 或 source expression。
+
+`memory.recall.candidates` 只记录 Profile、候选硬上限和 lexical/recent 数量；不记录
+query 或候选正文。`memory.maintenance.completed/failed` 只记录耗时、状态转换计数、
+`has_more` 或异常类型名，不记录 owner、review、memory 或 relation 标识。
 
 已删除的 Knowledge、Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
 

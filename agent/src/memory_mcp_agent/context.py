@@ -12,10 +12,14 @@ class HookContext(BaseModel):
 
     conversation_id: str = Field(min_length=1)
     turn_id: str = Field(min_length=1)
-    profile_id: str = Field(default="general-work", min_length=1)
+    profile_id: str | None = Field(default=None, min_length=1)
     subject: str | None = Field(default=None, min_length=1)
     task_intent: str | None = Field(default=None, min_length=1)
 
     @property
     def run_key(self) -> tuple[str, str, str]:
-        return (self.profile_id, self.conversation_id, self.turn_id)
+        return (
+            self.profile_id or "<server-default>",
+            self.conversation_id,
+            self.turn_id,
+        )

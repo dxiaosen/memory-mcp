@@ -41,8 +41,10 @@ def test_server_environment_template_contains_only_production_service_settings()
     assert principals[0].owner_key == "tenant-001:subject-001"
     assert principals[0].tenant_id == "tenant-001"
     assert principals[0].subject_id == "subject-001"
+    assert principals[0].default_profile_id == "investment-research"
     assert extraction.provider == "openai"
     assert extraction.model_name == "replace-with-model-name"
+    assert server.maintenance_interval_seconds == 300
     assert "MEMORY_HOOK_" not in text
     assert "FIXED_CANDIDATES" not in text
     assert "MODEL_BACKEND" not in text
@@ -58,7 +60,7 @@ def test_agent_environment_template_contains_only_hook_settings() -> None:
     text = env_file.read_text(encoding="utf-8")
 
     assert str(settings.mcp_url) == "https://memory.example.com/mcp"
-    assert settings.profile_id == "general-work"
+    assert settings.profile_id is None
     assignments = {
         line.split("=", maxsplit=1)[0]
         for line in text.splitlines()

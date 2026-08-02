@@ -12,6 +12,7 @@ from memory_mcp.core import (
     CaptureStatus,
     EvidenceSourceType,
     ExpressionBasis,
+    InvalidMemoryProfileError,
     LifecycleStatus,
     MemoryNotFoundError,
     MemoryRelationPolicy,
@@ -20,11 +21,13 @@ from memory_mcp.core import (
     PrincipalContext,
     ProfileRegistry,
     RecallQuery,
+    ReviewNotFoundError,
     SensitivityLevel,
     TurnEnvelope,
     TurnMessage,
     VerificationStatus,
     normalize_memory_text,
+    profile_fingerprint,
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
@@ -33,6 +36,7 @@ from memory_mcp.profiles import (
     GeneralWorkProfile,
     InvestmentResearchProfile,
     built_in_profiles,
+    validate_built_in_profile,
 )
 
 from tests.support.fakes import (
@@ -109,6 +113,7 @@ def test_general_work_policy_declares_formal_minimum() -> None:
     profile = GeneralWorkProfile()
 
     assert profile.profile_id == "general-work"
+    assert profile.profile_version == "general-work-v2"
     assert profile.memory_types == {
         "preference",
         "stable_context",
@@ -124,7 +129,7 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
     profile = InvestmentResearchProfile()
 
     assert profile.profile_id == "investment-research"
-    assert profile.profile_version == "investment-research-v1"
+    assert profile.profile_version == "investment-research-v2"
     assert profile.memory_types == {
         "research_preference",
         "research_question",
@@ -172,6 +177,19 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
         "general-work",
         "investment-research",
     ]
+
+
+def test_built_in_profile_fingerprint_rejects_silent_policy_drift() -> None:
+    profile = GeneralWorkProfile()
+
+    assert len(profile_fingerprint(profile)) == 64
+    validate_built_in_profile(profile)
+    with pytest.raises(
+        InvalidMemoryProfileError, match="fingerprint is not registered"
+    ):
+        validate_built_in_profile(
+            replace(profile, capture_guidance=f"{profile.capture_guidance} Changed.")
+        )
 
 
 def test_investment_recall_hints_prioritize_research_workflow_intent() -> None:
@@ -707,6 +725,175 @@ def test_recall_respects_item_and_conservative_token_limits() -> None:
     assert tiny.items == ()
     assert tiny.truncated is True
     assert tiny.estimated_tokens <= tiny.token_budget
+
+
+def test_recall_candidate_limit_is_applied_inside_owner_and_profile_scope() -> None:
+    class RecordingRepository(InMemoryMemoryRepository):
+        last_limit: int | None = None
+        returned_records = ()
+
+        def find_recall_candidates(self, principal, **kwargs):
+            self.last_limit = kwargs.get("limit")
+            candidates = super().find_recall_candidates(principal, **kwargs)
+            self.returned_records = candidates.records
+            return candidates
+
+    repository = RecordingRepository()
+    service = create_memory_service(
+        repository,
+        [GeneralWorkProfile(), InvestmentResearchProfile()],
+        recall_candidate_limit=2,
+    )
+    owner_a = PrincipalContext("owner-a")
+    owner_b = PrincipalContext("owner-b")
+    for index in range(3):
+        service.create_memory(
+            owner_a,
+            replace(
+                project_preference_command(),
+                profile_id="general-work",
+                subject=f"report-format-{index}",
+                content=f"项目报告格式偏好 {index}",
+                source_expression=f"项目报告格式偏好 {index}",
+                source_turn_id=f"turn-a-{index}",
+                observed_at=_NOW + timedelta(minutes=index),
+            ),
+        )
+    service.create_memory(
+        owner_b,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            subject="other-owner-format",
+            content="另一个用户的报告格式",
+            source_expression="另一个用户的报告格式",
+            source_turn_id="turn-b-1",
+        ),
+    )
+    service.create_memory(
+        owner_a,
+        replace(
+            project_preference_command(),
+            profile_id="investment-research",
+            subject="investment-format",
+            memory_type="research_preference",
+            content="投研报告格式",
+            source_expression="投研报告格式",
+            source_turn_id="turn-investment-1",
+        ),
+    )
+
+    service.recall_memory(
+        owner_a,
+        RecallQuery(
+            profile_id="general-work",
+            query="项目报告格式偏好",
+        ),
+    )
+
+    assert repository.last_limit == 2
+    assert len(repository.returned_records) == 2
+    assert {record.item.owner_id for record in repository.returned_records} == {
+        "owner-a"
+    }
+    assert {record.item.profile_id for record in repository.returned_records} == {
+        "general-work"
+    }
+
+
+def test_hybrid_recall_finds_an_older_match_outside_the_recent_quota() -> None:
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [GeneralWorkProfile()],
+        recall_candidate_limit=2,
+    )
+    principal = PrincipalContext("owner-a")
+    old = service.create_memory(
+        principal,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            subject="analysis-priority",
+            content="长期分析重点是自由现金流质量",
+            source_expression="长期分析重点是自由现金流质量",
+            observed_at=_NOW,
+        ),
+    )
+    for index in range(5):
+        service.create_memory(
+            principal,
+            replace(
+                project_preference_command(),
+                profile_id="general-work",
+                subject=f"recent-{index}",
+                content=f"近期会议安排编号 {index}",
+                source_expression=f"近期会议安排编号 {index}",
+                source_turn_id=f"recent-turn-{index}",
+                observed_at=_NOW + timedelta(days=index + 1),
+            ),
+        )
+
+    recalled = service.recall_memory(
+        principal,
+        RecallQuery(
+            profile_id="general-work",
+            query="自由现金流质量",
+        ),
+    )
+
+    assert [item.memory_id for item in recalled.items] == [old.item.memory_id]
+
+
+def test_maintenance_expires_an_overage_pending_review() -> None:
+    current_time = [_NOW]
+    repository = InMemoryMemoryRepository()
+    extractor = FakeCandidateExtractor()
+    service = MemoryService(
+        repository,
+        ProfileRegistry(),
+        candidate_extractor=extractor,
+        sensitive_guard=RegexSensitiveContentGuard(),
+        clock=lambda: current_time[0],
+    )
+    service.register_profile(GeneralWorkProfile())
+    _capture(
+        service,
+        extractor,
+        text="以后周报默认用表格",
+        content="周报默认使用表格",
+        turn_id="review-base",
+    )
+    pending = _capture(
+        service,
+        extractor,
+        text="我可能更喜欢周报要点",
+        content="周报默认使用要点",
+        turn_id="review-pending",
+        expression_basis=ExpressionBasis.AMBIGUOUS,
+        assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+    )
+    review_id = pending.outcomes[0].review_id
+    assert review_id is not None
+
+    current_time[0] = _NOW + timedelta(days=31)
+    result = service.run_maintenance()
+
+    assert result.expired_review_count == 1
+    assert service.list_pending_reviews(PrincipalContext("owner-a")) == ()
+    expired = service.get_review(PrincipalContext("owner-a"), review_id)
+    assert expired.status.value == "expired"
+    assert expired.decided_at == current_time[0]
+    with pytest.raises(ReviewNotFoundError, match="unavailable"):
+        service.confirm_review(PrincipalContext("owner-a"), review_id)
+
+
+def test_recall_candidate_limit_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="candidate_limit must be positive"):
+        create_memory_service(
+            InMemoryMemoryRepository(),
+            [GeneralWorkProfile()],
+            recall_candidate_limit=0,
+        )
 
 
 def test_recall_uses_only_bounded_relations_between_relevant_candidates() -> None:

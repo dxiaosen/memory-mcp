@@ -10,10 +10,12 @@ from uuid import UUID, uuid4
 from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
 from memory_mcp.core.application.capture_service import CaptureService
 from memory_mcp.core.application.commands import CreateMemoryCommand
+from memory_mcp.core.application.maintenance_service import MemoryMaintenanceService
 from memory_mcp.core.application.recall_service import RecallService
 from memory_mcp.core.domain import (
     CaptureResult,
     Evidence,
+    MaintenanceResult,
     MemoryHistoryEntry,
     MemoryItem,
     MemoryRecord,
@@ -63,6 +65,7 @@ class MemoryService:
         admission_policy: ConservativeAdmissionPolicy | None = None,
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] | None = None,
+        recall_candidate_limit: int = 500,
     ) -> None:
         self._repository = repository
         self._profile_registry = profile_registry
@@ -84,6 +87,11 @@ class MemoryService:
             profile_registry,
             sensitive_guard,
             clock=self._clock,
+            candidate_limit=recall_candidate_limit,
+        )
+        self._maintenance_service = MemoryMaintenanceService(
+            repository,
+            clock=self._clock,
         )
 
     def register_profile(self, profile: MemoryProfile) -> None:
@@ -99,6 +107,11 @@ class MemoryService:
             memory_type_count=len(profile.memory_types),
             profile_id=profile.profile_id,
         )
+
+    def run_maintenance(self) -> MaintenanceResult:
+        """只供 Server 内部 runner 调用，不注册为公共 MCP 工具。"""
+
+        return self._maintenance_service.run_once()
 
     def create_memory(
         self,

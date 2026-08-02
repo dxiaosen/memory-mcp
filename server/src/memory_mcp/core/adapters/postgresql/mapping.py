@@ -59,6 +59,7 @@ def to_capture_result(connection, row: Mapping[str, Any]) -> CaptureResult:
             prompt_version=row["prompt_version"],
             schema_version=row["schema_version"],
             profile_version=row["profile_version"],
+            profile_fingerprint=row["profile_fingerprint"],
         ),
         status=CaptureStatus(row["status"]),
         outcomes=outcomes,

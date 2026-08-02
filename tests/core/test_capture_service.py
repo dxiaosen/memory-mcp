@@ -11,6 +11,7 @@ from memory_mcp.core import (
     CaptureStatus,
     EvidenceSourceType,
     ExpressionBasis,
+    IdempotencyConflictError,
     MemoryRelationPolicy,
     MessageRole,
     PrincipalContext,
@@ -99,6 +100,7 @@ def test_capture_assigns_all_four_decisions_and_preserves_relative_time() -> Non
     assert result.metadata.prompt_version == "capture-prompt-v1"
     assert result.metadata.schema_version == "candidate-v1"
     assert result.metadata.profile_version == "project-work-v1"
+    assert len(result.metadata.profile_fingerprint) == 64
     assert extractor.requests[0].allowed_memory_types == {
         "preference",
         "ongoing_item",
@@ -231,6 +233,72 @@ def test_capture_is_idempotent_without_duplicate_state() -> None:
 
     assert len(service.list_memories(principal)) == 1
     assert len(service.list_pending_reviews(principal)) == 1
+
+
+@pytest.mark.parametrize("with_event_id", [False, True])
+def test_capture_idempotency_survives_profile_version_upgrade(
+    with_event_id: bool,
+) -> None:
+    repository = InMemoryMemoryRepository()
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("以后项目周报默认用表格。")
+    if with_event_id:
+        turn = replace(
+            turn,
+            event_id="event-across-profile-upgrade",
+            contract_version="1",
+            payload_fingerprint="unchanged-payload",
+        )
+    first_extractor = FakeCandidateExtractor(
+        (candidate_proposal("以后项目周报默认用表格"),)
+    )
+    first_service = create_memory_service(
+        repository,
+        [TestMemoryProfile(profile_version="project-work-v1")],
+        candidate_extractor=first_extractor,
+    )
+    first = first_service.capture_turn(principal, turn)
+
+    upgraded_extractor = FakeCandidateExtractor(
+        (candidate_proposal("以后项目周报默认用表格"),)
+    )
+    upgraded_service = create_memory_service(
+        repository,
+        [TestMemoryProfile(profile_version="project-work-v2")],
+        candidate_extractor=upgraded_extractor,
+    )
+    replay = upgraded_service.capture_turn(principal, turn)
+
+    assert replay.capture_id == first.capture_id
+    assert replay.replayed is True
+    assert replay.metadata.profile_version == "project-work-v1"
+    assert upgraded_extractor.requests == []
+    assert len(upgraded_service.list_memories(principal)) == 1
+
+
+def test_event_id_is_owner_scoped_and_rejects_changed_payload() -> None:
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        candidate_extractor=FakeCandidateExtractor(),
+    )
+    turn = replace(
+        _turn("这是稳定输入。"),
+        event_id="shared-event-id",
+        contract_version="1",
+        payload_fingerprint="payload-a",
+    )
+
+    owner_a = service.capture_turn(PrincipalContext("analyst-a"), turn)
+    owner_b = service.capture_turn(PrincipalContext("analyst-b"), turn)
+    with pytest.raises(IdempotencyConflictError):
+        service.capture_turn(
+            PrincipalContext("analyst-a"),
+            replace(turn, payload_fingerprint="payload-changed"),
+        )
+
+    assert owner_a.capture_id != owner_b.capture_id
 
 
 def test_sensitive_model_output_is_blocked_before_persistence() -> None:
@@ -424,26 +492,39 @@ def test_retryable_failure_is_reprocessed_without_duplicates() -> None:
         (candidate_proposal("以后项目周报默认用表格"),),
         failures_before_success=1,
     )
+    repository = InMemoryMemoryRepository()
     service = create_memory_service(
-        InMemoryMemoryRepository(),
-        [TestMemoryProfile()],
+        repository,
+        [TestMemoryProfile(profile_version="project-work-v1")],
         candidate_extractor=extractor,
     )
     principal = PrincipalContext("analyst-a")
     turn = _turn("以后项目周报默认用表格。")
 
     failed = service.capture_turn(principal, turn)
-    completed = service.capture_turn(principal, turn)
-    replayed = service.capture_turn(principal, turn)
+    upgraded = create_memory_service(
+        repository,
+        [
+            TestMemoryProfile(
+                profile_version="project-work-v2",
+                capture_guidance="Capture durable project-work context, version 2.",
+            )
+        ],
+        candidate_extractor=extractor,
+    )
+    completed = upgraded.capture_turn(principal, turn)
+    replayed = upgraded.capture_turn(principal, turn)
 
     assert failed.status is CaptureStatus.REPROCESS_REQUIRED
     assert failed.failure_code == "processing_interrupted"
     assert completed.status is CaptureStatus.COMPLETED
     assert completed.capture_id == failed.capture_id
     assert completed.was_reprocessed is True
+    assert completed.metadata.profile_version == "project-work-v2"
+    assert completed.metadata.profile_fingerprint != failed.metadata.profile_fingerprint
     assert replayed.replayed is True
     assert len(extractor.requests) == 2
-    assert len(service.list_memories(principal)) == 1
+    assert len(upgraded.list_memories(principal)) == 1
 
 
 def test_invalid_model_type_fails_safely_and_is_not_reprocessed() -> None:

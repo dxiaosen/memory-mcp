@@ -63,14 +63,16 @@ class RecallCorpusItem(BaseModel):
     subject: str = Field(min_length=1)
     memory_type: str = Field(min_length=1)
     content: str = Field(min_length=1)
+    observed_days_ago: int = Field(default=0, ge=0, le=10_000)
 
 
 class RecallCase(StrictCase):
     task: Literal["recall"]
     query: str = Field(min_length=1)
     top_k: int = Field(default=3, ge=1, le=20)
+    candidate_limit: int = Field(default=500, ge=1, le=10_000)
     corpus: tuple[RecallCorpusItem, ...] = Field(min_length=1)
-    expected: frozenset[str] = Field(min_length=1)
+    expected: frozenset[str]
 
     @model_validator(mode="after")
     def validate_expected_labels(self) -> RecallCase:

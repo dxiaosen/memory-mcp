@@ -7,7 +7,7 @@
 
 | 层级 | 验证范围 | 外部依赖 |
 | --- | --- | --- |
-| Core 单元/契约 | owner 隔离、准入、生命周期、关系、事务 | 无 |
+| Core 单元/契约 | owner 隔离、准入、维护闭环、混合召回、关系、事务 | 无 |
 | Extraction | 严格 schema、Prompt 边界、共享 ChatModel | 无 |
 | MCP transport | 认证、scope、DTO、HTTP/MCP 错误合同 | 无 |
 | Agent Hook | BeforeRun/AfterRun、宿主 JSON、状态与重试 | 无 |
@@ -30,7 +30,9 @@ uv sync --all-packages --frozen
 git diff --check
 ```
 
-默认评测只计算确定性的 Recall@K 和安全通过率，不调用模型或数据库。需要验证某个
+默认评测只计算确定性的 Recall@K 和安全通过率，不调用模型或 PostgreSQL；Recall
+通过公开生产 Application Service 和 InMemory Repository 执行，不复制私有排序。
+需要验证某个
 OpenSpec 变更时执行：
 
 ```bash
@@ -50,9 +52,10 @@ openspec-cn validate <change-name> --strict
 | `tests/agent/` | 轻量 Client、Bridge、宿主适配和状态文件 |
 | `tests/evaluation/` | 数据集、runner 输出和敏感字段边界 |
 | `tests/support/` | 跨测试共享的最小 Fake 与测试 Profile |
-| `evals/cases.json` | 47 个中文投研质量案例，不是 pytest 重复用例 |
+| `evals/cases.json` | 48 个中文投研质量案例，不是 pytest 重复用例 |
 
-高风险边界必须保留回归覆盖：可信 Principal 派生、跨 owner 不可见、scope、幂等与
+高风险边界必须保留回归覆盖：可信 Principal 派生、Token 默认 Profile、跨 owner
+不可见、scope、跨 Profile 版本幂等与
 冲突、事务回滚、pending review、记忆/关系撤销、PostgreSQL migration 与重启、MCP
 错误合同、Hook 顶层轮次生命周期，以及候选/关系 schema。只验证私有实现细节或与
 更强契约重复的测试可以删除或合并。
@@ -84,6 +87,13 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' \
 
 `PostgreSQL schema is up to date` 表示全部 migration 已应用且 checksum 一致，不是
 “没有数据库表”。
+
+`0008_policy_routing_recall.sql` 会新增 capture 策略指纹并收紧跨版本唯一约束。
+当前 `0009_memory_maintenance_recall.sql` 安装 `pg_trgm`、增加混合召回/维护索引，
+并允许 pending review 进入 `expired` 终态。`health` 会同时检查 migration checksum、
+扩展和四个必需索引。
+共享开发/生产库只运行非破坏性的 `migrate/health`；会 truncate 的 contract/E2E 仍
+必须使用名称含 `test` 的专用库。
 
 ## 5. 投研评测
 

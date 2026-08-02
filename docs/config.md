@@ -30,16 +30,17 @@ PostgreSQL URI 中的保留字符必须 percent-encode，例如 `@` 写为 `%40`
 | 类别 | 性质 | 说明 |
 | --- | --- | --- |
 | owner-first、Evidence、准入、revision 和敏感拦截 | 代码固定 | 环境变量不能绕过领域约束 |
-| `general-work`、`investment-research` | 代码固定 | Profile 类型、版本、有效期和关系策略 |
+| `general-work`、`investment-research` | 代码固定 | Profile 类型、版本、策略指纹、有效期和关系策略 |
 | MCP 工具与 DTO v1 | 代码固定 | 工具参数不接受 owner |
 | PostgreSQL schema | migration 管理 | 服务启动前独立升级 |
+| 维护批次 `500`、pending review 保留 `30` 天 | 代码固定 | 防止无界事务和长期悬挂候选 |
 | Server 网络、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | 静态 Principal 映射 | 环境可配置 | 可替换为 OAuth/OIDC 认证适配器 |
 | 模型 Provider 与参数 | 环境可配置 | 生产始终使用真实模型 |
 | Agent 连接 | 每个 Host 独立配置 | 普通用户只填写 URL 和 Token |
 | Hook 策略 | 代码默认 | 高级集成可显式构造设置对象 |
 
-Profile、元数据、自动关系和 `profile_version` 的完整语义统一见
+Profile、元数据、自动关系、`profile_version` 和 `profile_fingerprint` 的完整语义统一见
 [详细总设计](design.md)；测试替身和专用测试数据库见[测试与验收](testing.md)。
 
 ## 3. Server 配置
@@ -69,9 +70,15 @@ Profile、元数据、自动关系和 `profile_version` 的完整语义统一见
 | `MEMORY_MCP_MAX_CAPTURE_CHARACTERS` | `100000` | 单轮最大字符数，1,000–1,000,000 |
 | `MEMORY_MCP_RECALL_MAX_ITEMS` | `10` | 召回条数硬上限，1–10 |
 | `MEMORY_MCP_RECALL_MAX_TOKEN_BUDGET` | `1200` | 渲染预算硬上限，64–8,000 |
+| `MEMORY_MCP_RECALL_CANDIDATE_LIMIT` | `500` | 每次 Recall 从 Repository 读取的候选硬上限，1–10,000 |
+| `MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS` | `300` | 服务端维护周期，0–86,400 秒；`0` 显式禁用 |
 
 同一 VPC/VPN 内可直接访问 `http://host:port/mcp`，不要求 Nginx。公网应由负载均衡
 入口终止 HTTPS，再转发到受限私网端口。
+
+维护 runner 与 Server 共用进程和 PostgreSQL 连接池，但同步数据库调用在线程中执行，
+不会阻塞 MCP 事件循环。每批最多处理 500 个 revision/review；积压时让出事件循环后
+立即续批。普通部署保持默认值即可，Agent 不读取也不配置该变量。
 
 ### 3.3 静态认证
 
@@ -87,6 +94,7 @@ Profile、元数据、自动关系和 `profile_version` 的完整语义统一见
 | --- | --- | --- |
 | `tenant_id` | 否 | 默认 `default` |
 | `subject_id` | 是 | 授权系统中的不可变用户 ID |
+| `default_profile_id` | 否 | 该 Token 的默认 Profile；默认 `general-work`，启动时校验已注册 |
 | `scopes` | 否 | 默认 read/write/review，可收窄 |
 
 ```json
@@ -94,13 +102,16 @@ Profile、元数据、自动关系和 `profile_version` 的完整语义统一见
   "<random-token>": {
     "tenant_id": "tenant-001",
     "subject_id": "subject-001",
+    "default_profile_id": "investment-research",
     "scopes": ["memory:read", "memory:write", "memory:review"]
   }
 }
 ```
 
 服务端固定派生 `owner_key = tenant_id:subject_id`。同一用户的多枚 Token 可映射到
-同一 owner，不同 subject 自然隔离；调用方不能通过 MCP 参数覆盖 owner。Token 的
+同一 owner，不同 subject 自然隔离；调用方不能通过 MCP 参数覆盖 owner。Profile
+缺省时由当前 Token 的 `default_profile_id` 选择，显式 `profile_id` 只作为高级覆盖，
+不会改变 owner、tenant 或 subject。Token 的
 SHA-256 摘要仅作为日志 client reference，不参与授权。当前适配器不负责动态签发、
 过期、轮换编排或 OAuth federation；生产需要这些能力时应替换认证适配器。
 
@@ -120,6 +131,10 @@ SHA-256 摘要仅作为日志 client reference，不参与授权。当前适配�
 缺失时服务启动失败，不会降级为测试替身。模型不接收 owner、Token 或 DSN，输出
 仍要经过 Evidence、Profile 类型、敏感边界和准入规则校验。DeepSeek adapter 会
 关闭与强制 schema tool choice 不兼容的 thinking 模式。
+
+模型只参与 AfterRun 候选/关系抽取。周期维护依据可信时间和持久化状态，BeforeRun
+召回使用 PostgreSQL `pg_trgm` 候选及确定性应用层排序；模型不可用不会让已有记忆的
+维护或召回链路失效。
 
 ### 3.5 日志
 
@@ -144,10 +159,11 @@ SHA-256 摘要仅作为日志 client reference，不参与授权。当前适配�
 | `MEMORY_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
 | `MEMORY_MCP_TOKEN` | 无 | 是 | Server 已映射的 Bearer Token；Secret |
 
-`profile_id` 默认 `general-work`，HTTP 超时默认 15 秒，fail-open 默认开启，召回最多
-5 条/600 token，capture 最多尝试 3 次。投研产品应在集成代码中固定
-`investment-research`，不让终端用户按轮选择 Profile。需要调整预算或重试时，由
-宿主显式构造 `MemoryHookSettings`；这些不是普通部署必填项。
+Agent 默认不发送 `profile_id`，由服务端当前 Token 的 `default_profile_id` 决定策略。
+HTTP 超时默认 15 秒，fail-open 默认开启，召回最多 5 条/600 token，capture 最多
+尝试 3 次。`MEMORY_HOOK_PROFILE_ID` 仍可作为高级、进程级覆盖，但不进入普通 Agent
+模板，也不应由终端用户按轮选择。需要调整预算或重试时，由宿主显式构造
+`MemoryHookSettings`；这些不是普通部署必填项。
 
 Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或
 settings 日志。同一用户跨 Agent 共享记忆时，为不同 Host 发放不同 Token，并在

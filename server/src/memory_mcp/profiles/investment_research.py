@@ -46,7 +46,7 @@ class InvestmentResearchProfile:
         "or buy/sell instructions. Prefer no candidate when the type or durability is "
         "ambiguous."
     )
-    profile_version: str = "investment-research-v1"
+    profile_version: str = "investment-research-v2"
     relation_policies: dict[str, MemoryRelationPolicy] = field(
         default_factory=lambda: {
             "supports": MemoryRelationPolicy(

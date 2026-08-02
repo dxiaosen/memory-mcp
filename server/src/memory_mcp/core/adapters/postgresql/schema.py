@@ -29,6 +29,15 @@ _REQUIRED_TABLES = frozenset(
         "memory_capture_outcomes",
     }
 )
+_REQUIRED_EXTENSIONS = frozenset({"pg_trgm"})
+_REQUIRED_INDEXES = frozenset(
+    {
+        "memory_items_recall_subject_trgm_idx",
+        "memory_revisions_recall_content_trgm_idx",
+        "memory_revisions_maintenance_expiry_idx",
+        "memory_review_items_maintenance_idx",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +187,25 @@ def validate_schema(connection) -> None:
                 (sorted(_REQUIRED_TABLES),),
             ).fetchall()
         }
+        existing_extensions = {
+            row["extname"]
+            for row in cursor.execute(
+                "SELECT extname FROM pg_extension WHERE extname = ANY(%s)",
+                (sorted(_REQUIRED_EXTENSIONS),),
+            ).fetchall()
+        }
+        existing_indexes = {
+            row["indexname"]
+            for row in cursor.execute(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname = ANY(%s)
+                """,
+                (sorted(_REQUIRED_INDEXES),),
+            ).fetchall()
+        }
     missing_migrations = expected.keys() - applied.keys()
     if missing_migrations:
         missing = ", ".join(sorted(missing_migrations))
@@ -195,3 +223,13 @@ def validate_schema(connection) -> None:
     if missing_tables:
         missing = ", ".join(sorted(missing_tables))
         raise RuntimeError(f"PostgreSQL memory tables are missing: {missing}")
+
+    missing_extensions = _REQUIRED_EXTENSIONS - existing_extensions
+    if missing_extensions:
+        missing = ", ".join(sorted(missing_extensions))
+        raise RuntimeError(f"PostgreSQL extensions are missing: {missing}")
+
+    missing_indexes = _REQUIRED_INDEXES - existing_indexes
+    if missing_indexes:
+        missing = ", ".join(sorted(missing_indexes))
+        raise RuntimeError(f"PostgreSQL memory indexes are missing: {missing}")

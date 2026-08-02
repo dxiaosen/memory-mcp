@@ -1,6 +1,8 @@
 """与 Agent Runtime 和具体记忆配置解耦的通用记忆核心。"""
 
 from memory_mcp.core.application import (
+    MAINTENANCE_BATCH_SIZE,
+    PENDING_REVIEW_RETENTION,
     AdmissionOutcome,
     ConservativeAdmissionPolicy,
     CreateMemoryCommand,
@@ -20,6 +22,7 @@ from memory_mcp.core.domain import (
     ExpressionBasis,
     ExtractionMetadata,
     LifecycleStatus,
+    MaintenanceResult,
     MemoryHistoryEntry,
     MemoryItem,
     MemoryRecord,
@@ -75,16 +78,20 @@ from memory_mcp.core.ports import (
     MemoryRelationPolicy,
     MemoryRepository,
     ProfileRegistry,
+    RecallCandidateSet,
     RelationExtractionRequest,
     RelationExtractor,
     ReplacementWrite,
     SensitiveContentGuard,
     SensitiveInspection,
+    profile_fingerprint,
 )
 
 __all__ = [
+    "MAINTENANCE_BATCH_SIZE",
     "MAX_RELATION_ENDPOINTS",
     "MAX_RELATION_PROPOSALS",
+    "PENDING_REVIEW_RETENTION",
     "AdmissionDecision",
     "AdmissionOutcome",
     "AssertionKind",
@@ -112,6 +119,7 @@ __all__ = [
     "InvalidModelOutputError",
     "InvalidProfileProgressError",
     "LifecycleStatus",
+    "MaintenanceResult",
     "MemoryCoreError",
     "MemoryHistoryEntry",
     "MemoryItem",
@@ -131,6 +139,7 @@ __all__ = [
     "ProfileAlreadyRegisteredError",
     "ProfileNotRegisteredError",
     "ProfileRegistry",
+    "RecallCandidateSet",
     "RecallQuery",
     "RecallResult",
     "RecallSourceSummary",
@@ -156,4 +165,5 @@ __all__ = [
     "TurnMessage",
     "VerificationStatus",
     "normalize_memory_text",
+    "profile_fingerprint",
 ]

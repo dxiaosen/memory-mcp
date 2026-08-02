@@ -537,6 +537,38 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
         )
 
 
+def test_remote_transport_uses_principal_default_when_profile_is_omitted() -> None:
+    extractor = _extractor()
+    with _running_server(extractor=extractor) as url:
+
+        async def call_without_profile(session: ClientSession) -> None:
+            event = _event(event_id="event-server-default")
+            event.pop("profile_id")
+            capture = _payload(
+                await session.call_tool(
+                    "capture_completed_turn",
+                    arguments=event,
+                )
+            )
+            recall = _payload(
+                await session.call_tool(
+                    "recall_memory",
+                    arguments={"query": "周报格式"},
+                )
+            )
+
+            assert capture["ok"] is True
+            assert extractor.requests[0].profile_id == "general-work"
+            assert recall["ok"] is True
+
+        anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_A,
+            call_without_profile,
+        )
+
+
 def test_remote_transport_memory_relation_scopes_isolation_and_history() -> None:
     profile = replace(
         TestMemoryProfile(),

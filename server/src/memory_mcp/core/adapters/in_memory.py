@@ -11,6 +11,7 @@ from memory_mcp.core.domain import (
     CaptureStatus,
     Evidence,
     LifecycleStatus,
+    MaintenanceResult,
     MemoryHistoryEntry,
     MemoryRecord,
     MemoryRelation,
@@ -34,6 +35,7 @@ from memory_mcp.core.ports import (
     DuplicateEvidenceWrite,
     MemoryProfile,
     MemoryRelationPolicy,
+    RecallCandidateSet,
     ReplacementWrite,
 )
 
@@ -119,6 +121,7 @@ class InMemoryMemoryRepository:
         subject: str | None = None,
         memory_type: str | None = None,
         effective_at: datetime | None = None,
+        limit: int | None = None,
     ) -> Sequence[MemoryRecord]:
         """先按可信 owner 和活动 current 集合收窄，再做规范化 subject 匹配。"""
 
@@ -137,10 +140,187 @@ class InMemoryMemoryRepository:
                 or normalize_memory_text(record.item.subject) == subject_key
             )
         )
-        return tuple(
-            sorted(
-                records, key=lambda value: (value.item.created_at, value.item.memory_id)
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        ordered = sorted(
+            records,
+            key=lambda value: (
+                value.current_revision.observed_at,
+                value.item.memory_id,
+            ),
+            reverse=True,
+        )
+        return tuple(ordered[:limit] if limit is not None else ordered)
+
+    def find_recall_candidates(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        search_text: str,
+        subject: str | None,
+        effective_at: datetime,
+        limit: int,
+    ) -> RecallCandidateSet:
+        """模拟 PostgreSQL 的 lexical 配额和 recent 补齐。"""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_search = normalize_memory_text(search_text)
+        if not normalized_search:
+            raise ValueError("search_text must not be empty")
+        eligible = tuple(
+            self.find_current(
+                principal,
+                profile_id=profile_id,
+                subject=subject,
+                effective_at=effective_at,
             )
+        )
+        lexical_limit = (
+            1 if limit == 1 else min(limit - 1, max(1, (limit * 7 + 9) // 10))
+        )
+        scored = tuple(
+            (
+                max(
+                    _trigram_similarity(search_text, record.item.subject),
+                    _trigram_similarity(
+                        search_text,
+                        record.current_revision.content,
+                    ),
+                ),
+                record,
+            )
+            for record in eligible
+        )
+        lexical = tuple(
+            record
+            for score, record in sorted(
+                (value for value in scored if value[0] >= 0.08),
+                key=lambda value: (
+                    value[0],
+                    value[1].current_revision.observed_at,
+                    value[1].item.memory_id,
+                ),
+                reverse=True,
+            )[:lexical_limit]
+        )
+        lexical_ids = {record.item.memory_id for record in lexical}
+        recent_limit = limit - len(lexical)
+        recent = tuple(
+            record for record in eligible if record.item.memory_id not in lexical_ids
+        )[:recent_limit]
+        return RecallCandidateSet(
+            records=(*lexical, *recent),
+            lexical_count=len(lexical),
+            recent_count=len(recent),
+        )
+
+    def maintain(
+        self,
+        *,
+        effective_at: datetime,
+        review_cutoff: datetime,
+        limit: int,
+    ) -> MaintenanceResult:
+        """按与 PostgreSQL 相同的批次配额物化终态。"""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        memory_limit = (limit + 1) // 2
+        review_limit = limit - memory_limit
+        memory_targets = tuple(
+            sorted(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.current_revision.is_current
+                    and record.current_revision.lifecycle_status
+                    is LifecycleStatus.ACTIVE
+                    and record.current_revision.valid_until is not None
+                    and record.current_revision.valid_until <= effective_at
+                ),
+                key=lambda record: (
+                    record.current_revision.valid_until,
+                    record.current_revision.revision_id,
+                ),
+            )[:memory_limit]
+        )
+        expired_keys = {
+            (record.item.owner_id, record.item.memory_id) for record in memory_targets
+        }
+        for record in memory_targets:
+            revision = replace(
+                record.current_revision,
+                lifecycle_status=LifecycleStatus.EXPIRED,
+            )
+            self._records[record.item.memory_id] = replace(
+                record,
+                current_revision=revision,
+            )
+            self._history[record.item.memory_id] = tuple(
+                replace(entry, revision=revision)
+                if entry.revision.revision_id == revision.revision_id
+                else entry
+                for entry in self._history[record.item.memory_id]
+            )
+
+        stale_relation_count = 0
+        with self._relation_lock:
+            for relation_id, relation in tuple(self._relations.items()):
+                if relation.status is not RelationStatus.ACTIVE:
+                    continue
+                if relation.created_at > effective_at:
+                    continue
+                endpoint_keys = {
+                    (relation.owner_id, relation.source_memory_id),
+                    (relation.owner_id, relation.target_memory_id),
+                }
+                if not expired_keys.intersection(endpoint_keys):
+                    continue
+                self._relations[relation_id] = replace(
+                    relation,
+                    status=RelationStatus.STALE,
+                    stale_at=effective_at,
+                    stale_reason="endpoint_expired",
+                )
+                stale_relation_count += 1
+
+        review_targets = tuple(
+            sorted(
+                (
+                    review
+                    for review in self._reviews.values()
+                    if review.status is ReviewStatus.PENDING
+                    and (
+                        (
+                            review.candidate.valid_until is not None
+                            and review.candidate.valid_until <= effective_at
+                        )
+                        or review.created_at <= review_cutoff
+                    )
+                ),
+                key=lambda review: (
+                    review.candidate.valid_until or review.created_at,
+                    review.review_id,
+                ),
+            )[:review_limit]
+        )
+        for review in review_targets:
+            self._reviews[review.review_id] = replace(
+                review,
+                status=ReviewStatus.EXPIRED,
+                decided_at=effective_at,
+            )
+        return MaintenanceResult(
+            effective_at=effective_at,
+            expired_memory_count=len(memory_targets),
+            expired_review_count=len(review_targets),
+            stale_relation_count=stale_relation_count,
+            has_more=(
+                len(memory_targets) == memory_limit
+                or (review_limit > 0 and len(review_targets) == review_limit)
+            ),
         )
 
     def revoke(
@@ -307,7 +487,6 @@ class InMemoryMemoryRepository:
         profile_id: str,
         conversation_id: str,
         source_turn_id: str,
-        profile_version: str,
         event_id: str | None = None,
     ) -> CaptureResult | None:
         return self._captures.get(
@@ -316,7 +495,6 @@ class InMemoryMemoryRepository:
                 profile_id=profile_id,
                 conversation_id=conversation_id,
                 source_turn_id=source_turn_id,
-                profile_version=profile_version,
                 event_id=event_id,
             )
         )
@@ -805,7 +983,6 @@ class InMemoryMemoryRepository:
             profile_id=result.profile_id,
             conversation_id=result.conversation_id,
             source_turn_id=result.source_turn_id,
-            profile_version=result.metadata.profile_version,
             event_id=result.event_id,
         )
 
@@ -816,16 +993,13 @@ class InMemoryMemoryRepository:
         profile_id: str,
         conversation_id: str,
         source_turn_id: str,
-        profile_version: str,
         event_id: str | None,
     ) -> tuple[str, ...]:
         if event_id is not None:
             return (
                 owner_id,
-                profile_id,
                 "event",
                 event_id,
-                profile_version,
             )
         return (
             owner_id,
@@ -833,7 +1007,6 @@ class InMemoryMemoryRepository:
             "legacy",
             conversation_id,
             source_turn_id,
-            profile_version,
         )
 
     @staticmethod
@@ -884,6 +1057,26 @@ def _is_effective(revision: MemoryRevision, at_time: datetime) -> bool:
     return revision.valid_from <= at_time and (
         revision.valid_until is None or revision.valid_until > at_time
     )
+
+
+def _trigram_similarity(left: str, right: str) -> float:
+    """用于 InMemory 契约测试的稳定 trigram 近似。"""
+
+    left_trigrams = _trigrams(normalize_memory_text(left))
+    right_trigrams = _trigrams(normalize_memory_text(right))
+    if not left_trigrams or not right_trigrams:
+        return 0.0
+    return len(left_trigrams & right_trigrams) / max(
+        len(left_trigrams),
+        len(right_trigrams),
+    )
+
+
+def _trigrams(value: str) -> frozenset[str]:
+    compact = value.replace(" ", "")
+    if len(compact) < 3:
+        return frozenset({compact}) if compact else frozenset()
+    return frozenset(compact[index : index + 3] for index in range(len(compact) - 2))
 
 
 def _stale_revision_relations(

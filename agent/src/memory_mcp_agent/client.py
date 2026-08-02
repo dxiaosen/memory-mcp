@@ -84,7 +84,7 @@ class MemoryHookClient(Protocol):
     async def recall_memory(
         self,
         *,
-        profile_id: str,
+        profile_id: str | None = None,
         query: str,
         subject: str | None,
         task_intent: str | None,
@@ -96,7 +96,7 @@ class MemoryHookClient(Protocol):
         self,
         *,
         event_id: str,
-        profile_id: str,
+        profile_id: str | None = None,
         conversation_id: str,
         turn_id: str,
         observed_at: datetime,
@@ -134,24 +134,23 @@ class MemoryMcpClient:
     async def recall_memory(
         self,
         *,
-        profile_id: str,
+        profile_id: str | None = None,
         query: str,
         subject: str | None,
         task_intent: str | None,
         max_items: int,
         token_budget: int,
     ) -> RecallResponse:
-        payload = await self._call_tool(
-            "recall_memory",
-            {
-                "profile_id": profile_id,
-                "query": query,
-                "subject": subject,
-                "task_intent": task_intent,
-                "max_items": max_items,
-                "token_budget": token_budget,
-            },
-        )
+        arguments: dict[str, Any] = {
+            "query": query,
+            "subject": subject,
+            "task_intent": task_intent,
+            "max_items": max_items,
+            "token_budget": token_budget,
+        }
+        if profile_id is not None:
+            arguments["profile_id"] = profile_id
+        payload = await self._call_tool("recall_memory", arguments)
         try:
             return RecallResponse.model_validate(payload)
         except ValueError as exc:
@@ -161,36 +160,35 @@ class MemoryMcpClient:
         self,
         *,
         event_id: str,
-        profile_id: str,
+        profile_id: str | None = None,
         conversation_id: str,
         turn_id: str,
         observed_at: datetime,
         user_input: str,
         final_output: str,
     ) -> CaptureResponse:
-        payload = await self._call_tool(
-            "capture_completed_turn",
-            {
-                "event_id": event_id,
-                "contract_version": "1",
-                "profile_id": profile_id,
-                "conversation_id": conversation_id,
-                "turn_id": turn_id,
-                "observed_at": observed_at.isoformat(),
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_input,
-                        "message_id": f"{turn_id}:user",
-                    },
-                    {
-                        "role": "assistant",
-                        "content": final_output,
-                        "message_id": f"{turn_id}:assistant",
-                    },
-                ],
-            },
-        )
+        arguments: dict[str, Any] = {
+            "event_id": event_id,
+            "contract_version": "1",
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "observed_at": observed_at.isoformat(),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_input,
+                    "message_id": f"{turn_id}:user",
+                },
+                {
+                    "role": "assistant",
+                    "content": final_output,
+                    "message_id": f"{turn_id}:assistant",
+                },
+            ],
+        }
+        if profile_id is not None:
+            arguments["profile_id"] = profile_id
+        payload = await self._call_tool("capture_completed_turn", arguments)
         try:
             return CaptureResponse.model_validate(payload)
         except ValueError as exc:

@@ -99,7 +99,9 @@ Token 映射和查询文本。
 ## 5. 投研 Profile 与关系
 
 Server 同时注册 `general-work` 和 `investment-research`，但不会根据正文猜测场景。
-投研产品应在集成代码中固定后者；仓库手工验证可临时设置：
+投研产品应在 `MEMORY_MCP_AUTH_TOKENS` 中把当前 Agent Token 的
+`default_profile_id` 固定为 `investment-research`；Agent 仍只配置 URL 和 Token。
+仓库手工验证或高级集成也可临时覆盖：
 
 ```bash
 MEMORY_HOOK_PROFILE_ID=investment-research \
@@ -150,6 +152,10 @@ Agent 进程只读取自己的 URL 和 Token，不能把多枚 Token 合并进�
 完整 MCP Client 还可以调用 confirm/reject、`revoke_memory`、`link_memories` 和
 `revoke_memory_relation`。这些工具全部 owner-scoped；撤销保留 revision、Evidence
 和关系历史，不执行物理删除。
+
+到期记忆即使维护尚未运行，也会先在读取时被过滤；Server runner 随后把 revision
+物化为 `expired`，终止到期或超过 30 天的 pending review，并把相关活动关系标记为
+`stale/endpoint_expired`。该流程没有公共工具，不要求 Agent 或用户主动触发。
 
 ## 8. 自动化与评测
 

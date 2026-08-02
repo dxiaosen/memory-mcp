@@ -6,13 +6,13 @@
 
 ## 1. 数据集与边界
 
-数据集 `investment-memory-v2-2026-08-01` 使用虚构公司和虚构数据，共 47 个中文案例：
+当前数据集 `investment-memory-v3-2026-08-02` 使用虚构公司和虚构数据，共 48 个中文案例：
 
 | 任务 | 数量 | 评估对象 | 执行方式 |
 | --- | ---: | --- | --- |
 | Candidate | 16 | 八类投研记忆、临时/推断/禁止负例 | 仅 `--live-model` 使用模型 |
 | Relation | 13 | 六类合法关系、方向/否定/角色/歧义负例 | 仅 `--live-model` 使用模型和准入保护 |
-| Recall | 10 | 近义表达、研究状态、报告期和实体干扰项 | 生产确定性排序 |
+| Recall | 11 | 近义表达、研究状态、报告期、实体和长期旧记忆干扰项 | 公开 `MemoryService.recall_memory` 生产链路 |
 | Safety | 8 | 凭据、持仓、交易指令和正常研究文本 | 生产 SensitiveContentGuard |
 
 候选覆盖 `research_preference`、`research_question`、`thesis`、
@@ -21,7 +21,9 @@
 `could_catalyze`、`addresses` 和 `resolves`。
 
 每个案例只有稳定 ID、category、输入夹具和金标；严格 schema 禁止额外 owner、
-tenant、Token 等字段。真实模型使用 InMemory Repository，不连接 PostgreSQL，也不
+tenant、Token 等字段。评测用 InMemory Repository 建立正式领域记录，但 Recall 的
+阈值、生命周期、关系扩展、预算裁剪和最终排序全部复用生产 Application Service，
+不导入私有打分函数。真实模型只用于 Candidate/Relation，不连接 PostgreSQL，也不
 读取运行用户数据。结果文件不保存案例正文或 provider 异常文本。
 
 ## 2. 指标与门槛
@@ -57,10 +59,10 @@ source server/.env
 set +a
 .venv/bin/python -m evals.runner \
   --live-model \
-  --output evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json
+  --output evals/results/investment-memory-v3-<model>-<date>.json
 ```
 
-完整安全快照见
+历史 v2 完整安全快照见
 [`evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json`](../evals/results/investment-memory-v2-deepseek-v4-flash-2026-08-01.json)。
 
 ## 4. 本轮质量改进
@@ -73,10 +75,16 @@ set +a
   反向证据；Core 不依赖公司名、case ID 或投研 memory type。
 - `MemoryProfile.recall_hints` 声明各类型的查询语义，Core 只提供有界加分，并继续结合
   文本相关性、类型优先级、置信度和时间排序。
+- Recall 评测改为调用公开生产服务；低于阈值的查询会保留真实空结果，不再强制取
+  原始分数 top-k。
+- 新增长期旧记忆案例：目标比近期干扰项早 720 天且位于旧 recent-only 窗口之外；
+  当前 trigram/近期混合候选在总上限为 3 时仍能找回目标。
 
 这些改动针对的是首轮暴露出的通用缺陷，没有修改金标、降低门槛或删除失败案例。
 
-## 5. 2026-08-01 最终结果
+## 5. 历史模型快照与当前确定性结果
+
+### 5.1 2026-08-01 v2 真实模型快照
 
 运行标识：
 
@@ -100,7 +108,11 @@ set +a
 | Recall@K | 0.80 | 1.00 | 0.80 | 通过 |
 | Safety pass rate | 1.00 | 1.00 | 1.00 | 通过 |
 
-最终 `thresholds_met=true`。候选为 10 TP、0 FP、0 FN；关系为 8 TP、0 FP、
+该文件是 v2 数据集的真实模型快照；Candidate/Relation 的模型、Prompt 和 schema
+未在本次维护/检索变更中改变，因此没有为了确定性 Recall 改造重复调用模型或覆盖
+历史快照。
+
+快照最终 `thresholds_met=true`。候选为 10 TP、0 FP、0 FN；关系为 8 TP、0 FP、
 0 FN。11 个 category 的通过率均为 1.0，`failed_case_ids` 为空。
 
 首轮四个失败入口均已保留在数据集中并通过：
@@ -112,9 +124,29 @@ set +a
 | `recall-ongoing-channel-work` | “下一步”未优先 ongoing research | Profile recall hints |
 | `recall-research-scope-decision` | “最终怎么定”未区分决定和问题 | Profile recall hints |
 
+### 5.2 2026-08-02 v3 离线门禁
+
+| 字段 | 值 |
+| --- | --- |
+| mode | `offline` |
+| dataset | `investment-memory-v3-2026-08-02` |
+| dataset SHA-256 | `a9d211edd0ccd3c55fe62031c8cc1674877b3a7a30a9aac754dc04f65556124d` |
+| Recall cases | 11 |
+| Safety cases | 8 |
+| Recall@K | 1.00 |
+| Safety pass rate | 1.00 |
+| long-horizon-recall | 1/1 |
+| failed_case_ids | 空 |
+| thresholds_met | `true` |
+
+旧 recent-only 算法在 candidate limit 为 3 时只会看到三个最新干扰项，720 天前目标的
+候选命中为 0/1；当前混合候选命中为 1/1。该对比只证明候选窗口问题被修复，不代表
+Embedding 级语义能力。
+
 ## 6. 结果限制
 
-- 这是 47 个案例、单模型、单次运行，不具备统计显著性，也不是 SLA；
+- 当前 v3 是 48 个案例；真实模型分数仍来自 47 案例的 v2 单模型单次快照，不具备
+  统计显著性，也不是 SLA；
 - Recall 和 Safety 是确定性实现的结果，不是大模型指标；
 - 候选 precision/recall 不代表记忆内容在现实世界中为真；
 - 关系 recall 只覆盖显式一跳关系，不代表知识图谱或多跳推理质量；

@@ -1,5 +1,7 @@
 """记忆配置契约和进程内注册表。"""
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -280,6 +282,45 @@ class ProfileRegistry:
         """返回已注册标识的不可变快照。"""
 
         return frozenset(self._profiles)
+
+
+def profile_fingerprint(profile: MemoryProfile) -> str:
+    """为会影响记忆行为的 Profile 声明生成稳定 SHA-256 指纹。"""
+
+    payload = {
+        "business_progress_values": sorted(profile.business_progress_values),
+        "capture_guidance": profile.capture_guidance,
+        "memory_types": sorted(profile.memory_types),
+        "metadata_policies": {
+            memory_type: {
+                "sensitivity_level": policy.sensitivity_level.value,
+                "validity_days": policy.validity_days,
+            }
+            for memory_type, policy in sorted(profile.metadata_policies.items())
+        },
+        "profile_id": profile.profile_id,
+        "recall_hints": {
+            memory_type: sorted(hints)
+            for memory_type, hints in sorted(profile.recall_hints.items())
+        },
+        "recall_priorities": dict(sorted(profile.recall_priorities.items())),
+        "relation_policies": {
+            relation_type: {
+                "description": policy.description,
+                "direction_cues": sorted(policy.direction_cues),
+                "source_memory_types": sorted(policy.source_memory_types),
+                "target_memory_types": sorted(policy.target_memory_types),
+            }
+            for relation_type, policy in sorted(profile.relation_policies.items())
+        },
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _contains_only_normalized_text(values: frozenset[str]) -> bool:

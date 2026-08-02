@@ -72,6 +72,7 @@ class ReviewStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
+    EXPIRED = "expired"
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,10 +395,10 @@ class ReviewItem:
             raise ValueError("resolved review must have decided_at")
         elif self.status is ReviewStatus.CONFIRMED and self.resolved_memory_id is None:
             raise ValueError("confirmed review must identify its memory")
-        elif (
-            self.status is ReviewStatus.REJECTED and self.resolved_memory_id is not None
+        elif self.status in {ReviewStatus.REJECTED, ReviewStatus.EXPIRED} and (
+            self.resolved_memory_id is not None
         ):
-            raise ValueError("rejected review cannot identify a memory")
+            raise ValueError("non-confirmed review cannot identify a memory")
         if self.decided_at is not None:
             _require_aware_datetime(self.decided_at, "decided_at")
 
@@ -414,6 +415,7 @@ class ExtractionMetadata:
     prompt_version: str
     schema_version: str
     profile_version: str
+    profile_fingerprint: str
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -421,6 +423,7 @@ class ExtractionMetadata:
             "prompt_version",
             "schema_version",
             "profile_version",
+            "profile_fingerprint",
         ):
             object.__setattr__(
                 self,

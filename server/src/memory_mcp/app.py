@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse
 from memory_mcp.auth import StaticTokenVerifier
 from memory_mcp.core import (
     CandidateExtractor,
+    MaintenanceResult,
     MemoryProfile,
     MemoryService,
     RelationExtractor,
@@ -32,7 +33,7 @@ from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
 from memory_mcp.profiles import built_in_profiles
-from memory_mcp.settings import MemoryServerSettings
+from memory_mcp.settings import ConfiguredPrincipal, MemoryServerSettings
 from memory_mcp.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,9 +50,13 @@ class MemoryMcpServer(FastMCP[Any]):
         self,
         *args: Any,
         close_storage: Callable[[], None] | None = None,
+        run_maintenance: Callable[[], MaintenanceResult] | None = None,
+        maintenance_interval_seconds: int = 0,
         **kwargs: Any,
     ) -> None:
         self._close_storage = close_storage
+        self._run_maintenance = run_maintenance
+        self._maintenance_interval_seconds = maintenance_interval_seconds
         self._streamable_app = None
         super().__init__(*args, **kwargs)
 
@@ -59,16 +64,35 @@ class MemoryMcpServer(FastMCP[Any]):
         if self._streamable_app is not None:
             return self._streamable_app
         app = super().streamable_http_app()
-        if self._close_storage is not None:
+        if self._close_storage is not None or (
+            self._run_maintenance is not None and self._maintenance_interval_seconds > 0
+        ):
             session_manager_lifespan = app.router.lifespan_context
 
             @asynccontextmanager
             async def lifespan(starlette_app):
                 async with session_manager_lifespan(starlette_app) as state:
+                    stop_maintenance = asyncio.Event()
+                    maintenance_task = (
+                        asyncio.create_task(
+                            _run_maintenance_loop(
+                                self._run_maintenance,
+                                interval_seconds=self._maintenance_interval_seconds,
+                                stop_event=stop_maintenance,
+                            )
+                        )
+                        if self._run_maintenance is not None
+                        and self._maintenance_interval_seconds > 0
+                        else None
+                    )
                     try:
                         yield state
                     finally:
-                        await asyncio.to_thread(self._close_storage)
+                        stop_maintenance.set()
+                        if maintenance_task is not None:
+                            await maintenance_task
+                        if self._close_storage is not None:
+                            await asyncio.to_thread(self._close_storage)
 
             app.router.lifespan_context = lifespan
         self._streamable_app = app
@@ -113,11 +137,13 @@ def create_memory_mcp_server(
         close_storage = repository.close
 
         configured_profiles = tuple(profiles or built_in_profiles())
+        _validate_default_profiles(principals.values(), configured_profiles)
         memory_service = create_memory_service(
             repository,
             configured_profiles,
             candidate_extractor=configured_extractor,
             relation_extractor=configured_relation_extractor,
+            recall_candidate_limit=settings.recall_candidate_limit,
         )
     else:
 
@@ -136,6 +162,8 @@ def create_memory_mcp_server(
         json_response=True,
         stateless_http=settings.stateless_http,
         close_storage=close_storage,
+        run_maintenance=memory_service.run_maintenance,
+        maintenance_interval_seconds=settings.maintenance_interval_seconds,
         token_verifier=StaticTokenVerifier(principals),
         auth=AuthSettings(
             issuer_url=settings.auth_issuer_url,
@@ -170,6 +198,58 @@ def create_memory_mcp_server(
         )
 
     return server
+
+
+async def _run_maintenance_loop(
+    operation: Callable[[], MaintenanceResult],
+    *,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+) -> None:
+    """维护失败与 MCP 服务隔离；积压时让出事件循环后继续下一批。"""
+
+    while not stop_event.is_set():
+        try:
+            result = await asyncio.to_thread(operation)
+            delay = 0 if result.has_more else interval_seconds
+        except Exception as exc:
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "memory.maintenance.failed",
+                error_type=type(exc).__name__,
+            )
+            delay = interval_seconds
+        if stop_event.is_set():
+            break
+        if delay == 0:
+            await asyncio.sleep(0)
+            continue
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        except TimeoutError:
+            pass
+
+
+def _validate_default_profiles(
+    principals: Iterable[ConfiguredPrincipal],
+    profiles: Iterable[MemoryProfile],
+) -> None:
+    """在服务启动前拒绝认证主体引用不存在的默认 Profile。"""
+
+    configured_profile_ids = {profile.profile_id for profile in profiles}
+    unavailable_defaults = sorted(
+        {
+            principal.default_profile_id
+            for principal in principals
+            if principal.default_profile_id not in configured_profile_ids
+        }
+    )
+    if unavailable_defaults:
+        raise ValueError(
+            "configured principal default_profile_id is not registered: "
+            + ", ".join(unavailable_defaults)
+        )
 
 
 def create_app(

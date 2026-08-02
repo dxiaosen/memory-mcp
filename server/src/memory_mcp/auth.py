@@ -30,6 +30,7 @@ class RequestPrincipal(BaseModel):
     tenant_id: str = Field(min_length=1)
     subject_id: str = Field(min_length=1)
     client_id: str = Field(min_length=1)
+    default_profile_id: str = Field(min_length=1)
     scopes: frozenset[MemoryScope]
 
     def to_core(self) -> PrincipalContext:
@@ -55,6 +56,7 @@ class StaticTokenVerifier(TokenVerifier):
             subject=configured.subject_id,
             claims={
                 "tenant_id": configured.tenant_id,
+                "default_profile_id": configured.default_profile_id,
             },
         )
 
@@ -67,7 +69,10 @@ def current_request_principal() -> RequestPrincipal:
         raise UnauthenticatedError
     claims = access_token.claims or {}
     tenant_id = claims.get("tenant_id")
+    default_profile_id = claims.get("default_profile_id")
     if not isinstance(tenant_id, str):
+        raise UnauthenticatedError
+    if not isinstance(default_profile_id, str):
         raise UnauthenticatedError
     subject_id = access_token.subject
     if not isinstance(subject_id, str):
@@ -81,6 +86,7 @@ def current_request_principal() -> RequestPrincipal:
         tenant_id=tenant_id,
         subject_id=subject_id,
         client_id=access_token.client_id,
+        default_profile_id=default_profile_id,
         scopes=frozenset(MemoryScope(scope) for scope in access_token.scopes),
     )
 

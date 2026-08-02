@@ -244,13 +244,12 @@ class MemoryRelation:
                 raise ValueError("active relation cannot have terminal metadata")
         elif self.status is RelationStatus.STALE:
             if (
-                self.scope is not RelationScope.REVISION
-                or self.revoked_at is not None
+                self.revoked_at is not None
                 or self.stale_at is None
                 or self.stale_reason is None
             ):
                 raise ValueError(
-                    "stale relation requires revision scope, time and reason"
+                    "stale relation requires time and reason without revocation"
                 )
         elif self.revoked_at is None:
             raise ValueError("revoked relation requires revoked_at")

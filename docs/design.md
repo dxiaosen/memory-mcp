@@ -71,10 +71,10 @@ Memory MCP Server
 - 十个 MCP 工具、严格 DTO、稳定错误码；
 - `GeneralWorkProfile` 与 `InvestmentResearchProfile`；
 - revision confidence/verification/sensitivity/validity 和结构化引用来源；
-- owner-scoped 幂等 revoke，以及读取时自动失效过滤；
+- owner-scoped 幂等 revoke、读取时失效过滤和服务端周期到期物化；
 - owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效和一跳关系感知召回；
 - duplicate Evidence、replacement revision 和显式 history；
-- owner-first recall、阈值、数量和 token budget；
+- owner-first trigram/近期混合 recall、阈值、数量和 token budget；
 - 独立轻量 BeforeRun/AfterRun Agent Client 发行包；
 - 真实 OpenAI-compatible/DeepSeek 抽取与测试注入的确定性 extractor；
 - 三份独立 Agent 环境配置的跨 Agent/跨用户闭环；
@@ -92,7 +92,7 @@ Memory MCP Server
 - 多 worker 自动伸缩与数据库级 RLS；
 - Redis/Kafka 消息队列；
 - Embedding、向量数据库和 HNSW；
-- 后台调度器写回 expired 状态、物理 delete 和 suppression；
+- 物理 delete 和 suppression；
 - 自动判断端点 revision 未变化时任意关系语义失效、关系待确认、无界关系图和递归图遍历；
 - Web 管理后台和 MCP Apps；
 - Docker、Kubernetes 或 Nginx；
@@ -255,6 +255,7 @@ memory-mcp/
 │       │   │   ├── models.py       # Memory/Revision/Evidence
 │       │   │   ├── capture.py      # Candidate/Review/Capture
 │       │   │   ├── lifecycle.py    # history 和状态操作
+│       │   │   ├── maintenance.py  # 无正文维护结果
 │       │   │   ├── relations.py     # owner-scoped MemoryRelation
 │       │   │   └── recall.py        # Recall query/result
 │       │   ├── ports/
@@ -267,11 +268,14 @@ memory-mcp/
 │       │   │   ├── candidate_processing.py
 │       │   │   ├── review_service.py
 │       │   │   ├── recall_service.py
+│       │   │   ├── maintenance_service.py
 │       │   │   ├── service.py
 │       │   │   └── admission.py
 │       │   ├── adapters/
 │       │   │   ├── postgresql/
 │       │   │   │   ├── repository.py
+│       │   │   │   ├── recall.py
+│       │   │   │   ├── maintenance.py
 │       │   │   │   ├── mapping.py
 │       │   │   │   ├── validation.py
 │       │   │   │   ├── schema.py
@@ -467,7 +471,14 @@ MemoryProfile 提供：
 - recall type priorities；
 - 每种 memory type 的 sensitivity 和可选有效期策略。
 
-公开工具默认配置仍是 `general-work`：
+Core 对上述全部有效声明式字段规范化后计算 `profile_fingerprint`（SHA-256），该值
+不是由 Profile 实现手工填写。当前内置版本为 `general-work-v2` 和
+`investment-research-v2`。内置版本绑定预期策略
+指纹；策略内容改变但版本/指纹清单未同步时，生产组合根会在服务启动前失败。自定义
+Profile 同样计算并写入指纹，但不受内置清单约束。
+
+未显式提供 Profile 的工具请求使用认证主体的 `default_profile_id`；兼容缺省值仍是
+`general-work`：
 
 | memory type | 用途 |
 | --- | --- |
@@ -535,6 +546,7 @@ RequestPrincipal
 ├── subject_id
 ├── owner_key = tenant_id + ":" + subject_id
 ├── client_id
+├── default_profile_id
 └── scopes
 ```
 
@@ -545,9 +557,10 @@ RequestPrincipal
 | `tenant_id + subject_id` | 授权系统中的最终主体 |
 | `owner_key` | 服务端唯一派生的 Repository 隔离键 |
 | `client_id` | 已认证客户端；静态 Token 使用凭据摘要引用 |
+| `default_profile_id` | Token 对应的受信默认记忆策略，不改变 owner 范围 |
 | `scopes` | read/write/review 操作授权 |
 
-owner 和认证客户端必须分开。静态映射只配置 tenant、subject 和 scopes；
+owner 和认证客户端必须分开。静态映射配置 tenant、subject、默认 Profile 和 scopes；
 `owner_key` 由前两项确定性派生。当前不透明 Token 不含 MCP 可自动识别的业务
 client claim，因此校验器用单向哈希产生稳定 `static-…` 审计引用。真实 OAuth/OIDC
 适配器应从已验证 Token 或 introspection 结果取得 `client_id`。`agent_id` 不是
@@ -655,6 +668,7 @@ Capture receipt 至少提供：
 - completed、failed 或 reprocess-required 状态；
 - replay 标记；
 - `profile_version`；
+- `profile_fingerprint`；
 - 四类准入数量；
 - created memory IDs；
 - pending review IDs；
@@ -897,7 +911,7 @@ replacement 和冲突。任何候选最终只能有一个互斥结果。
 Hook run key：
 
 ```text
-(profile_id, conversation_id, turn_id)
+(profile_id 或 <server-default>, conversation_id, turn_id)
 ```
 
 Bridge 分别保存 BeforeRun 和 AfterRun task：
@@ -910,7 +924,10 @@ Bridge 分别保存 BeforeRun 和 AfterRun task：
 
 ### 11.2 服务端 event 幂等
 
-服务端以 owner + event + payload fingerprint + `profile_version` 判断：
+服务端把事件身份与处理策略版本分离：显式事件使用
+`(owner_id, event_id)`；没有 `event_id` 的兼容路径使用
+`(owner_id, profile_id, conversation_id, source_turn_id)`。`profile_version` 不参与唯一性，
+payload fingerprint 用于识别同一身份是否被不同内容复用：
 
 | 情况 | 行为 |
 | --- | --- |
@@ -918,6 +935,7 @@ Bridge 分别保存 BeforeRun 和 AfterRun task：
 | 相同 event、相同 payload | 返回原 receipt，`replayed=true` |
 | 相同 event、不同 payload | `idempotency_conflict` |
 | 上次 retryable failure | 复用 capture ID 重处理 |
+| Profile 已升级后的延迟重试 | 仍命中原 capture；完成记录直接 replay，失败记录可用当前策略重处理 |
 | 两个请求重叠 | 最多一次逻辑抽取/提交 |
 
 进程内 cache 只减少重复网络调用；跨进程、服务重启和网络不确定性由 PostgreSQL
@@ -1003,9 +1021,15 @@ owner review ID 不泄露内容或存在性。
 owner/current revision 上把 lifecycle 改为 `revoked`，不创建新 revision，也不
 删除 Evidence；重复调用返回同一状态。另一 owner 猜中 ID 时与不存在完全一致。
 
-到期不是 revoke。`valid_until` 到达后，普通 list/recall 在读取时排除该 revision，
-但 lifecycle 不被后台任务改写。这样不需要 scheduler 或队列，同时保留历史；若
-未来需要合规删除或 suppression，应建立独立规范，不能复用 revoke 偷做物理删除。
+到期不是 revoke。`valid_until` 到达后，普通 list/recall 立即在读取时排除该
+revision；Server lifespan 内部 runner 随后按批次把仍为 current/active 的 revision
+物化为 `expired`。它还会把已到期或 pending 超过 30 天的 ReviewItem 终止为
+`expired`，不创建 Memory。维护每 300 秒运行一次、每批总计最多 500 个目标，多个
+worker 依靠 PostgreSQL `FOR UPDATE SKIP LOCKED` 和条件 UPDATE 幂等协作；不需要队列
+或 Agent 配置。
+
+维护保留 Item、Revision、Evidence 和 Review 历史。若未来需要合规删除或
+suppression，应建立独立规范，不能复用 revoke/expired 偷做物理删除。
 
 ### 12.7 Relation 生命周期
 
@@ -1023,8 +1047,9 @@ Profile policy 校验 relation type 和方向。相同 owner/source/target/type 
 重新校验，再用活动部分唯一索引幂等写边，最后提交 capture outcomes。它创建
 `automatic/revision` 边。replacement 会先把连接旧 revision 的活动边物化为
 `stale/endpoint_revision_changed`，再写针对新 revision 的新边；任何一步失败都共同
-回滚。端点 revoked/到期也会让关系停止参与读取和 recall，但系统仍不从任意自然语言
-自动撤销端点内容未变化的错误关系。
+回滚。端点到期时，维护事务会把连接该 Item 的活动边物化为
+`stale/endpoint_expired`；端点 revoked/到期在物化前也会先被读取谓词排除。系统仍不
+从任意自然语言自动撤销端点内容未变化的错误关系。
 
 ## 13. 主动召回
 
@@ -1038,10 +1063,16 @@ owner
 → profile_id
 → valid_from <= now < valid_until（或无上限）
 → optional subject
+→ pg_trgm subject/content lexical top-K（约 70%）
+  + observed_at DESC recent 补齐（至少 1 个，limit=1 除外）
+→ 去重并限制为 `MEMORY_MCP_RECALL_CANDIDATE_LIMIT`
 ```
 
-相关性逻辑永远看不到其他 owner 的记录。pending、superseded、expired、revoked、
-deleted 和 blocked 内容不进入候选集。
+候选上限由 Application 通过 Repository 端口下推，PostgreSQL 在 owner/Profile/
+current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择词法候选，再用
+近期候选补齐，默认总计 500、必须为正数。它能找回超过近期窗口的较早相关记忆，
+但不是 Embedding 语义索引。相关性逻辑永远看不到其他 owner 的记录。
+pending、superseded、expired、revoked、deleted 和 blocked 内容不进入候选集。
 
 ### 13.2 排序
 
@@ -1056,8 +1087,9 @@ Application 对候选计算：
 - 当另一端自身也达到 threshold 时，最多 `0.12` 的一跳关系加权；
 - observed time 作为稳定排序补充。
 
-只有基础文本分数达到 relevance threshold 的记录才进入结果；关系不能独自把不相关
-endpoint 拉入召回，也不递归扩展候选。当前算法故意可解释、无外部 Embedding 依赖。
+只有基础文本分数达到 relevance threshold 的记录才进入结果；数据库 lexical score
+只负责候选生成，不替代应用分数。关系不能独自把不相关 endpoint 拉入召回，也不递归
+扩展候选。当前算法故意可解释、无外部 Embedding 或模型调用依赖。
 
 ### 13.3 subject 语义
 
@@ -1326,9 +1358,13 @@ Migration：
    owner/Profile endpoint 外键、状态约束和 active 唯一索引，不回填现有记忆；
 7. `0007_relation_provenance.sql`：增加 origin/scope、revision 快照、自动 provenance
    和 stale 生命周期；旧关系保守标记为 `legacy/item`，不伪造历史证据。
+8. `0008_policy_routing_recall.sql`：给 capture 增加策略指纹，历史行明确写为
+   `legacy-unknown`；重建事件/来源唯一约束，使 Profile 升级不制造重复捕获。
+9. `0009_memory_maintenance_recall.sql`：安装 `pg_trgm`，增加 subject/content 混合召回
+   索引和维护索引，并加入 review `expired` 终态及 relation stale 兼容约束。
 
 任何已执行 migration 都可能存在于部署数据库中，因此不能修改其内容或 checksum。
-新安装同样按七条顺序执行，最终 schema 只暴露 profile
+新安装同样按九条顺序执行，最终 schema 只暴露 profile
 命名。
 
 这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
@@ -1338,6 +1374,10 @@ Migration：
 Server 启动时创建 psycopg pool；ASGI lifespan 关闭时释放。Pool min/max 和
 connect timeout 可配置。Core/Repository 是同步接口，MCP handler 通过 worker
 thread 调用，避免直接阻塞事件循环。
+
+同一 lifespan 托管 maintenance asyncio task；同步批次通过 `asyncio.to_thread`
+执行。关闭时先通知 runner、等待当前批次结束，再释放连接池。维护失败只记录异常
+类型并等待下一轮，不把模型或维护短暂失败升级为 MCP 全局不可用。
 
 ### 15.6 Health
 
@@ -1368,11 +1408,11 @@ member，让全量测试在同一仓库环境运行；它不会产生第三个 w
 | 配置组 | 内容 |
 | --- | --- |
 | Database | PostgreSQL DSN、连接池、迁移开关和连接超时 |
-| Server | HTTP 监听、MCP/健康路径、无状态模式和服务端预算 |
-| Authentication | issuer、resource URL 和静态 Token/Principal 映射 |
+| Server | HTTP 监听、MCP/健康路径、无状态模式、渲染预算和 Recall 候选上限 |
+| Authentication | issuer、resource URL、默认 Profile 和静态 Token/Principal 映射 |
 | Model | provider、model name、API key、base URL、temperature、超时和重试 |
 | Logging | 日志级别、滚动文件参数和独立内容日志开关 |
-| Memory profile | 正式记忆配置固定在代码，`profile_version` 随决策写入审计数据 |
+| Memory profile | 正式记忆配置固定在代码，版本、策略指纹和 Prompt 版本随捕获写入审计数据 |
 
 前五组属于 Memory MCP Server，统一由根目录模板中的 `MEMORY_MCP_*` 配置；
 Memory profile 是相关但不可由环境变量覆盖的规则边界。
@@ -1381,7 +1421,8 @@ Memory profile 是相关但不可由环境变量覆盖的规则边界。
 
 Agent Host 是第二个独立部署单元，只安装轻量 `memory-mcp-agent`。每个 Agent
 进程只要求
-`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。`profile_id` 默认为 `general-work`，
+`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。Agent 默认省略 `profile_id`，由 Token 的
+`default_profile_id` 在服务端解析；未配置该字段的旧映射兼容为 `general-work`。
 fail-open、召回预算、capture 重试和状态 TTL 使用代码默认值。多个 Agent 使用
 相同变量名，由各自进程环境或 EnvironmentFile 提供不同值，不使用动态身份前缀，
 也不读取其他 Agent 的 Secret。
@@ -1565,11 +1606,13 @@ Public Agent
 
 ### 19.5 投研质量评估
 
-顶层 `evals/` 是不进入发行包的开发边界。当前 investment v2 基准使用 47 个中文案例
+顶层 `evals/` 是不进入发行包的开发边界。当前 investment v3 基准使用 48 个中文案例
 覆盖八类投研记忆、六类关系、语义/报告期/实体召回和金融敏感边界。默认运行完全
 离线且只评估 recall/safety；candidate/relation 显示为未评测，不允许用金标回放产生
-模型分数。显式 `--live-model` 才运行 candidate/relation，recall/safety 继续运行生产
-确定性实现，报告必须标明两者区别。
+模型分数。Recall case 会建立正式 `MemoryRecord` 并调用公开
+`MemoryService.recall_memory`，因此生命周期、阈值、关系、预算和最终排序与生产链路
+一致，不再直接调用私有打分函数。显式 `--live-model` 才运行 candidate/relation，
+recall/safety 继续运行同一生产确定性实现，报告必须标明两者区别。
 
 召回的业务语义通过 `MemoryProfile.recall_hints` 声明，Core 只提供有界类型信号，
 不认识投研类型名。自动关系除 Profile 端点校验外，还拒绝明确否定关系的来源表达；
@@ -1672,6 +1715,8 @@ Agent/Server
 26. 本轮新记忆和自动关系必须在同一个 CaptureWrite 事务可见或共同回滚。
 27. 自动关系必须绑定可信 capture、两端 revision 和完整 provenance，模型不能选择 owner/revision 身份。
 28. replacement 必须在同一事务把旧 revision-scoped 活动边转为 stale；人工 item-scoped 边继续有效。
+29. 到期必须先由读取谓词立即隔离，再由有界维护批次物化 expired review/revision 和 endpoint_expired 关系。
+30. Recall 候选必须在 owner/Profile/active/effective 边界内组合 indexed lexical 与 recent，模型不可成为正确性依赖。
 
 ## 22. 当前结构 Review 结论
 
@@ -1685,8 +1730,11 @@ Agent/Server
 - Hook 已拆为独立 `memory-mcp-agent`，远程 Agent 不安装 Server；
 - Agent 包的最小 HTTP/MCP Client 只保留主动记忆需要的协议面，发行依赖边界有
   自动化和隔离 wheel 测试；
-- PostgreSQL mapping/validation/schema 已分离；
+- PostgreSQL mapping/validation/schema 以及独立 recall/maintenance SQL 协作者已分离，
+  Repository 保持唯一 facade 和连接/事务入口；
 - Capture 候选处理、自动关系规划和 Review 协调已从 facade 分离；
+- 到期维护由独立 application service 承担，runner 只位于 Server lifespan；
+- Recall 候选由 Repository 的混合 query 收窄，Application 保持数据库无关的最终排序；
 - 关系能力复用现有 domain/port/Repository/tool 分层，没有增加图数据库、队列或新
   顶层模块；
 - `evals/` 是不进入发行包的开发边界，默认模式不读取模型配置、网络或生产数据库；
@@ -1698,9 +1746,10 @@ Agent/Server
 错误码、日志事件名、模型 prompt、SQL 和第三方参数属于稳定契约，继续保留英文。
 注释只说明职责和非显然约束，不逐行复述代码。
 
-唯一中期关注点是 PostgreSQL Repository 仍然较大，但它围绕一个端口和一组原子
-事务，且协作职责已经拆出。只有 SQL 继续显著增长或出现独立 read/write 模型时，
-才考虑在保持单一 facade 的前提下拆分私有 command/query 协作者。
+PostgreSQL Repository 仍承载核心写事务，因此文件不会刻意按每个方法继续拆分；
+只有形成独立一致性边界时才增加协作者。当前 recall query 与 system maintenance 已
+达到独立职责阈值并拆出，capture/review/replacement 继续留在 facade，避免把一个
+原子事务拆成多个不协调 Repository。
 
 ## 23. 文档与 OpenSpec 关系
 

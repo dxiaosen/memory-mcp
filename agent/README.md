@@ -11,6 +11,10 @@ MEMORY_MCP_URL=https://memory.example.com/mcp
 MEMORY_MCP_TOKEN=<该 Agent Host 的 Bearer Token>
 ```
 
+Agent 默认不发送 Profile；Server 根据该 Token 的 `default_profile_id` 选择
+`general-work` 或 `investment-research`。高级进程级覆盖可使用
+`MEMORY_HOOK_PROFILE_ID`，普通接入不需要。
+
 安装 wheel：
 
 ```bash

@@ -65,6 +65,8 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
         "0005_metadata_rollback_compat.sql",
         "0006_memory_relations.sql",
         "0007_relation_provenance.sql",
+        "0008_policy_routing_recall.sql",
+        "0009_memory_maintenance_recall.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -133,6 +135,26 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     ):
         assert required_fragment in provenance_migration
 
+    hardening_migration = migrations[7].sql
+    for required_fragment in (
+        "profile_fingerprint",
+        "owner_id, event_id",
+        "DROP CONSTRAINT memory_capture_runs_source_unique",
+        "WHERE event_id IS NULL",
+    ):
+        assert required_fragment in hardening_migration
+
+    maintenance_migration = migrations[8].sql
+    for required_fragment in (
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        "status IN ('pending', 'confirmed', 'rejected', 'expired')",
+        "memory_items_recall_subject_trgm_idx",
+        "memory_revisions_recall_content_trgm_idx",
+        "memory_revisions_maintenance_expiry_idx",
+        "memory_review_items_maintenance_idx",
+    ):
+        assert required_fragment in maintenance_migration
+
 
 def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
     required_methods = {
@@ -141,6 +163,8 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "get",
         "list",
         "find_current",
+        "find_recall_candidates",
+        "maintain",
         "revoke",
         "link_relation",
         "revoke_relation",
@@ -219,6 +243,32 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
     assert service.list_memories(owner_b) == ()
     with pytest.raises(MemoryNotFoundError):
         service.get_memory(owner_b, created.item.memory_id)
+    for index in range(2):
+        service.create_memory(
+            owner_a,
+            replace(
+                project_preference_command(),
+                subject=f"report-{index}",
+                source_turn_id=f"turn-{index + 2}",
+                observed_at=datetime(2026, 7, 30, index + 11, tzinfo=UTC),
+            ),
+        )
+    service.create_memory(
+        owner_b,
+        replace(
+            project_preference_command(),
+            subject="other-owner-report",
+            source_turn_id="other-owner-turn",
+        ),
+    )
+    bounded = repository.find_current(
+        owner_a,
+        profile_id="project-work",
+        limit=2,
+    )
+    assert len(bounded) == 2
+    assert {record.item.owner_id for record in bounded} == {"owner-a"}
+    assert {record.item.profile_id for record in bounded} == {"project-work"}
     repository.close()
 
     reopened_pool = create_pool(

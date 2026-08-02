@@ -10,16 +10,24 @@ from memory_mcp.core.application.automatic_relations import (
     AutomaticRelationPlanner,
 )
 from memory_mcp.core.application.commands import CreateMemoryCommand
+from memory_mcp.core.application.maintenance_service import (
+    MAINTENANCE_BATCH_SIZE,
+    PENDING_REVIEW_RETENTION,
+    MemoryMaintenanceService,
+)
 from memory_mcp.core.application.recall_service import RecallService
 from memory_mcp.core.application.service import MemoryService
 
 __all__ = [
     "AUTO_RELATION_CONFIDENCE_THRESHOLD",
+    "MAINTENANCE_BATCH_SIZE",
+    "PENDING_REVIEW_RETENTION",
     "AdmissionOutcome",
     "AutomaticRelationPlan",
     "AutomaticRelationPlanner",
     "ConservativeAdmissionPolicy",
     "CreateMemoryCommand",
+    "MemoryMaintenanceService",
     "MemoryService",
     "RecallService",
 ]

@@ -18,6 +18,8 @@ add-general-memory-core
 │           └── automate-memory-relations
 │               └── harden-memory-relations
 │                   └── benchmark-investment-memory-quality
+│                       └── harden-policy-routing-recall
+│                           └── harden-memory-maintenance-recall
 └── streamline-project-maintenance
 ```
 
