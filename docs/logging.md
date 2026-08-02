@@ -188,6 +188,8 @@ agent_hook.started
 agent_hook.recall.completed
 agent_hook.capture.completed
 agent_hook.capture.skipped
+agent_hook.pending_retry.completed
+agent_hook.pending_retry.failed
 agent_hook.failed
 ```
 
@@ -205,6 +207,9 @@ owner。`memory.capture.relation_candidates` 只在操作者显式启用内容�
 `memory.recall.candidates` 只记录 Profile、候选硬上限和 lexical/recent 数量；不记录
 query 或候选正文。`memory.maintenance.completed/failed` 只记录耗时、状态转换计数、
 `has_more` 或异常类型名，不记录 owner、review、memory 或 relation 标识。
+`/health` 的 maintenance 快照同样只包含状态、连续失败次数、时间和异常类型，不包含
+异常消息。Agent pending retry 只记录稳定 run reference、attempts、status、warning
+code 或异常类型，不读取日志化本地 payload 正文。
 
 已删除的 Knowledge、Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
 

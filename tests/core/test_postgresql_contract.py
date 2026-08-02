@@ -12,6 +12,7 @@ from memory_mcp.core import (
     MemoryNotFoundError,
     MemoryRelationPolicy,
     PrincipalContext,
+    RecallQuery,
     RelationDirection,
     RelationOrigin,
     RelationScope,
@@ -164,6 +165,7 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "list",
         "find_current",
         "find_recall_candidates",
+        "load_recall_evidence",
         "maintain",
         "revoke",
         "link_relation",
@@ -253,7 +255,7 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
                 observed_at=datetime(2026, 7, 30, index + 11, tzinfo=UTC),
             ),
         )
-    service.create_memory(
+    other_owner = service.create_memory(
         owner_b,
         replace(
             project_preference_command(),
@@ -269,6 +271,39 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
     assert len(bounded) == 2
     assert {record.item.owner_id for record in bounded} == {"owner-a"}
     assert {record.item.profile_id for record in bounded} == {"project-work"}
+    recalled = service.recall_memory(
+        owner_a,
+        RecallQuery(
+            profile_id="project-work",
+            query="项目周报默认使用什么格式？",
+            subject="weekly-report",
+            max_items=1,
+            token_budget=600,
+        ),
+    )
+    assert recalled.items[0].memory_id == created.item.memory_id
+    assert len(recalled.items[0].sources) == 1
+    evidence = repository.load_recall_evidence(
+        owner_a,
+        revision_ids=(
+            created.current_revision.revision_id,
+            other_owner.current_revision.revision_id,
+        ),
+        per_revision_limit=3,
+    )
+    assert set(evidence) == {created.current_revision.revision_id}
+    maintenance_time = datetime(2026, 8, 2, 12, tzinfo=UTC)
+    first_maintenance = repository.maintain(
+        effective_at=maintenance_time,
+        review_cutoff=maintenance_time,
+        limit=500,
+    )
+    second_maintenance = repository.maintain(
+        effective_at=maintenance_time,
+        review_cutoff=maintenance_time,
+        limit=500,
+    )
+    assert first_maintenance == second_maintenance
     repository.close()
 
     reopened_pool = create_pool(

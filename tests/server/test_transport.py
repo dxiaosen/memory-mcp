@@ -179,6 +179,8 @@ def _running_server(
         try:
             response = httpx.get(health_url, timeout=0.25)
             if response.status_code == 200:
+                health = response.json()
+                assert health["maintenance"]["state"] in {"starting", "ok"}
                 break
         except httpx.HTTPError:
             pass
@@ -833,7 +835,7 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
                 "run_id": "generic-run-1",
                 "cwd": str(generic_cwd),
                 "hook_event_name": "BeforeRun",
-                "user_input": "项目周报应该使用什么格式？",
+                "user_input": "以后项目周报默认用表格，项目周报应该使用什么格式？",
             },
         )
         generic_context = generic_recall["hookSpecificOutput"]["additionalContext"]

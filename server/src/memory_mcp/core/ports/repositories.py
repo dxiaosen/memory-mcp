@@ -1,6 +1,6 @@
 """通用记忆持久化端口。"""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -11,6 +11,7 @@ from memory_mcp.core.domain import (
     Evidence,
     MaintenanceResult,
     MemoryHistoryEntry,
+    MemoryRecallCandidate,
     MemoryRecord,
     MemoryRelation,
     MemoryRelationSummary,
@@ -57,7 +58,7 @@ class ReplacementWrite:
 class RecallCandidateSet:
     """Repository 已隔离、去重并限制数量的混合召回候选。"""
 
-    records: tuple[MemoryRecord, ...]
+    candidates: tuple[MemoryRecallCandidate, ...]
     lexical_count: int
     recent_count: int
 
@@ -66,7 +67,7 @@ class RecallCandidateSet:
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
-        if self.lexical_count + self.recent_count != len(self.records):
+        if self.lexical_count + self.recent_count != len(self.candidates):
             raise ValueError("candidate source counts must match records")
 
 
@@ -132,6 +133,17 @@ class MemoryRepository(Protocol):
         limit: int,
     ) -> RecallCandidateSet:
         """返回 owner/Profile 内词法优先、近期补齐的有界候选。"""
+
+        ...
+
+    def load_recall_evidence(
+        self,
+        principal: PrincipalContext,
+        *,
+        revision_ids: Sequence[UUID],
+        per_revision_limit: int,
+    ) -> Mapping[UUID, tuple[Evidence, ...]]:
+        """一次性加载 owned revision 的有限最近来源。"""
 
         ...
 
@@ -215,8 +227,8 @@ class MemoryRepository(Protocol):
         self,
         principal: PrincipalContext,
         write: CaptureWrite,
-    ) -> None:
-        """原子提交捕获状态、活动记忆、待确认项和无正文结果。"""
+    ) -> CaptureResult:
+        """原子提交并返回数据库中的权威捕获结果。"""
 
         ...
 

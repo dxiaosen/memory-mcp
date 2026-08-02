@@ -53,6 +53,51 @@ def test_turn_state_keeps_concurrent_turns_separate(tmp_path) -> None:
     assert store.load("session-1", "turn-2") == second
 
 
+def test_staged_capture_is_stable_and_legacy_prompt_state_still_loads(
+    tmp_path,
+) -> None:
+    observed_at = datetime(2026, 8, 2, 8, tzinfo=UTC)
+    store = TurnStateStore(tmp_path / "hooks")
+    store.save(
+        TurnState(
+            session_id="session-1",
+            turn_id="turn-1",
+            prompt="原始问题",
+        )
+    )
+
+    staged = store.stage_capture(
+        "session-1",
+        "turn-1",
+        final_output="最终回复",
+        observed_at=observed_at,
+        profile_id="research",
+    )
+    replayed = store.stage_capture(
+        "session-1",
+        "turn-1",
+        final_output="最终回复",
+        observed_at=observed_at + timedelta(minutes=1),
+        profile_id="research",
+    )
+
+    assert replayed == staged
+    assert replayed.schema_version == "2"
+    assert replayed.capture_observed_at == observed_at
+
+    legacy = TurnState.model_validate(
+        {
+            "schema_version": "1",
+            "session_id": "legacy-session",
+            "turn_id": "legacy-turn",
+            "prompt": "旧版本状态",
+            "created_at": observed_at,
+        }
+    )
+    store.save(legacy)
+    assert store.load("legacy-session", "legacy-turn") == legacy
+
+
 def test_turn_state_rejects_conflicting_prompt_for_same_turn(tmp_path) -> None:
     store = TurnStateStore(tmp_path / "hooks")
     store.save(

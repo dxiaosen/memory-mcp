@@ -77,7 +77,7 @@
 
 - 向量检索、Embedding、HNSW 和混合检索调优；
 - supplement/correction/conflict 的完整关系矩阵和复杂关系图；
-- 自动过期调度、完整删除抑制、合规级审计和 usage 全链路；
+- 完整物理删除抑制、合规级审计和 usage 全链路；
 - 投资假设与调研问题两套正式 profile；
 - 大规模无记忆/朴素摘要/主动记忆对比实验；
 - Web 管理后台、MCP Apps、消息队列和异步任务；

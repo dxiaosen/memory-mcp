@@ -74,6 +74,10 @@ PostgreSQL 持久化。
 - Docker、Kubernetes、Nginx 或特定 Agent 平台运行依赖；
 - 真实敏感数据接入或对用户陈述进行事实验证。
 
+这里的 Non-Goals 只描述最初核心变更的实现面，不是当前系统缺口清单。后续变更已经
+实现投研 Profile、策略约束关系和自动到期物化；仍未实现的是完整物理删除/
+suppression、合规审计、外部队列和复杂关系图。
+
 ## Decisions
 
 ### 1. MCP Server 是唯一产品边界

@@ -19,6 +19,7 @@ from memory_mcp.core.domain import (
     ExtractionMetadata,
     LifecycleStatus,
     MemoryItem,
+    MemoryRecallCandidate,
     MemoryRecord,
     MemoryRevision,
     MessageRole,
@@ -143,6 +144,22 @@ def to_record(
     )
 
 
+def to_recall_candidate(row: Mapping[str, Any]) -> MemoryRecallCandidate:
+    """将无 Evidence 的召回行映射为轻量排序候选。"""
+
+    return MemoryRecallCandidate(
+        item=MemoryItem(
+            memory_id=as_uuid(row["memory_id"]),
+            owner_id=row["owner_id"],
+            profile_id=row["profile_id"],
+            subject=row["subject"],
+            memory_type=row["memory_type"],
+            created_at=as_datetime(row["item_created_at"]),
+        ),
+        current_revision=to_revision(row),
+    )
+
+
 def to_revision(row: Mapping[str, Any]) -> MemoryRevision:
     observed_at = row.get("revision_observed_at", row.get("observed_at"))
     created_at = row.get("revision_created_at", row.get("created_at"))
@@ -176,32 +193,7 @@ def load_evidence(
     revision_id: UUID,
 ) -> tuple[Evidence, ...]:
     return tuple(
-        Evidence(
-            evidence_id=as_uuid(source["evidence_id"]),
-            memory_id=as_uuid(source["memory_id"]),
-            revision_id=as_uuid(source["revision_id"]),
-            owner_id=source["owner_id"],
-            conversation_id=source["conversation_id"],
-            source_turn_id=source["source_turn_id"],
-            source_expression=source["source_expression"],
-            observed_at=as_datetime(source["observed_at"]),
-            created_at=as_datetime(source["created_at"]),
-            source_role=(
-                MessageRole(source["source_role"])
-                if source["source_role"] is not None
-                else None
-            ),
-            source_message_id=source["source_message_id"],
-            source_tool_name=source["source_tool_name"],
-            source_type=EvidenceSourceType(source["source_type"]),
-            source_uri=source["source_uri"],
-            source_title=source["source_title"],
-            source_publisher=source["source_publisher"],
-            published_at=optional_datetime(source["published_at"]),
-            retrieved_at=optional_datetime(source["retrieved_at"]),
-            content_hash=source["content_hash"],
-            citation_locator=source["citation_locator"],
-        )
+        to_evidence(source)
         for source in connection.execute(
             """
             SELECT evidence_id, memory_id, revision_id, owner_id,
@@ -216,6 +208,37 @@ def load_evidence(
             """,
             (owner_id, revision_id),
         ).fetchall()
+    )
+
+
+def to_evidence(source: Mapping[str, Any]) -> Evidence:
+    """映射一条已经过 owner 条件过滤的 Evidence。"""
+
+    return Evidence(
+        evidence_id=as_uuid(source["evidence_id"]),
+        memory_id=as_uuid(source["memory_id"]),
+        revision_id=as_uuid(source["revision_id"]),
+        owner_id=source["owner_id"],
+        conversation_id=source["conversation_id"],
+        source_turn_id=source["source_turn_id"],
+        source_expression=source["source_expression"],
+        observed_at=as_datetime(source["observed_at"]),
+        created_at=as_datetime(source["created_at"]),
+        source_role=(
+            MessageRole(source["source_role"])
+            if source["source_role"] is not None
+            else None
+        ),
+        source_message_id=source["source_message_id"],
+        source_tool_name=source["source_tool_name"],
+        source_type=EvidenceSourceType(source["source_type"]),
+        source_uri=source["source_uri"],
+        source_title=source["source_title"],
+        source_publisher=source["source_publisher"],
+        published_at=optional_datetime(source["published_at"]),
+        retrieved_at=optional_datetime(source["retrieved_at"]),
+        content_hash=source["content_hash"],
+        citation_locator=source["citation_locator"],
     )
 
 

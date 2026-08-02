@@ -5,12 +5,13 @@ import logging
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from uuid import UUID
 
 from memory_mcp.core.domain import (
-    MemoryRecord,
+    Evidence,
+    MemoryRecallCandidate,
     MemoryRelationSummary,
     PrincipalContext,
     RecalledMemory,
@@ -88,7 +89,7 @@ class RecallService:
             effective_at=effective_at,
             limit=self._candidate_limit,
         )
-        candidates = candidate_set.records
+        candidates = candidate_set.candidates
         log_event(
             _LOGGER,
             logging.DEBUG,
@@ -226,6 +227,20 @@ class RecallService:
                     truncated=True,
                 )
             )
+        sources_by_revision = self._repository.load_recall_evidence(
+            principal,
+            revision_ids=tuple(item.revision_id for item in selected),
+            per_revision_limit=3,
+        )
+        selected = [
+            replace(
+                item,
+                sources=_source_summaries(
+                    sources_by_revision.get(item.revision_id, ())
+                ),
+            )
+            for item in selected
+        ]
         rendered = "\n".join((_SAFE_CONTEXT_HEADER, *rendered_lines))
         return _traced_result(
             RecallResult(
@@ -275,7 +290,7 @@ def _traced_result(result: RecallResult) -> RecallResult:
 
 
 def _score_record(
-    record: MemoryRecord,
+    record: MemoryRecallCandidate,
     query: RecallQuery,
     priorities: Mapping[str, int],
     recall_hints: Mapping[str, frozenset[str]],
@@ -354,7 +369,7 @@ def _character_pairs(value: str) -> set[str]:
 
 
 def _to_recalled_memory(
-    record: MemoryRecord,
+    record: MemoryRecallCandidate,
     score: float,
     relations: Sequence[MemoryRelationSummary] = (),
 ) -> RecalledMemory:
@@ -374,26 +389,30 @@ def _to_recalled_memory(
         valid_from=revision.valid_from,
         valid_until=revision.valid_until,
         last_verified_at=revision.last_verified_at,
-        sources=tuple(
-            RecallSourceSummary(
-                conversation_id=source.conversation_id,
-                source_turn_id=source.source_turn_id,
-                source_expression=source.source_expression,
-                observed_at=source.observed_at,
-                source_role=source.source_role,
-                source_type=source.source_type,
-                source_uri=source.source_uri,
-                source_title=source.source_title,
-                source_publisher=source.source_publisher,
-                published_at=source.published_at,
-                retrieved_at=source.retrieved_at,
-                content_hash=source.content_hash,
-                citation_locator=source.citation_locator,
-            )
-            for source in record.evidence[-3:]
-        ),
+        sources=(),
         relations=tuple(relations),
         relevance_score=score,
+    )
+
+
+def _source_summaries(sources: Sequence[Evidence]) -> tuple[RecallSourceSummary, ...]:
+    return tuple(
+        RecallSourceSummary(
+            conversation_id=source.conversation_id,
+            source_turn_id=source.source_turn_id,
+            source_expression=source.source_expression,
+            observed_at=source.observed_at,
+            source_role=source.source_role,
+            source_type=source.source_type,
+            source_uri=source.source_uri,
+            source_title=source.source_title,
+            source_publisher=source.source_publisher,
+            published_at=source.published_at,
+            retrieved_at=source.retrieved_at,
+            content_hash=source.content_hash,
+            citation_locator=source.citation_locator,
+        )
+        for source in sources
     )
 
 

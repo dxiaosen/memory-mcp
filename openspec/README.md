@@ -20,6 +20,7 @@ add-general-memory-core
 │                   └── benchmark-investment-memory-quality
 │                       └── harden-policy-routing-recall
 │                           └── harden-memory-maintenance-recall
+│                               └── harden-recall-delivery-reliability
 └── streamline-project-maintenance
 ```
 
@@ -27,3 +28,9 @@ add-general-memory-core
 任务没有因为代码完成而勾选。其余已完成变更暂不抢先归档，避免在基础变更仍活动时
 把依赖增量分散到主规范与 changes 两处。等交付任务完成，或正式拆成独立
 `release-acceptance` 变更后，再按上述依赖顺序同步并归档。
+
+归档时先处理独立的 `streamline-project-maintenance`，再从
+`add-agent-active-memory`、`enhance-memory-metadata` 沿依赖树向下，最后处理
+`harden-recall-delivery-reliability`；基础 `add-general-memory-core` 只在 5 个真实环境/
+现场任务完成或拆入独立 acceptance 变更后归档。这样不会用“complete”掩盖尚未执行的
+公网、专用测试库和现场验收。

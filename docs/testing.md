@@ -52,7 +52,7 @@ openspec-cn validate <change-name> --strict
 | `tests/agent/` | 轻量 Client、Bridge、宿主适配和状态文件 |
 | `tests/evaluation/` | 数据集、runner 输出和敏感字段边界 |
 | `tests/support/` | 跨测试共享的最小 Fake 与测试 Profile |
-| `evals/cases.json` | 48 个中文投研质量案例，不是 pytest 重复用例 |
+| `evals/cases.json` | 52 个中文投研质量案例，不是 pytest 重复用例 |
 
 高风险边界必须保留回归覆盖：可信 Principal 派生、Token 默认 Profile、跨 owner
 不可见、scope、跨 Profile 版本幂等与
@@ -92,6 +92,9 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' \
 当前 `0009_memory_maintenance_recall.sql` 安装 `pg_trgm`、增加混合召回/维护索引，
 并允许 pending review 进入 `expired` 终态。`health` 会同时检查 migration checksum、
 扩展和四个必需索引。
+现有 disposable PostgreSQL contract 还会实际执行混合候选、最终 revision 的批量
+Evidence 水合、owner 隔离和重复维护；它不是 SQL 文本断言。未配置专用测试库时这些
+用例明确 skip，不能写成“已通过真实 PostgreSQL”。
 共享开发/生产库只运行非破坏性的 `migrate/health`；会 truncate 的 contract/E2E 仍
 必须使用名称含 `test` 的专用库。
 
@@ -114,6 +117,10 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' \
 live 模式需要有效的 `MEMORY_MCP_MODEL_*` 配置。结果文件只能包含模型/数据集版本、
 聚合指标、分类指标和失败 case ID，不保存输入正文、Token 或 API Key。模型结果与
 失败分析只在[投研记忆评测](evaluation.md)维护，避免多份快照数字冲突。
+
+当前 v4 离线 Recall 为 15/15，包含零命中、同义改写、报告期/近名实体强干扰、
+720 天旧记忆和 101 条大窗口。结果未暴露需要模型参与召回热路径的失败证据，因此
+BeforeRun 继续使用 PostgreSQL 混合候选和确定性排序。
 
 ## 6. 发布检查
 

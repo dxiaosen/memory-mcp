@@ -13,6 +13,7 @@ from memory_mcp.core.domain import (
     LifecycleStatus,
     MaintenanceResult,
     MemoryHistoryEntry,
+    MemoryRecallCandidate,
     MemoryRecord,
     MemoryRelation,
     MemoryRelationSummary,
@@ -27,6 +28,7 @@ from memory_mcp.core.domain import (
     normalize_memory_text,
 )
 from memory_mcp.core.exceptions import (
+    IdempotencyConflictError,
     InvalidMemoryTypeError,
     ProfileNotRegisteredError,
 )
@@ -57,6 +59,7 @@ class InMemoryMemoryRepository:
         ] = {}
         self._reviews: dict[UUID, ReviewItem] = {}
         self._relations: dict[UUID, MemoryRelation] = {}
+        self._capture_lock = Lock()
         self._relation_lock = Lock()
 
     def register_profile(self, profile: MemoryProfile) -> None:
@@ -211,10 +214,35 @@ class InMemoryMemoryRepository:
             record for record in eligible if record.item.memory_id not in lexical_ids
         )[:recent_limit]
         return RecallCandidateSet(
-            records=(*lexical, *recent),
+            candidates=tuple(
+                MemoryRecallCandidate(
+                    item=record.item,
+                    current_revision=record.current_revision,
+                )
+                for record in (*lexical, *recent)
+            ),
             lexical_count=len(lexical),
             recent_count=len(recent),
         )
+
+    def load_recall_evidence(
+        self,
+        principal: PrincipalContext,
+        *,
+        revision_ids: Sequence[UUID],
+        per_revision_limit: int,
+    ) -> dict[UUID, tuple[Evidence, ...]]:
+        """返回 selected owned revision 最近的有限来源。"""
+
+        if per_revision_limit < 1:
+            raise ValueError("per_revision_limit must be positive")
+        requested = frozenset(revision_ids)
+        return {
+            record.current_revision.revision_id: record.evidence[-per_revision_limit:]
+            for record in self._records.values()
+            if record.item.owner_id == principal.owner_id
+            and record.current_revision.revision_id in requested
+        }
 
     def maintain(
         self,
@@ -503,7 +531,15 @@ class InMemoryMemoryRepository:
         self,
         principal: PrincipalContext,
         write: CaptureWrite,
-    ) -> None:
+    ) -> CaptureResult:
+        with self._capture_lock:
+            return self._commit_capture_locked(principal, write)
+
+    def _commit_capture_locked(
+        self,
+        principal: PrincipalContext,
+        write: CaptureWrite,
+    ) -> CaptureResult:
         result = write.result
         if result.owner_id != principal.owner_id:
             raise ValueError("capture owner must match trusted principal")
@@ -518,8 +554,15 @@ class InMemoryMemoryRepository:
         key = self._capture_key(result)
         existing = self._captures.get(key)
         if existing is not None:
+            if (
+                result.payload_fingerprint is not None
+                and existing.payload_fingerprint != result.payload_fingerprint
+            ):
+                raise IdempotencyConflictError(
+                    "event identifier was reused with a different payload"
+                )
             if existing.status is not CaptureStatus.REPROCESS_REQUIRED:
-                raise ValueError("completed capture cannot be replaced")
+                return replace(existing, replayed=True)
             if existing.capture_id != result.capture_id:
                 raise ValueError("reprocessed capture must preserve capture_id")
 
@@ -671,6 +714,7 @@ class InMemoryMemoryRepository:
             self._reviews = reviews
             self._captures = captures
             self._relations = relations
+        return result
 
     def list_reviews(
         self,

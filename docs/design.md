@@ -936,10 +936,13 @@ payload fingerprint 用于识别同一身份是否被不同内容复用：
 | 相同 event、不同 payload | `idempotency_conflict` |
 | 上次 retryable failure | 复用 capture ID 重处理 |
 | Profile 已升级后的延迟重试 | 仍命中原 capture；完成记录直接 replay，失败记录可用当前策略重处理 |
-| 两个请求重叠 | 最多一次逻辑抽取/提交 |
+| 两个请求重叠 | PostgreSQL 只接受一次权威提交；后提交者返回同一 receipt |
 
 进程内 cache 只减少重复网络调用；跨进程、服务重启和网络不确定性由 PostgreSQL
-capture event 记录保证。
+capture event 记录保证。两个不同 Server 实例若在首个事务提交前同时开始，可能各自
+调用一次模型；事务锁和 payload fingerprint 保证只提交一次，但系统不虚构“模型调用
+全局至多一次”的承诺。要跨实例消除重复模型调用需要持久作业租约，不应让数据库事务
+在模型网络调用期间保持打开。
 
 ### 11.3 observed time 与重放
 
@@ -950,7 +953,9 @@ capture event 记录保证。
 ### 11.4 故障语义
 
 - recall 临时失败：默认 Hook fail-open，Agent 无记忆继续；
-- capture 临时失败：返回 warning 或 reprocess-required，不丢失 Agent final output；
+- capture 网络 warning 或 reprocess-required：command Hook 在本地原子保留完整 payload，
+  后续 Stop 有界补送；
+- capture completed 或明确 failed：删除本地 payload，failed 仍返回稳定 warning；
 - PostgreSQL 不可用：health 失败，不降级到本地存储；
 - migration 失败：停止发布；
 - 模型配置不完整：Server 启动失败；
@@ -1074,6 +1079,10 @@ current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择
 但不是 Embedding 语义索引。相关性逻辑永远看不到其他 owner 的记录。
 pending、superseded、expired、revoked、deleted 和 blocked 内容不进入候选集。
 
+候选 DTO 只包含 Item 与 current Revision，不携带 Evidence。Application 完成关系加权、
+相关性、数量和 token 选择后，Repository 才用一次 owner-scoped 查询为最终 revision
+批量加载各自最近三条 Evidence。默认 500 候选因此不会放大成 500 次来源查询。
+
 ### 13.2 排序
 
 Application 对候选计算：
@@ -1133,7 +1142,9 @@ observed time、validity 和内容，使业务 Agent 能正确理解来源、确
 
 ### 13.6 未来语义索引
 
-如果真实失败案例证明文本召回不足，可以增加 PostgreSQL 内部或外部可重建索引。
+当前 v4 投研基准的零命中、同义改写、报告期/同名实体强干扰、长期旧记忆和 101 条
+大候选窗口均通过，因此不在召回热路径增加模型调用。如果后续真实失败案例证明文本
+召回不足，可以增加 PostgreSQL 内部或外部可重建索引或受控 query expansion。
 索引只能提出候选；返回前必须回 PostgreSQL 复核：
 
 - owner；
@@ -1160,7 +1171,8 @@ task_intent?
 
 run key 是前三项。通用 Framework 可以显式构造全部字段；command 输入边界把
 `conversation_id/run_id` 或首批宿主的 `session_id + turn_id/prompt_id`
-归一化为同一个 `AgentTurnEvent`，并固定使用 `general-work`。它不根据字段推断
+归一化为同一个 `AgentTurnEvent`，默认不发送 Profile，由服务端 Token 的
+`default_profile_id` 决定。它不根据字段推断
 宿主，也不在 Bridge/Core 中保留宿主分支。Server URL 和 Token 来自 Agent 进程的
 `MEMORY_MCP_URL/TOKEN`，不进入模型上下文。
 
@@ -1209,6 +1221,11 @@ after_run_success(
 默认 Runner 等待 receipt，返回 capture status、attempts、replayed、summary、
 created IDs、pending IDs、failure/warning。
 
+command Hook 在发起 HTTP 前把 prompt、final output、固定 observed time 和可选 Profile
+写入本地原子 payload。`completed` 或明确的 `failed` 是终态；`reprocess_required` 和
+客户端 warning 保留文件。后续任意一次顶层 Stop 在处理当前轮次前最多补送一条旧
+payload，沿用原 event ID 与 observed time，避免重试变成新事件。
+
 关系抽取完全位于 Server：Agent 仍只调用一次 `capture_completed_turn`。启用关系策略
 且存在合法端点组合时，AfterRun 最多增加一次结构化模型调用；`general-work` 不增加
 调用。完成 event 的重放在模型前返回，不重复执行候选或关系抽取。
@@ -1232,17 +1249,19 @@ created IDs、pending IDs、failure/warning。
 - AfterRun 一般在数秒内完成；投研关系可能增加一次有界结构化调用；
 - 有稳定 event ID 和有限重试；
 - Server 有数据库最终幂等；
-- 单实例没有跨进程削峰需求。
+- command Hook 已有 24 小时、本机磁盘范围的轻量 best-effort outbox；
+- 当前没有跨主机削峰或独立 worker 需求。
 
 引入队列的明确触发条件：
 
-- 用户响应后必须保证捕获不丢；
-- Agent Host 崩溃后仍要继续投递；
+- Agent Host 永久下线或本地磁盘损坏后仍必须保证投递；
+- 没有后续 Stop 时也必须主动持续重投；
 - 多进程需要统一削峰；
 - 模型限流导致大量积压；
 - 需要离线重放和死信治理。
 
-正确形态是 durable outbox + queue worker。单纯 `asyncio.create_task` 不是可靠队列。
+正确形态是 durable outbox + queue worker。当前本地 outbox 解决短时进程/网络故障，
+不等同于跨主机消息队列；单纯 `asyncio.create_task` 也不是可靠队列。
 
 ### 14.7 通用 Agent 主动记忆
 
@@ -1259,8 +1278,11 @@ Host JSON
 
 标准输入使用 `BeforeRun/AfterRun + conversation_id + run_id`。Codex 的
 `turn_id` 和 Claude Code 的 `prompt_id` 只在输入边界归一化；多个别名同时出现时
-必须相等。状态文件名是标识摘要，权限为目录 `0700`、文件 `0600`，原子写入并按
-24 小时清理。状态目录取事件的可信 `cwd`，stdout 只输出 Hook JSON，阶段日志写入
+必须相等。Before 保存 prompt；After 在网络调用前补齐 final output、固定 observed
+time 和 Profile。状态文件名是标识摘要，权限为目录 `0700`、文件 `0600`，原子写入并
+按 24 小时清理。新文件使用 schema v2，旧版只含 prompt 的 schema v1 文件仍可读取，
+首次补齐 capture payload 时原子升级。状态目录取事件的可信
+`cwd`，stdout 只输出 Hook JSON，阶段日志写入
 进程当前目录的 `.memory-mcp/logs/agent-hook.log`，不含 prompt、回复或 Token。
 
 Codex/Claude Code 当前共享一个 command renderer；输出协议不同的新宿主只增加薄
@@ -1389,7 +1411,10 @@ thread 调用，避免直接阻塞事件循环。
 - checksum 匹配；
 - schema current。
 
-HTTP health 只返回 service、transport、storage 和 path 等非敏感元数据。
+HTTP health 还返回无正文的 `maintenance`：`state` 为 `disabled/starting/ok/degraded`，
+并包含连续失败次数、最近成功/失败时间和最近异常类型。数据库健康时，维护单独
+`degraded` 仍返回 HTTP 200；数据库或 schema 不健康才返回 503。健康响应不包含 DSN、
+Token、owner、memory/review 标识或正文。
 
 ## 16. 配置设计
 
@@ -1606,8 +1631,9 @@ Public Agent
 
 ### 19.5 投研质量评估
 
-顶层 `evals/` 是不进入发行包的开发边界。当前 investment v3 基准使用 48 个中文案例
-覆盖八类投研记忆、六类关系、语义/报告期/实体召回和金融敏感边界。默认运行完全
+顶层 `evals/` 是不进入发行包的开发边界。当前 investment v4 基准使用 52 个中文案例
+覆盖八类投研记忆、六类关系、空结果/同义改写/报告期/实体/大窗口召回和金融敏感
+边界。默认运行完全
 离线且只评估 recall/safety；candidate/relation 显示为未评测，不允许用金标回放产生
 模型分数。Recall case 会建立正式 `MemoryRecord` 并调用公开
 `MemoryService.recall_memory`，因此生命周期、阈值、关系、预算和最终排序与生产链路

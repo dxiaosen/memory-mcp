@@ -6,13 +6,13 @@
 
 ## 1. 数据集与边界
 
-当前数据集 `investment-memory-v3-2026-08-02` 使用虚构公司和虚构数据，共 48 个中文案例：
+当前数据集 `investment-memory-v4-2026-08-02` 使用虚构公司和虚构数据，共 52 个中文案例：
 
 | 任务 | 数量 | 评估对象 | 执行方式 |
 | --- | ---: | --- | --- |
 | Candidate | 16 | 八类投研记忆、临时/推断/禁止负例 | 仅 `--live-model` 使用模型 |
 | Relation | 13 | 六类合法关系、方向/否定/角色/歧义负例 | 仅 `--live-model` 使用模型和准入保护 |
-| Recall | 11 | 近义表达、研究状态、报告期、实体和长期旧记忆干扰项 | 公开 `MemoryService.recall_memory` 生产链路 |
+| Recall | 15 | 空结果、同义改写、报告期/实体强干扰、长期旧记忆和 101 条窗口 | 公开 `MemoryService.recall_memory` 生产链路 |
 | Safety | 8 | 凭据、持仓、交易指令和正常研究文本 | 生产 SensitiveContentGuard |
 
 候选覆盖 `research_preference`、`research_question`、`thesis`、
@@ -59,7 +59,7 @@ source server/.env
 set +a
 .venv/bin/python -m evals.runner \
   --live-model \
-  --output evals/results/investment-memory-v3-<model>-<date>.json
+  --output evals/results/investment-memory-v4-<model>-<date>.json
 ```
 
 历史 v2 完整安全快照见
@@ -124,28 +124,32 @@ set +a
 | `recall-ongoing-channel-work` | “下一步”未优先 ongoing research | Profile recall hints |
 | `recall-research-scope-decision` | “最终怎么定”未区分决定和问题 | Profile recall hints |
 
-### 5.2 2026-08-02 v3 离线门禁
+### 5.2 2026-08-02 v4 离线门禁
 
 | 字段 | 值 |
 | --- | --- |
 | mode | `offline` |
-| dataset | `investment-memory-v3-2026-08-02` |
-| dataset SHA-256 | `a9d211edd0ccd3c55fe62031c8cc1674877b3a7a30a9aac754dc04f65556124d` |
-| Recall cases | 11 |
+| dataset | `investment-memory-v4-2026-08-02` |
+| dataset SHA-256 | `1a2179b8fa3617c5d4c79bef37b1ad07c72eff92eda4690cf5f65e0b20cd8d5e` |
+| Recall cases | 15 |
 | Safety cases | 8 |
 | Recall@K | 1.00 |
 | Safety pass rate | 1.00 |
 | long-horizon-recall | 1/1 |
+| empty / paraphrase / hard-negative / large-window | 各 1/1 |
 | failed_case_ids | 空 |
 | thresholds_met | `true` |
 
 旧 recent-only 算法在 candidate limit 为 3 时只会看到三个最新干扰项，720 天前目标的
-候选命中为 0/1；当前混合候选命中为 1/1。该对比只证明候选窗口问题被修复，不代表
-Embedding 级语义能力。
+候选命中为 0/1；当前混合候选命中为 1/1。新增大窗口包含 1 条 1000 天前目标和 100
+条近期干扰，在 candidate limit 为 10 时仍命中目标。同义改写、零命中和报告期/近名
+实体强干扰也全部通过。因此当前证据不支持在 BeforeRun 热路径增加一次模型调用；
+后续若真实失败集出现词法无法覆盖的查询，再评估 query expansion、Embedding 或
+可选模型 rerank。这里的通过不代表 Embedding 级语义能力。
 
 ## 6. 结果限制
 
-- 当前 v3 是 48 个案例；真实模型分数仍来自 47 案例的 v2 单模型单次快照，不具备
+- 当前 v4 是 52 个案例；真实模型分数仍来自 47 案例的 v2 单模型单次快照，不具备
   统计显著性，也不是 SLA；
 - Recall 和 Safety 是确定性实现的结果，不是大模型指标；
 - 候选 precision/recall 不代表记忆内容在现实世界中为真；

@@ -4,7 +4,8 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
@@ -43,6 +44,52 @@ class _RunnableServer(Protocol):
     def run(self, *, transport: str) -> None: ...
 
 
+class MaintenanceHealth:
+    """维护循环的进程内、无正文健康快照。"""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._state: Literal["disabled", "starting", "ok", "degraded"] = (
+            "starting" if enabled else "disabled"
+        )
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._consecutive_failures = 0
+        self._last_success_at: datetime | None = None
+        self._last_failure_at: datetime | None = None
+        self._last_error_type: str | None = None
+
+    def observe_success(self, result: MaintenanceResult) -> None:
+        """记录一次成功并从 degraded 恢复。"""
+
+        self._state = "ok"
+        self._consecutive_failures = 0
+        self._last_success_at = result.effective_at
+        self._last_error_type = None
+
+    def observe_failure(self, error: Exception) -> None:
+        """只记录异常类型与计数，不保留错误消息或业务正文。"""
+
+        self._state = "degraded"
+        self._consecutive_failures += 1
+        self._last_failure_at = self._clock()
+        self._last_error_type = type(error).__name__
+
+    def snapshot(self) -> dict[str, object]:
+        """返回可直接序列化的稳定健康合同。"""
+
+        return {
+            "state": self._state,
+            "consecutive_failures": self._consecutive_failures,
+            "last_success_at": _isoformat_or_none(self._last_success_at),
+            "last_failure_at": _isoformat_or_none(self._last_failure_at),
+            "last_error_type": self._last_error_type,
+        }
+
+
 class MemoryMcpServer(FastMCP[Any]):
     """让进程级存储跟随 ASGI lifespan 的 FastMCP 服务。"""
 
@@ -57,8 +104,17 @@ class MemoryMcpServer(FastMCP[Any]):
         self._close_storage = close_storage
         self._run_maintenance = run_maintenance
         self._maintenance_interval_seconds = maintenance_interval_seconds
+        self._maintenance_health = MaintenanceHealth(
+            enabled=run_maintenance is not None and maintenance_interval_seconds > 0
+        )
         self._streamable_app = None
         super().__init__(*args, **kwargs)
+
+    @property
+    def maintenance_health(self) -> MaintenanceHealth:
+        """返回当前进程维护健康状态。"""
+
+        return self._maintenance_health
 
     def streamable_http_app(self):
         if self._streamable_app is not None:
@@ -79,6 +135,7 @@ class MemoryMcpServer(FastMCP[Any]):
                                 self._run_maintenance,
                                 interval_seconds=self._maintenance_interval_seconds,
                                 stop_event=stop_maintenance,
+                                health=self._maintenance_health,
                             )
                         )
                         if self._run_maintenance is not None
@@ -184,7 +241,10 @@ def create_memory_mcp_server(
             PoolTimeout,
         ):
             return JSONResponse(
-                {"status": "unhealthy"},
+                {
+                    "status": "unhealthy",
+                    "maintenance": server.maintenance_health.snapshot(),
+                },
                 status_code=503,
             )
         return JSONResponse(
@@ -194,6 +254,7 @@ def create_memory_mcp_server(
                 "transport": "streamable-http",
                 "mcp_path": settings.mcp_path,
                 "storage": "postgresql",
+                "maintenance": server.maintenance_health.snapshot(),
             }
         )
 
@@ -205,14 +266,19 @@ async def _run_maintenance_loop(
     *,
     interval_seconds: int,
     stop_event: asyncio.Event,
+    health: MaintenanceHealth | None = None,
 ) -> None:
     """维护失败与 MCP 服务隔离；积压时让出事件循环后继续下一批。"""
 
     while not stop_event.is_set():
         try:
             result = await asyncio.to_thread(operation)
+            if health is not None:
+                health.observe_success(result)
             delay = 0 if result.has_more else interval_seconds
         except Exception as exc:
+            if health is not None:
+                health.observe_failure(exc)
             log_event(
                 _LOGGER,
                 logging.ERROR,
@@ -229,6 +295,10 @@ async def _run_maintenance_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=delay)
         except TimeoutError:
             pass
+
+
+def _isoformat_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 def _validate_default_profiles(

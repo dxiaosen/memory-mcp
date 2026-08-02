@@ -2,9 +2,14 @@
 
 from datetime import datetime
 from math import ceil
+from uuid import UUID
 
-from memory_mcp.core.adapters.postgresql.mapping import to_record
-from memory_mcp.core.domain import PrincipalContext
+from memory_mcp.core.adapters.postgresql.mapping import (
+    as_uuid,
+    to_evidence,
+    to_recall_candidate,
+)
+from memory_mcp.core.domain import Evidence, PrincipalContext
 from memory_mcp.core.ports import RecallCandidateSet
 
 _RECORD_FIELDS = """
@@ -118,10 +123,59 @@ def find_recall_candidates(
     ]
     connection.execute("SET LOCAL pg_trgm.similarity_threshold = 0.08")
     rows = connection.execute(query, parameters).fetchall()
-    records = tuple(to_record(connection, row, principal.owner_id) for row in rows)
+    candidates = tuple(to_recall_candidate(row) for row in rows)
     lexical_count = sum(1 for row in rows if row["retrieval_source"] == "lexical")
     return RecallCandidateSet(
-        records=records,
+        candidates=candidates,
         lexical_count=lexical_count,
-        recent_count=len(records) - lexical_count,
+        recent_count=len(candidates) - lexical_count,
     )
+
+
+def load_recall_evidence(
+    connection,
+    principal: PrincipalContext,
+    *,
+    revision_ids: tuple[UUID, ...],
+    per_revision_limit: int,
+) -> dict[UUID, tuple[Evidence, ...]]:
+    """一次查询每个 selected revision 最近的有限 Evidence。"""
+
+    if per_revision_limit < 1:
+        raise ValueError("per_revision_limit must be positive")
+    unique_ids = tuple(dict.fromkeys(revision_ids))
+    if not unique_ids:
+        return {}
+    rows = connection.execute(
+        """
+        WITH ranked AS (
+            SELECT evidence_id, memory_id, revision_id, owner_id,
+                   conversation_id, source_turn_id, source_expression,
+                   observed_at, created_at, source_role,
+                   source_message_id, source_tool_name, source_type,
+                   source_uri, source_title, source_publisher, published_at,
+                   retrieved_at, content_hash, citation_locator,
+                   row_number() OVER (
+                       PARTITION BY revision_id
+                       ORDER BY created_at DESC, evidence_id DESC
+                   ) AS source_rank
+            FROM memory_evidence
+            WHERE owner_id = %s
+              AND revision_id = ANY(%s)
+        )
+        SELECT evidence_id, memory_id, revision_id, owner_id,
+               conversation_id, source_turn_id, source_expression,
+               observed_at, created_at, source_role,
+               source_message_id, source_tool_name, source_type,
+               source_uri, source_title, source_publisher, published_at,
+               retrieved_at, content_hash, citation_locator
+        FROM ranked
+        WHERE source_rank <= %s
+        ORDER BY revision_id, created_at, evidence_id
+        """,
+        (principal.owner_id, list(unique_ids), per_revision_limit),
+    ).fetchall()
+    grouped: dict[UUID, list[Evidence]] = {}
+    for row in rows:
+        grouped.setdefault(as_uuid(row["revision_id"]), []).append(to_evidence(row))
+    return {revision_id: tuple(sources) for revision_id, sources in grouped.items()}

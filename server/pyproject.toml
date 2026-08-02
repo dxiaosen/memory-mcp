@@ -1,6 +1,6 @@
 [project]
 name = "memory-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "An owner-scoped long-term memory service exposed through MCP"
 readme = "README.md"
 authors = [

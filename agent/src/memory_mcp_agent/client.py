@@ -58,7 +58,7 @@ class CaptureSummary(BaseModel):
 class CaptureResponse(_Receipt):
     ok: Literal[True] = True
     capture_id: str
-    status: str
+    status: Literal["completed", "failed", "reprocess_required"]
     replayed: bool
     summary: CaptureSummary
     created_memory_ids: tuple[str, ...] = ()

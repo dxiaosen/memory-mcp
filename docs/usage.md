@@ -179,11 +179,11 @@ Token 的明文 HTTP。完整步骤见[部署指南](deploy.md)。
 | --- | --- |
 | 服务提示 model name/key 缺失 | 补齐 `MEMORY_MCP_MODEL_*`；生产不会降级为替身 |
 | `invalid_candidate_output` | 检查模型 schema、原文 Evidence 和 Profile 类型 |
-| `reprocess_required` | 恢复模型或数据库后复用相同 event 重试 |
+| `reprocess_required` | command Hook 会保留固定 payload，并在后续 Stop 有界重试；手工 Client 复用相同 event |
 | `not_authorized` / `forbidden` | 检查 Token 映射与 scope |
 | 同 owner 召回为 0 | 省略 subject，再检查保存状态、Profile 和 query |
 | run key conflict | 不同 payload 必须使用新的顶层 turn ID |
-| AfterRun 较慢 | 响应后调度；可靠异步投递需求再引入 durable outbox/queue |
+| AfterRun 较慢 | 当前等待有界 receipt 并有本地 outbox；只有跨主机削峰/持续后台投递才引入 queue |
 | 日志出现正文 | 关闭 `MEMORY_MCP_LOG_CONTENT` 并清理内容日志 |
 
 BeforeRun/AfterRun 的准确时机、Codex/Claude Code 配置和通用 Python API 见

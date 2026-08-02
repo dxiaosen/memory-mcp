@@ -102,3 +102,7 @@ Profile 允许 `open`、`monitoring`、`resolved`、`invalidated`、`archived`�
 - 是否需要独立的 `source_verified` 人工/自动核验工具？当前不因存在引用而自动核验。
 - 是否需要把 Profile 默认值绑定到 Token 或租户？当前由投研集成显式选择，避免扩大认证合同。
 - 关系图、定期重新验证和自动过期状态写回，留到有检索质量与运营需求后再设计。
+
+后续决议：`add-memory-relations` / `automate-memory-relations` 已实现受 Profile policy
+约束的一跳关系，`harden-memory-maintenance-recall` 已实现有效期到达后的状态物化；
+定期事实重新验证和复杂关系图仍未实现。

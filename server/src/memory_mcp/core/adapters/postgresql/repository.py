@@ -25,6 +25,9 @@ from memory_mcp.core.adapters.postgresql.mapping import (
 from memory_mcp.core.adapters.postgresql.recall import (
     find_recall_candidates as query_recall_candidates,
 )
+from memory_mcp.core.adapters.postgresql.recall import (
+    load_recall_evidence as query_recall_evidence,
+)
 from memory_mcp.core.adapters.postgresql.schema import validate_schema
 from memory_mcp.core.adapters.postgresql.validation import (
     validate_capture_write,
@@ -51,6 +54,7 @@ from memory_mcp.core.domain import (
     ReviewStatus,
     normalize_memory_text,
 )
+from memory_mcp.core.exceptions import IdempotencyConflictError
 from memory_mcp.core.ports import (
     CaptureWrite,
     DuplicateEvidenceWrite,
@@ -327,6 +331,23 @@ class PostgreSQLMemoryRepository:
                 effective_at=effective_at,
                 review_cutoff=review_cutoff,
                 limit=limit,
+            )
+
+    def load_recall_evidence(
+        self,
+        principal: PrincipalContext,
+        *,
+        revision_ids: Sequence[UUID],
+        per_revision_limit: int,
+    ) -> Mapping[UUID, tuple[Evidence, ...]]:
+        """批量加载最终召回项的有限来源。"""
+
+        with self._pool.connection() as connection:
+            return query_recall_evidence(
+                connection,
+                principal,
+                revision_ids=tuple(revision_ids),
+                per_revision_limit=per_revision_limit,
             )
 
     def revoke(
@@ -613,7 +634,7 @@ class PostgreSQLMemoryRepository:
         self,
         principal: PrincipalContext,
         write: CaptureWrite,
-    ) -> None:
+    ) -> CaptureResult:
         validate_capture_write(principal, write)
         result = write.result
         stale_relation_count = 0
@@ -653,7 +674,11 @@ class PostgreSQLMemoryRepository:
                 )
             existing = connection.execute(
                 f"""
-                SELECT capture_id, status
+                SELECT capture_id, owner_id, profile_id, conversation_id,
+                       source_turn_id, profile_version, profile_fingerprint,
+                       prompt_version, schema_version, model_id, status, failure_code,
+                       created_at, completed_at, event_id,
+                       contract_version, payload_fingerprint
                 FROM memory_capture_runs
                 WHERE {where_clause}
                 FOR UPDATE
@@ -663,8 +688,27 @@ class PostgreSQLMemoryRepository:
             if existing is None:
                 self._insert_capture_run(connection, result)
             else:
+                if (
+                    result.payload_fingerprint is not None
+                    and existing["payload_fingerprint"] != result.payload_fingerprint
+                ):
+                    raise IdempotencyConflictError(
+                        "event identifier was reused with a different payload"
+                    )
                 if existing["status"] != CaptureStatus.REPROCESS_REQUIRED.value:
-                    raise ValueError("completed capture cannot be replaced")
+                    stored = replace(
+                        to_capture_result(connection, existing),
+                        replayed=True,
+                    )
+                    log_event(
+                        _LOGGER,
+                        logging.DEBUG,
+                        "memory.postgresql.capture_replayed",
+                        capture_id=stored.capture_id,
+                        owner_ref=stable_reference(principal.owner_id),
+                        status=stored.status.value,
+                    )
+                    return stored
                 if as_uuid(existing["capture_id"]) != result.capture_id:
                     raise ValueError("reprocessed capture must preserve capture_id")
                 connection.execute(
@@ -798,6 +842,7 @@ class PostgreSQLMemoryRepository:
             stale_relation_count=stale_relation_count,
             status=result.status.value,
         )
+        return result
 
     def list_reviews(
         self,

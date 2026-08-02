@@ -7,6 +7,7 @@ from uuid import UUID
 import anyio
 import pytest
 from memory_mcp.app import (
+    MaintenanceHealth,
     _run_maintenance_loop,
     _run_server,
     _validate_default_profiles,
@@ -374,6 +375,7 @@ def test_maintenance_interval_can_be_disabled_but_not_negative() -> None:
 
 def test_maintenance_loop_drains_backlog_and_stops_cleanly() -> None:
     calls = 0
+    health = MaintenanceHealth(enabled=True)
 
     def operation() -> MaintenanceResult:
         nonlocal calls
@@ -399,12 +401,54 @@ def test_maintenance_loop_drains_backlog_and_stops_cleanly() -> None:
                 operation,
                 interval_seconds=60,
                 stop_event=stop_event,
+                health=health,
             ),
             stop_after_drain(),
         )
 
     anyio.run(scenario)
     assert calls == 2
+    assert health.snapshot()["state"] == "ok"
+
+
+def test_maintenance_health_tracks_failures_recovery_and_disabled_state() -> None:
+    now = datetime(2026, 8, 2, 10, tzinfo=UTC)
+    disabled = MaintenanceHealth(enabled=False, clock=lambda: now)
+    health = MaintenanceHealth(enabled=True, clock=lambda: now)
+    result = MaintenanceResult(
+        effective_at=now,
+        expired_memory_count=0,
+        expired_review_count=0,
+        stale_relation_count=0,
+        has_more=False,
+    )
+
+    health.observe_failure(RuntimeError("first failure contains private detail"))
+    health.observe_failure(ValueError("second failure contains private detail"))
+    degraded = health.snapshot()
+    health.observe_success(result)
+
+    assert disabled.snapshot() == {
+        "state": "disabled",
+        "consecutive_failures": 0,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_error_type": None,
+    }
+    assert degraded == {
+        "state": "degraded",
+        "consecutive_failures": 2,
+        "last_success_at": None,
+        "last_failure_at": now.isoformat(),
+        "last_error_type": "ValueError",
+    }
+    assert health.snapshot() == {
+        "state": "ok",
+        "consecutive_failures": 0,
+        "last_success_at": now.isoformat(),
+        "last_failure_at": now.isoformat(),
+        "last_error_type": None,
+    }
 
 
 def test_interactive_shutdown_does_not_expose_keyboard_interrupt() -> None:

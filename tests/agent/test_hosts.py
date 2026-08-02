@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import anyio
 import pytest
@@ -37,10 +38,16 @@ class _FakeClient:
         with_memory: bool = True,
         recall_error: MemoryHookClientError | None = None,
         capture_error: MemoryHookClientError | None = None,
+        capture_status: Literal[
+            "completed", "failed", "reprocess_required"
+        ] = "completed",
+        capture_failure_code: str | None = None,
     ) -> None:
         self.with_memory = with_memory
         self.recall_error = recall_error
         self.capture_error = capture_error
+        self.capture_status = capture_status
+        self.capture_failure_code = capture_failure_code
         self.recall_calls: list[dict[str, object]] = []
         self.capture_calls: list[dict[str, object]] = []
 
@@ -82,10 +89,11 @@ class _FakeClient:
             ok=True,
             request_id="request-capture",
             capture_id="capture-1",
-            status="completed",
+            status=self.capture_status,
             replayed=False,
             summary=CaptureSummary(auto_saved_count=1),
             created_memory_ids=("memory-1",),
+            failure_code=self.capture_failure_code,
         )
 
 
@@ -240,7 +248,7 @@ def test_recall_failure_keeps_state_and_fails_open(tmp_path: Path) -> None:
     anyio.run(profile_id)
 
 
-def test_capture_failure_fails_open_and_removes_state(tmp_path: Path) -> None:
+def test_capture_transport_failure_keeps_staged_payload(tmp_path: Path) -> None:
     async def profile_id() -> None:
         client = _FakeClient(capture_error=MemoryHookClientError("temporary_failure"))
         state = TurnStateStore(tmp_path / "hooks")
@@ -265,13 +273,16 @@ def test_capture_failure_fails_open_and_removes_state(tmp_path: Path) -> None:
         )
 
         assert output == AgentHookOutcome(warning_code="capture_temporary_failure")
-        assert state.load("session-1", "prompt-1") is None
+        pending = state.load("session-1", "prompt-1")
+        assert pending is not None
+        assert pending.final_output == "最终回复"
+        assert pending.capture_observed_at is not None
         assert len(client.capture_calls) == 1
 
     anyio.run(profile_id)
 
 
-def test_stop_without_final_output_deletes_saved_state(tmp_path: Path) -> None:
+def test_stop_without_final_output_keeps_saved_prompt(tmp_path: Path) -> None:
     async def profile_id() -> None:
         client = _FakeClient()
         state = TurnStateStore(tmp_path / "hooks")
@@ -297,8 +308,76 @@ def test_stop_without_final_output_deletes_saved_state(tmp_path: Path) -> None:
         )
 
         assert output == AgentHookOutcome(warning_code="missing_final_output")
-        assert state.load("session-1", "turn-1") is None
+        assert state.load("session-1", "turn-1") is not None
         assert client.capture_calls == []
+
+    anyio.run(profile_id)
+
+
+def test_reprocess_required_is_retried_by_later_stop(tmp_path: Path) -> None:
+    async def profile_id() -> None:
+        state = TurnStateStore(tmp_path / "hooks")
+        first_client = _FakeClient(
+            capture_status="reprocess_required",
+            capture_failure_code="extraction_unavailable",
+        )
+        first_adapter = _adapter(first_client, state)
+        await first_adapter.handle(
+            _event(
+                session_id="session-1",
+                turn_id="turn-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt="第一轮问题",
+            )
+        )
+        first_outcome = await first_adapter.handle(
+            _event(
+                session_id="session-1",
+                turn_id="turn-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                last_assistant_message="第一轮最终回复",
+            )
+        )
+        pending = state.load("session-1", "turn-1")
+
+        assert first_outcome == AgentHookOutcome(
+            warning_code="capture_extraction_unavailable"
+        )
+        assert pending is not None
+        assert pending.capture_observed_at is not None
+
+        # command Hook 每次是独立进程；新适配器会重投一个旧 payload，再处理当前轮次。
+        second_client = _FakeClient()
+        second_adapter = _adapter(second_client, state)
+        await second_adapter.handle(
+            _event(
+                session_id="session-1",
+                turn_id="turn-2",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt="第二轮问题",
+            )
+        )
+        second_outcome = await second_adapter.handle(
+            _event(
+                session_id="session-1",
+                turn_id="turn-2",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                last_assistant_message="第二轮最终回复",
+            )
+        )
+
+        assert second_outcome == AgentHookOutcome()
+        assert len(second_client.capture_calls) == 2
+        retry, current = second_client.capture_calls
+        assert retry["turn_id"] == "turn-1"
+        assert retry["observed_at"] == pending.capture_observed_at
+        assert current["turn_id"] == "turn-2"
+        assert state.load("session-1", "turn-1") is None
+        assert state.load("session-1", "turn-2") is None
 
     anyio.run(profile_id)
 

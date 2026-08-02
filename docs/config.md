@@ -34,6 +34,7 @@ PostgreSQL URI 中的保留字符必须 percent-encode，例如 `@` 写为 `%40`
 | MCP 工具与 DTO v1 | 代码固定 | 工具参数不接受 owner |
 | PostgreSQL schema | migration 管理 | 服务启动前独立升级 |
 | 维护批次 `500`、pending review 保留 `30` 天 | 代码固定 | 防止无界事务和长期悬挂候选 |
+| Agent outbox TTL `24h`、每次 Stop 补送 `1` 条 | 代码固定 | 有界恢复，不形成后台队列 |
 | Server 网络、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | 静态 Principal 映射 | 环境可配置 | 可替换为 OAuth/OIDC 认证适配器 |
 | 模型 Provider 与参数 | 环境可配置 | 生产始终使用真实模型 |
@@ -78,7 +79,8 @@ Profile、元数据、自动关系、`profile_version` 和 `profile_fingerprint`
 
 维护 runner 与 Server 共用进程和 PostgreSQL 连接池，但同步数据库调用在线程中执行，
 不会阻塞 MCP 事件循环。每批最多处理 500 个 revision/review；积压时让出事件循环后
-立即续批。普通部署保持默认值即可，Agent 不读取也不配置该变量。
+立即续批。`/health` 的 `maintenance.state` 为 `disabled/starting/ok/degraded`；维护
+降级不会在数据库健康时返回 503。普通部署保持默认值即可，Agent 不读取也不配置该变量。
 
 ### 3.3 静态认证
 
@@ -168,6 +170,11 @@ HTTP 超时默认 15 秒，fail-open 默认开启，召回最多 5 条/600 token
 Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或
 settings 日志。同一用户跨 Agent 共享记忆时，为不同 Host 发放不同 Token，并在
 Server 端映射到相同 tenant/subject。
+
+command Hook 的本地状态不是新增配置：Before 保存 prompt，After 在调用服务前补齐
+final output、固定 observed time 和 Profile；网络 warning 或 `reprocess_required` 时
+保留，后续 Stop 最多补送一条，24 小时后清理。该 best-effort outbox 不需要 Redis、
+消息队列或常驻 Agent daemon。
 
 ## 5. 最小模板
 

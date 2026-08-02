@@ -164,8 +164,10 @@ curl --fail http://127.0.0.1:8765/health
 sudo journalctl -u memory-mcp.service -f
 ```
 
-健康响应中的 `storage` 应为 `postgresql`。健康接口只返回运行元数据，不返回
-数据库地址、Token 或记忆正文。
+健康响应中的 `storage` 应为 `postgresql`。`maintenance.state` 应从 `starting` 进入
+`ok`；`degraded` 表示维护循环失败，但数据库健康时 HTTP 仍为 200。响应同时提供连续
+失败次数、最近成功/失败时间和异常类型，不返回数据库地址、Token、owner、记忆正文
+或异常消息。`MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS=0` 时状态为 `disabled`。
 
 ## 8. 直接访问服务
 
@@ -213,12 +215,12 @@ uv build --package memory-mcp-agent --wheel
 Agent Host，再安装：
 
 ```bash
-uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+uv tool install /path/to/memory_mcp_agent-0.2.0-py3-none-any.whl
 command -v memory-mcp-hook
 ```
 
 若使用组织 Python registry，则安装固定版本
-`uv tool install memory-mcp-agent==0.1.0`。Agent 包只要求 Python 3.11+，不会
+`uv tool install memory-mcp-agent==0.2.0`。Agent 包只要求 Python 3.11+，不会
 安装 `memory-mcp`、数据库 driver、LangChain、模型 Provider、ASGI Server 或
 migration 命令。不要为了得到 Hook 命令把整个 Server 仓库部署到 Agent Host。
 
@@ -258,6 +260,11 @@ AfterRun   → capture_completed_turn（仅成功完成的轮次）
 这个本地轻量命令请求远端 Server；它不是本地 Server。Host 安装、标准合同、首批
 配置模板、信任步骤和手工闭环见[Agent 主动记忆接入](agents.md)。单进程 Agent
 Framework 可以直接使用 `MemoryHookBridge`/`HookedAgentRunner`。
+
+command Hook 在事件 `cwd/.memory-mcp/hooks` 使用 `0700/0600` 的本地 best-effort
+outbox：网络 warning 或 `reprocess_required` 不删除 payload，后续 Stop 最多补送一条，
+24 小时后清理。它不要求 Server 同机、Redis、队列或第三个 systemd unit；若要求
+Agent 主机永久离线后仍投递，则需要另行部署集中 durable queue/worker。
 
 同一用户通过不同 Agent 接入时，可以配置不同 Token，但这些 Token 必须映射到同一
 tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作为工具参数。

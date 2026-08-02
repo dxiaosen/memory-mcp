@@ -34,6 +34,7 @@ from memory_mcp.core.domain.models import (
     VerificationStatus,
 )
 from memory_mcp.core.domain.recall import (
+    MemoryRecallCandidate,
     RecalledMemory,
     RecallQuery,
     RecallResult,
@@ -68,6 +69,7 @@ __all__ = [
     "MaintenanceResult",
     "MemoryHistoryEntry",
     "MemoryItem",
+    "MemoryRecallCandidate",
     "MemoryRecord",
     "MemoryRelation",
     "MemoryRelationSummary",

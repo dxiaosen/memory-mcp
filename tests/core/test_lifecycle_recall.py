@@ -12,6 +12,7 @@ from memory_mcp.core import (
     CaptureStatus,
     EvidenceSourceType,
     ExpressionBasis,
+    IdempotencyConflictError,
     InvalidMemoryProfileError,
     LifecycleStatus,
     MemoryNotFoundError,
@@ -731,12 +732,19 @@ def test_recall_candidate_limit_is_applied_inside_owner_and_profile_scope() -> N
     class RecordingRepository(InMemoryMemoryRepository):
         last_limit: int | None = None
         returned_records = ()
+        hydrated_revision_ids = ()
+        hydration_calls = 0
 
         def find_recall_candidates(self, principal, **kwargs):
             self.last_limit = kwargs.get("limit")
             candidates = super().find_recall_candidates(principal, **kwargs)
-            self.returned_records = candidates.records
+            self.returned_records = candidates.candidates
             return candidates
+
+        def load_recall_evidence(self, principal, **kwargs):
+            self.hydration_calls += 1
+            self.hydrated_revision_ids = tuple(kwargs["revision_ids"])
+            return super().load_recall_evidence(principal, **kwargs)
 
     repository = RecordingRepository()
     service = create_memory_service(
@@ -788,6 +796,7 @@ def test_recall_candidate_limit_is_applied_inside_owner_and_profile_scope() -> N
         RecallQuery(
             profile_id="general-work",
             query="项目报告格式偏好",
+            max_items=1,
         ),
     )
 
@@ -799,6 +808,75 @@ def test_recall_candidate_limit_is_applied_inside_owner_and_profile_scope() -> N
     assert {record.item.profile_id for record in repository.returned_records} == {
         "general-work"
     }
+    assert repository.hydration_calls == 1
+    assert len(repository.hydrated_revision_ids) == 1
+
+
+def test_recall_hydrates_only_selected_owned_sources_with_a_per_revision_limit() -> (
+    None
+):
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    owner_a = PrincipalContext("owner-a")
+    owner_b = PrincipalContext("owner-b")
+    selected = service.create_memory(
+        owner_a,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            subject="cash-quality",
+            content="长期分析重点是自由现金流质量",
+            source_expression="长期分析重点是自由现金流质量",
+        ),
+    )
+    other_owner = service.create_memory(
+        owner_b,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            subject="cash-quality-other",
+            content="另一个用户的自由现金流质量",
+            source_expression="另一个用户的自由现金流质量",
+        ),
+    )
+    original = selected.evidence[0]
+    repository._records[selected.item.memory_id] = replace(
+        selected,
+        evidence=tuple(
+            replace(
+                original,
+                evidence_id=uuid4(),
+                source_turn_id=f"source-{index}",
+                created_at=original.created_at + timedelta(minutes=index),
+            )
+            for index in range(5)
+        ),
+    )
+
+    hydrated = repository.load_recall_evidence(
+        owner_a,
+        revision_ids=(
+            selected.current_revision.revision_id,
+            other_owner.current_revision.revision_id,
+        ),
+        per_revision_limit=3,
+    )
+    recalled = service.recall_memory(
+        owner_a,
+        RecallQuery(profile_id="general-work", query="自由现金流质量"),
+    )
+
+    assert set(hydrated) == {selected.current_revision.revision_id}
+    assert [
+        source.source_turn_id
+        for source in hydrated[selected.current_revision.revision_id]
+    ] == [
+        "source-2",
+        "source-3",
+        "source-4",
+    ]
+    assert len(recalled.items) == 1
+    assert len(recalled.items[0].sources) == 3
 
 
 def test_hybrid_recall_finds_an_older_match_outside_the_recent_quota() -> None:
@@ -992,3 +1070,97 @@ def test_overlapping_retries_run_extraction_at_most_once() -> None:
     assert len(extractor.requests) == 1
     assert results[0].capture_id == results[1].capture_id
     assert {result.replayed for result in results} == {False, True}
+
+
+def test_two_services_overlap_with_one_authoritative_capture_commit() -> None:
+    text = "以后周报默认用表格"
+    release = Event()
+
+    class CoordinatedExtractor(FakeCandidateExtractor):
+        def __init__(self) -> None:
+            super().__init__((candidate_proposal(text),))
+            self.entered = Event()
+
+        def extract(self, request):
+            self.entered.set()
+            assert release.wait(timeout=5)
+            return super().extract(request)
+
+    repository = InMemoryMemoryRepository()
+    first_extractor = CoordinatedExtractor()
+    second_extractor = CoordinatedExtractor()
+    first_service = _service(repository, first_extractor)
+    second_service = _service(repository, second_extractor)
+    principal = PrincipalContext("owner-a")
+    turn = replace(
+        _turn(text, turn_id="turn-overlap"),
+        event_id="event-overlap",
+        contract_version="1",
+        payload_fingerprint="same-fingerprint",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_service.capture_turn, principal, turn)
+        second = pool.submit(second_service.capture_turn, principal, turn)
+        assert first_extractor.entered.wait(timeout=5)
+        assert second_extractor.entered.wait(timeout=5)
+        release.set()
+        results = (first.result(timeout=5), second.result(timeout=5))
+
+    assert results[0].capture_id == results[1].capture_id
+    assert {result.replayed for result in results} == {False, True}
+    assert len(repository.list(principal, active_only=True)) == 1
+    assert len(first_extractor.requests) == len(second_extractor.requests) == 1
+
+
+def test_two_services_reject_overlapping_event_with_different_payloads() -> None:
+    release = Event()
+
+    class CoordinatedExtractor(FakeCandidateExtractor):
+        def __init__(self, text: str) -> None:
+            super().__init__((candidate_proposal(text),))
+            self.entered = Event()
+
+        def extract(self, request):
+            self.entered.set()
+            assert release.wait(timeout=5)
+            return super().extract(request)
+
+    repository = InMemoryMemoryRepository()
+    first_extractor = CoordinatedExtractor("周报默认用表格")
+    second_extractor = CoordinatedExtractor("周报默认用要点")
+    first_service = _service(repository, first_extractor)
+    second_service = _service(repository, second_extractor)
+    principal = PrincipalContext("owner-a")
+    first_turn = replace(
+        _turn("周报默认用表格", turn_id="turn-conflict"),
+        event_id="event-conflict",
+        contract_version="1",
+        payload_fingerprint="fingerprint-a",
+    )
+    second_turn = replace(
+        _turn("周报默认用要点", turn_id="turn-conflict"),
+        event_id="event-conflict",
+        contract_version="1",
+        payload_fingerprint="fingerprint-b",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = (
+            pool.submit(first_service.capture_turn, principal, first_turn),
+            pool.submit(second_service.capture_turn, principal, second_turn),
+        )
+        assert first_extractor.entered.wait(timeout=5)
+        assert second_extractor.entered.wait(timeout=5)
+        release.set()
+        outcomes = []
+        errors = []
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=5))
+            except IdempotencyConflictError as exc:
+                errors.append(exc)
+
+    assert len(outcomes) == 1
+    assert len(errors) == 1
+    assert len(repository.list(principal, active_only=True)) == 1

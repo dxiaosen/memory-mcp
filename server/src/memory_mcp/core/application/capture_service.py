@@ -367,7 +367,7 @@ class CaptureService:
             contract_version=turn.contract_version,
             payload_fingerprint=turn.payload_fingerprint,
         )
-        self._repository.commit_capture(
+        committed = self._repository.commit_capture(
             principal,
             CaptureWrite(
                 result=result,
@@ -380,14 +380,32 @@ class CaptureService:
         )
         log_content_event(
             "memory.capture.persisted",
-            capture=asdict(result),
+            capture=asdict(committed),
             duplicate_evidence=tuple(
                 asdict(write) for write in processed.duplicate_evidence
+            )
+            if not committed.replayed
+            else (),
+            memories=(
+                tuple(asdict(memory) for memory in processed.memories)
+                if not committed.replayed
+                else ()
             ),
-            memories=tuple(asdict(memory) for memory in processed.memories),
-            replacements=tuple(asdict(write) for write in processed.replacements),
-            relations=tuple(asdict(relation) for relation in relation_plan.relations),
-            reviews=tuple(asdict(review) for review in processed.reviews),
+            replacements=(
+                tuple(asdict(write) for write in processed.replacements)
+                if not committed.replayed
+                else ()
+            ),
+            relations=(
+                tuple(asdict(relation) for relation in relation_plan.relations)
+                if not committed.replayed
+                else ()
+            ),
+            reviews=(
+                tuple(asdict(review) for review in processed.reviews)
+                if not committed.replayed
+                else ()
+            ),
         )
         log_event(
             _LOGGER,
@@ -395,25 +413,26 @@ class CaptureService:
             "memory.capture.completed",
             auto_saved_count=sum(
                 outcome.decision is AdmissionDecision.AUTO_SAVE
-                for outcome in processed.outcomes
+                for outcome in committed.outcomes
             ),
             blocked_count=sum(
                 outcome.decision is AdmissionDecision.BLOCKED
-                for outcome in processed.outcomes
+                for outcome in committed.outcomes
             ),
-            capture_id=capture_id,
+            capture_id=committed.capture_id,
             discarded_count=sum(
                 outcome.decision is AdmissionDecision.DISCARD
-                for outcome in processed.outcomes
+                for outcome in committed.outcomes
             ),
             owner_ref=stable_reference(principal.owner_id),
             pending_count=sum(
                 outcome.decision is AdmissionDecision.PENDING
-                for outcome in processed.outcomes
+                for outcome in committed.outcomes
             ),
-            relation_count=len(relation_plan.relations),
+            relation_count=(0 if committed.replayed else len(relation_plan.relations)),
+            replayed=committed.replayed,
         )
-        return result
+        return committed
 
     def list_pending_reviews(
         self,
@@ -473,7 +492,7 @@ class CaptureService:
             contract_version=turn.contract_version,
             payload_fingerprint=turn.payload_fingerprint,
         )
-        self._repository.commit_capture(
+        committed = self._repository.commit_capture(
             principal,
             CaptureWrite(result=result),
         )
@@ -481,12 +500,12 @@ class CaptureService:
             _LOGGER,
             logging.WARNING,
             "memory.capture.incomplete",
-            capture_id=capture_id,
-            failure_code=failure_code,
+            capture_id=committed.capture_id,
+            failure_code=committed.failure_code,
             owner_ref=stable_reference(principal.owner_id),
-            status=status.value,
+            status=committed.status.value,
         )
-        return result
+        return committed
 
 
 def _has_processable_content(value: str) -> bool:

@@ -11,15 +11,18 @@ PostgreSQL 持久化由服务端统一负责。
 - duplicate Evidence、replacement revision 和 history；
 - 十个带认证和 scope 的 MCP 工具，包括幂等记忆/关系撤销；
 - revision 的抽取置信度、验证状态、敏感级别、有效期，以及可引用的来源元数据；
-- owner-first 的 PostgreSQL trigram/近期混合召回和安全 rendered context；
-- 服务端周期物化到期记忆、超龄 pending review 和失效关系的维护闭环；
+- owner-first 的 PostgreSQL trigram/近期混合召回、最终命中批量 Evidence 水合和安全
+  rendered context；
+- 服务端周期物化到期记忆、超龄 pending review 和失效关系的维护闭环，以及可观测的
+  maintenance health 子状态；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
-- 独立轻量 `memory-mcp-agent` 发行包，Agent Host 不安装数据库、模型或 Server；
+- 独立轻量 `memory-mcp-agent` 发行包和 24 小时本地 best-effort outbox，Agent Host
+  不安装数据库、模型、队列或 Server；
 - 真实 OpenAI-compatible/DeepSeek 结构化候选与关系抽取，以及测试注入的确定性替身；
 - `general-work` 与 `investment-research` 两套正式 MemoryProfile；
 - Profile v2 策略指纹审计、跨版本捕获幂等和 Token 默认 Profile 路由；
 - owner-scoped 一跳记忆关系、投研关系策略、AfterRun 自动建边和关系感知召回；
-- 48 个中文投研案例的离线/真实模型质量基准和可复现结果快照；
+- 52 个中文投研案例的离线/真实模型质量基准和可复现结果快照；
 - 用户 A / Agent A 写入、用户 A / Agent B 召回、用户 B 不可见的完整闭环。
 
 公网 HTTPS、目标 ECS 安全组、现场脚本和录屏仍属于最后部署交付阶段。核心交付与
@@ -62,7 +65,7 @@ Token 映射中的一枚 key 完全相同。Agent 默认省略 `profile_id`，Se
 Agent 不与 Server 同机时，只需安装轻量 Agent wheel：
 
 ```bash
-uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+uv tool install /path/to/memory_mcp_agent-0.2.0-py3-none-any.whl
 command -v memory-mcp-hook
 ```
 
@@ -162,6 +165,7 @@ OpenSpec 只承担规范和变更管理：
 - [投研记忆评测基准](openspec/changes/benchmark-investment-memory-quality/)
 - [策略路由与 Recall 加固](openspec/changes/harden-policy-routing-recall/)
 - [记忆维护与混合召回](openspec/changes/harden-memory-maintenance-recall/)
+- [召回与交付可靠性](openspec/changes/harden-recall-delivery-reliability/)
 
 ## 验证
 
@@ -179,6 +183,7 @@ openspec-cn validate harden-memory-relations --strict
 openspec-cn validate benchmark-investment-memory-quality --strict
 openspec-cn validate harden-policy-routing-recall --strict
 openspec-cn validate harden-memory-maintenance-recall --strict
+openspec-cn validate harden-recall-delivery-reliability --strict
 .venv/bin/python -m evals.runner
 ```
 

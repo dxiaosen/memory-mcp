@@ -7,6 +7,8 @@ from uuid import UUID
 from memory_mcp.core.domain.models import (
     AssertionKind,
     EvidenceSourceType,
+    MemoryItem,
+    MemoryRevision,
     MessageRole,
     SensitivityLevel,
     VerificationStatus,
@@ -19,6 +21,22 @@ def _required_text(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must not be empty")
     return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRecallCandidate:
+    """召回排序使用的 Item/Revision 快照，不提前携带来源正文。"""
+
+    item: MemoryItem
+    current_revision: MemoryRevision
+
+    def __post_init__(self) -> None:
+        if self.item.memory_id != self.current_revision.memory_id:
+            raise ValueError("revision must belong to memory item")
+        if self.item.owner_id != self.current_revision.owner_id:
+            raise ValueError("revision owner must match memory item owner")
+        if not self.current_revision.is_current:
+            raise ValueError("current_revision must be current")
 
 
 @dataclass(frozen=True, slots=True)

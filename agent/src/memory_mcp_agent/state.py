@@ -12,7 +12,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_STATE_SCHEMA_VERSION = "1"
+_STATE_SCHEMA_VERSION = "2"
+_SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({"1", _STATE_SCHEMA_VERSION})
 _DEFAULT_TTL = timedelta(hours=24)
 
 
@@ -33,6 +34,9 @@ class TurnState(BaseModel):
     session_id: str = Field(min_length=1)
     turn_id: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
+    profile_id: str | None = Field(default=None, min_length=1)
+    final_output: str | None = Field(default=None, min_length=1)
+    capture_observed_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("created_at")
@@ -41,6 +45,23 @@ class TurnState(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("created_at must be timezone-aware")
         return value
+
+    @field_validator("capture_observed_at")
+    @classmethod
+    def require_aware_capture_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("capture_observed_at must be timezone-aware")
+        return value
+
+    def model_post_init(self, __context: object) -> None:
+        if (self.final_output is None) != (self.capture_observed_at is None):
+            raise ValueError(
+                "final_output and capture_observed_at must be supplied together"
+            )
+
+    @property
+    def capture_pending(self) -> bool:
+        return self.final_output is not None
 
 
 class TurnStateStore:
@@ -78,6 +99,78 @@ class TurnStateStore:
                 raise TurnStateConflictError("turn_state_payload_conflict")
             return
 
+        self._write(state, path)
+
+    def stage_capture(
+        self,
+        session_id: str,
+        turn_id: str,
+        *,
+        final_output: str,
+        observed_at: datetime,
+        profile_id: str | None,
+    ) -> TurnState:
+        """在网络调用前原子保存固定的完整捕获 payload。"""
+
+        existing = self.load(session_id, turn_id)
+        if existing is None:
+            raise TurnStateError("missing_turn_state")
+        if existing.capture_pending:
+            if (
+                existing.final_output != final_output
+                or existing.profile_id != profile_id
+            ):
+                raise TurnStateConflictError("turn_capture_payload_conflict")
+            return existing
+        staged = TurnState.model_validate(
+            {
+                **existing.model_dump(),
+                "schema_version": _STATE_SCHEMA_VERSION,
+                "profile_id": profile_id,
+                "final_output": final_output,
+                "capture_observed_at": observed_at,
+            }
+        )
+        self._ensure_root()
+        self._write(staged, self._path(session_id, turn_id))
+        return staged
+
+    def pending_captures(
+        self,
+        *,
+        exclude: tuple[str, str] | None = None,
+        limit: int = 1,
+    ) -> tuple[TurnState, ...]:
+        """按创建时间返回有限待投递项，不记录或复制正文到日志。"""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if not self._root.exists():
+            return ()
+        pending: list[TurnState] = []
+        for path in self._root.glob("*.json"):
+            try:
+                state = TurnState.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not state.capture_pending:
+                continue
+            if exclude == (state.session_id, state.turn_id):
+                continue
+            pending.append(state)
+        return tuple(
+            sorted(
+                pending,
+                key=lambda state: (
+                    state.capture_observed_at,
+                    state.created_at,
+                    state.session_id,
+                    state.turn_id,
+                ),
+            )[:limit]
+        )
+
+    def _write(self, state: TurnState, path: Path) -> None:
         descriptor, temporary_name = tempfile.mkstemp(
             dir=self._root,
             prefix=".turn-",
@@ -116,7 +209,7 @@ class TurnStateStore:
             state = TurnState.model_validate_json(raw)
         except ValueError as exc:
             raise TurnStateError("invalid_turn_state") from exc
-        if state.schema_version != _STATE_SCHEMA_VERSION:
+        if state.schema_version not in _SUPPORTED_STATE_SCHEMA_VERSIONS:
             raise TurnStateError("unsupported_turn_state_version")
         if state.session_id != session_id or state.turn_id != turn_id:
             raise TurnStateError("turn_state_identifier_mismatch")

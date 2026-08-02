@@ -15,10 +15,13 @@ Agent 默认不发送 Profile；Server 根据该 Token 的 `default_profile_id` 
 `general-work` 或 `investment-research`。高级进程级覆盖可使用
 `MEMORY_HOOK_PROFILE_ID`，普通接入不需要。
 
+command Hook 使用事件工作目录中的受限原子状态形成 24 小时 best-effort outbox；
+短时网络失败或服务要求重处理时由后续 Stop 有界补送，不需要本地 Server 或消息队列。
+
 安装 wheel：
 
 ```bash
-uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+uv tool install /path/to/memory_mcp_agent-0.2.0-py3-none-any.whl
 command -v memory-mcp-hook
 ```
 

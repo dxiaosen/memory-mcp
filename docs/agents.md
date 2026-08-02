@@ -119,12 +119,12 @@ Agent Host 的 URL/Token 应同时供 MCP 连接和 Hook 进程使用，但不�
 推荐把 Agent wheel 作为版本化发布制品交付，然后用 `uv tool` 建立独立工具环境：
 
 ```bash
-uv tool install /path/to/memory_mcp_agent-0.1.0-py3-none-any.whl
+uv tool install /path/to/memory_mcp_agent-0.2.0-py3-none-any.whl
 command -v memory-mcp-hook
 ```
 
 如果包已发布到组织 Python registry，可以把 wheel 路径换成固定版本
-`memory-mcp-agent==0.1.0`。不要在生产命令中省略版本。
+`memory-mcp-agent==0.2.0`。不要在生产命令中省略版本。
 
 当前仓库构建 wheel：
 
@@ -440,8 +440,12 @@ command Hook 的 Before 和 After 是两个独立进程。原始用户输入短�
 
 - 目录权限 `0700`，文件权限 `0600`；
 - 文件名只包含会话/轮次标识的 SHA-256 摘要；
-- After 捕获尝试结束后删除；
-- 中断遗留状态在后续 Hook 中按 24 小时 TTL 清理；
+- Before 先保存 prompt，After 在网络调用前原子补齐 final output、固定 observed time
+  和可选 Profile；
+- `completed` 或明确 `failed` 后删除；网络 warning 或 `reprocess_required` 保留；
+- 后续任意一次 Stop 在当前轮次前最多补送一条旧 payload；
+- 新状态使用 schema v2；旧版只含 prompt 的 v1 状态仍可读取并在 Stop 原子升级，
+  全部遗留状态按 24 小时 TTL 清理；
 - 不解析宿主 transcript。
 
 Hook 日志位于：
@@ -464,7 +468,8 @@ Hook 日志位于：
 | `missing_turn_identifier` | 宿主版本过旧或事件缺少稳定轮次标识 |
 | `missing_turn_state` | Hook 中途启用、Before 未保存，或 Before/After 的 cwd/ID 不同 |
 | `recall_memory_mcp_unavailable` | 检查地址、网络、TLS、服务和超时；本轮 fail-open |
-| `capture_memory_mcp_unavailable` | 捕获未成功；本轮最终回复不会被撤回 |
+| `capture_memory_mcp_unavailable` | 捕获未成功；完整 payload 已留在本机，后续 Stop 会有界补送 |
+| `capture_reprocess_required` 或服务 failure code | retryable 状态保留补送；明确 failed 会删除并提示检查模型/准入 |
 | recall 为 0 | 记忆未 auto-save、相关性不足、owner 不同或已非 active/current |
 
 直接检查服务：
@@ -480,7 +485,8 @@ curl --fail "${MEMORY_MCP_URL%/mcp}/health"
 - MCP Server 不能自动修改 Agent 的本地 Hook 配置；
 - Codex 当前没有原生 HTTP Hook，跨机接入仍由本地轻量 command Client 转发；
 - 不要与会在 Stop 阶段要求同一轮继续执行的其他 Hook 组合；
-- 当前不需要队列；如果要求 Host 崩溃后仍保证投递，应另行设计 durable
+- 当前本地 best-effort outbox 能跨 Hook 进程和短时网络故障补送；如果要求 Agent Host
+  永久下线、磁盘损坏或没有后续 Stop 时仍保证投递，应另行设计集中 durable
   outbox/queue worker；
 - command renderer 当前直接覆盖 Codex/Claude Code 的公共 JSON，其他输出协议需要
   一个薄映射；核心生命周期和 MCP 合同不变。

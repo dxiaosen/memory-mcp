@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from memory_mcp_agent.bridge import MemoryHookBridge
+from memory_mcp_agent.bridge import AfterRunResult, MemoryHookBridge
 from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
-from memory_mcp_agent.state import TurnState, TurnStateStore
+from memory_mcp_agent.state import TurnState, TurnStateError, TurnStateStore
 
 _LOGGER = logging.getLogger(__name__)
 _EVENT_PHASES: dict[str, Literal["before_run", "after_run"]] = {
@@ -172,6 +173,7 @@ class AgentHookAdapter:
         self._state.cleanup_expired()
         if event.phase == "before_run":
             return await self._before(event, run_reference)
+        await self._retry_one_pending(event)
         return await self._after(event, run_reference)
 
     async def _before(
@@ -210,7 +212,6 @@ class AgentHookAdapter:
         run_reference: str,
     ) -> AgentHookOutcome:
         if event.final_output is None or not event.final_output.strip():
-            self._state.delete(event.conversation_id, event.turn_id)
             return self._skip_after(
                 "missing_final_output",
                 run_reference=run_reference,
@@ -223,14 +224,15 @@ class AgentHookAdapter:
                 run_reference=run_reference,
             )
 
-        try:
-            result = await self._bridge.after_run_success(
-                self._context(event),
-                user_input=saved.prompt,
-                final_output=event.final_output,
-            )
-        finally:
-            self._state.delete(event.conversation_id, event.turn_id)
+        staged = self._state.stage_capture(
+            event.conversation_id,
+            event.turn_id,
+            final_output=event.final_output,
+            observed_at=datetime.now(UTC),
+            profile_id=self._settings.profile_id,
+        )
+        result = await self._deliver_staged(staged)
+        warning_code = self._finish_delivery(staged, result)
 
         log_event(
             _LOGGER,
@@ -242,11 +244,75 @@ class AgentHookAdapter:
             replayed=result.replayed,
             run_reference=run_reference,
             status=result.status,
-            warning_code=result.warning_code,
+            failure_code=result.failure_code,
+            warning_code=warning_code,
         )
-        if result.warning_code is not None:
-            return AgentHookOutcome(warning_code=f"capture_{result.warning_code}")
+        if warning_code is not None:
+            return AgentHookOutcome(warning_code=f"capture_{warning_code}")
         return AgentHookOutcome()
+
+    async def _retry_one_pending(self, event: AgentTurnEvent) -> None:
+        """后续 Stop 有界重投一个旧 payload，任何失败都不阻断当前轮次。"""
+
+        pending = self._state.pending_captures(
+            exclude=(event.conversation_id, event.turn_id),
+            limit=1,
+        )
+        if not pending:
+            return
+        state = pending[0]
+        run_reference = stable_reference(f"{state.session_id}\x1f{state.turn_id}")
+        try:
+            result = await self._deliver_staged(state)
+            warning_code = self._finish_delivery(state, result)
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "agent_hook.pending_retry.completed",
+                attempts=result.attempts,
+                run_reference=run_reference,
+                status=result.status,
+                warning_code=warning_code,
+            )
+        except Exception as exc:
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "agent_hook.pending_retry.failed",
+                error_type=type(exc).__name__,
+                run_reference=run_reference,
+            )
+
+    async def _deliver_staged(self, state: TurnState) -> AfterRunResult:
+        if state.final_output is None or state.capture_observed_at is None:
+            raise TurnStateError("capture_payload_is_not_staged")
+        return await self._bridge.after_run_success(
+            HookContext(
+                conversation_id=state.session_id,
+                turn_id=state.turn_id,
+                profile_id=state.profile_id,
+            ),
+            user_input=state.prompt,
+            final_output=state.final_output,
+            observed_at=state.capture_observed_at,
+        )
+
+    def _finish_delivery(
+        self,
+        state: TurnState,
+        result: AfterRunResult,
+    ) -> str | None:
+        """只有权威终态删除本地 payload，其余状态等待后续 Stop。"""
+
+        if result.status == "completed":
+            self._state.delete(state.session_id, state.turn_id)
+            return None
+        if result.status == "failed":
+            self._state.delete(state.session_id, state.turn_id)
+            return result.failure_code or "permanent_failure"
+        if result.status == "reprocess_required":
+            return result.failure_code or "reprocess_required"
+        return result.warning_code or "delivery_unavailable"
 
     def _context(self, event: AgentTurnEvent) -> HookContext:
         return HookContext(
