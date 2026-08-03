@@ -182,8 +182,9 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         record: MemoryRecord,
     ) -> None:
-        if record.item.owner_id != principal.owner_id:
-            raise ValueError("record owner must match trusted principal")
+        # 允许写入个人 owner 或 principal 所属团队的 owner（团队提升路径）。
+        if record.item.owner_id not in principal.visible_owner_ids:
+            raise ValueError("record owner must match trusted principal or team")
         with self._pool.connection() as connection:
             self._insert_record(connection, record)
         log_event(
@@ -203,12 +204,12 @@ class PostgreSQLMemoryRepository:
     ) -> MemoryRecord | None:
         with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_CURRENT_RECORD} WHERE i.owner_id = %s AND i.memory_id = %s",
-                (principal.owner_id, memory_id),
+                f"{_SELECT_CURRENT_RECORD} WHERE i.owner_id = ANY(%s) AND i.memory_id = %s",
+                (list(principal.visible_owner_ids), memory_id),
             ).fetchone()
             if row is None:
                 return None
-            return to_record(connection, row, principal.owner_id)
+            return to_record(connection, row, row["owner_id"])
 
     def list(
         self,
@@ -217,8 +218,8 @@ class PostgreSQLMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
-        conditions = ["i.owner_id = %s"]
-        parameters: list[object] = [principal.owner_id]
+        conditions = ["i.owner_id = ANY(%s)"]
+        parameters: list[object] = [list(principal.visible_owner_ids)]
         if active_only:
             resolved_time = effective_at or datetime.now(UTC)
             conditions.extend(
@@ -235,7 +236,7 @@ class PostgreSQLMemoryRepository:
         )
         with self._pool.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
-            return tuple(to_record(connection, row, principal.owner_id) for row in rows)
+            return tuple(to_record(connection, row, row["owner_id"]) for row in rows)
 
     def find_current(
         self,
@@ -250,7 +251,7 @@ class PostgreSQLMemoryRepository:
         if limit is not None and limit < 1:
             raise ValueError("limit must be positive")
         conditions = [
-            "i.owner_id = %s",
+            "i.owner_id = ANY(%s)",
             "i.profile_id = %s",
             "r.lifecycle_status = 'active'",
             "r.valid_from <= %s",
@@ -258,7 +259,7 @@ class PostgreSQLMemoryRepository:
         ]
         resolved_time = effective_at or datetime.now(UTC)
         parameters: list[object] = [
-            principal.owner_id,
+            list(principal.visible_owner_ids),
             profile_id,
             resolved_time,
             resolved_time,
@@ -282,9 +283,7 @@ class PostgreSQLMemoryRepository:
         subject_key = normalize_memory_text(subject) if subject is not None else None
         with self._pool.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
-            records = tuple(
-                to_record(connection, row, principal.owner_id) for row in rows
-            )
+            records = tuple(to_record(connection, row, row["owner_id"]) for row in rows)
         if subject_key is None:
             return records
         return tuple(
@@ -358,13 +357,13 @@ class PostgreSQLMemoryRepository:
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_CURRENT_RECORD} "
-                "WHERE i.owner_id = %s AND i.memory_id = %s FOR UPDATE",
-                (principal.owner_id, memory_id),
+                "WHERE i.owner_id = ANY(%s) AND i.memory_id = %s FOR UPDATE",
+                (list(principal.visible_owner_ids), memory_id),
             ).fetchone()
             if row is None:
                 return None
             if row["lifecycle_status"] == "revoked":
-                return to_record(connection, row, principal.owner_id)
+                return to_record(connection, row, row["owner_id"])
             if row["lifecycle_status"] != "active":
                 return None
             connection.execute(
@@ -380,7 +379,7 @@ class PostgreSQLMemoryRepository:
                 (principal.owner_id, memory_id, row["revision_id"]),
             )
             row["lifecycle_status"] = "revoked"
-            return to_record(connection, row, principal.owner_id)
+            return to_record(connection, row, row["owner_id"])
 
     def link_relation(
         self,
@@ -462,11 +461,11 @@ class PostgreSQLMemoryRepository:
         if not requested:
             return ()
         conditions = [
-            "rel.owner_id = %s",
+            "rel.owner_id = ANY(%s)",
             "(rel.source_memory_id = ANY(%s) OR rel.target_memory_id = ANY(%s))",
         ]
         parameters: list[object] = [
-            principal.owner_id,
+            list(principal.visible_owner_ids),
             list(requested),
             list(requested),
         ]
@@ -560,15 +559,15 @@ class PostgreSQLMemoryRepository:
                        r.is_current, r.original_time_expression,
                        r.normalized_time, r.extraction_confidence,
                        r.verification_status, r.sensitivity_level,
-                       r.valid_from, r.valid_until, r.last_verified_at
+                       r.valid_from, r.valid_until
                 FROM memory_items AS i
                 JOIN memory_revisions AS r
                   ON r.memory_id = i.memory_id
                  AND r.owner_id = i.owner_id
-                WHERE i.owner_id = %s AND i.memory_id = %s
+                WHERE i.owner_id = ANY(%s) AND i.memory_id = %s
                 ORDER BY r.revision_number DESC
                 """,
-                (principal.owner_id, memory_id),
+                (list(principal.visible_owner_ids), memory_id),
             ).fetchall()
             return tuple(
                 MemoryHistoryEntry(
@@ -853,9 +852,9 @@ class PostgreSQLMemoryRepository:
         with self._pool.connection() as connection:
             rows = connection.execute(
                 f"{_SELECT_REVIEW} "
-                "WHERE owner_id = %s AND status = %s "
+                "WHERE owner_id = ANY(%s) AND status = %s "
                 "ORDER BY created_at, review_id",
-                (principal.owner_id, status.value),
+                (list(principal.visible_owner_ids), status.value),
             ).fetchall()
         return tuple(to_review(row) for row in rows)
 
@@ -866,8 +865,8 @@ class PostgreSQLMemoryRepository:
     ) -> ReviewItem | None:
         with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_REVIEW} WHERE owner_id = %s AND review_id = %s",
-                (principal.owner_id, review_id),
+                f"{_SELECT_REVIEW} WHERE owner_id = ANY(%s) AND review_id = %s",
+                (list(principal.visible_owner_ids), review_id),
             ).fetchone()
         if row is None:
             return None
@@ -1084,12 +1083,12 @@ class PostgreSQLMemoryRepository:
                 save_rationale, observed_at, created_at, is_current,
                 primary_evidence_id, original_time_expression, normalized_time
                 , extraction_confidence, verification_status,
-                sensitivity_level, valid_from, valid_until, last_verified_at
+                sensitivity_level, valid_from, valid_until
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s
             )
             """,
             (
@@ -1113,7 +1112,6 @@ class PostgreSQLMemoryRepository:
                 revision.sensitivity_level.value,
                 revision.valid_from,
                 revision.valid_until,
-                revision.last_verified_at,
             ),
         )
         cls._insert_evidence(connection, evidence)
@@ -1189,7 +1187,7 @@ class PostgreSQLMemoryRepository:
                 original_time_expression, normalized_time, status,
                 created_at, decided_at, source_role, source_message_id,
                 source_tool_name, verification_status, sensitivity_level,
-                valid_from, valid_until, last_verified_at, source_type,
+                valid_from, valid_until, source_type,
                 source_uri, source_title, source_publisher, published_at,
                 retrieved_at, content_hash, citation_locator
             )
@@ -1198,7 +1196,7 @@ class PostgreSQLMemoryRepository:
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s
             )
             """,
             (
@@ -1237,7 +1235,6 @@ class PostgreSQLMemoryRepository:
                 candidate.sensitivity_level.value,
                 candidate.valid_from,
                 candidate.valid_until,
-                candidate.last_verified_at,
                 candidate.source_type.value,
                 candidate.source_uri,
                 candidate.source_title,
@@ -1464,7 +1461,7 @@ SELECT i.memory_id, i.owner_id, i.profile_id, i.subject, i.memory_type,
        r.created_at AS revision_created_at, r.is_current,
        r.original_time_expression, r.normalized_time,
        r.extraction_confidence, r.verification_status, r.sensitivity_level,
-       r.valid_from, r.valid_until, r.last_verified_at
+       r.valid_from, r.valid_until
 FROM memory_items AS i
 JOIN memory_revisions AS r
   ON r.memory_id = i.memory_id
@@ -1480,7 +1477,7 @@ SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        original_time_expression, normalized_time, status, created_at,
        decided_at, resolved_memory_id, source_role, source_message_id,
        source_tool_name, verification_status, sensitivity_level,
-       valid_from, valid_until, last_verified_at, source_type, source_uri,
+       valid_from, valid_until, source_type, source_uri,
        source_title, source_publisher, published_at, retrieved_at,
        content_hash, citation_locator
 FROM memory_review_items

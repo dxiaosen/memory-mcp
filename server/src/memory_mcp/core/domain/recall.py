@@ -107,7 +107,6 @@ class RecalledMemory:
     sensitivity_level: SensitivityLevel
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
     sources: tuple[RecallSourceSummary, ...]
     relations: tuple[MemoryRelationSummary, ...]
     relevance_score: float

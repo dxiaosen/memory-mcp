@@ -74,12 +74,28 @@ class LifecycleStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PrincipalContext:
-    """由应用边界提供的可信当前用户上下文。"""
+    """由应用边界提供的可信当前用户上下文。
+
+     ``owner_id`` 是个人记忆的存储隔离键；``team_owner_ids`` 是该用户所属
+    团队的公共记忆 owner key 集合。召回时用 ``visible_owner_ids`` 同时匹配
+    个人和团队记忆。
+    """
 
     owner_id: str
+    team_owner_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))
+        normalized_teams = tuple(
+            _require_text(team_id, "team_owner_id") for team_id in self.team_owner_ids
+        )
+        object.__setattr__(self, "team_owner_ids", normalized_teams)
+
+    @property
+    def visible_owner_ids(self) -> tuple[str, ...]:
+        """召回和关系查询使用的 owner 过滤集合（个人 + 团队）。"""
+
+        return (self.owner_id, *self.team_owner_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +143,6 @@ class MemoryRevision:
     sensitivity_level: SensitivityLevel
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
     is_current: bool = True
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
@@ -167,8 +182,6 @@ class MemoryRevision:
             _require_aware_datetime(self.valid_until, "valid_until")
             if self.valid_until <= self.valid_from:
                 raise ValueError("valid_until must be later than valid_from")
-        if self.last_verified_at is not None:
-            _require_aware_datetime(self.last_verified_at, "last_verified_at")
         if self.original_time_expression is not None:
             object.__setattr__(
                 self,

@@ -225,7 +225,6 @@ class MemorySummaryView(StrictDto):
     sensitivity_level: str
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
 
     @classmethod
     def from_record(cls, record: MemoryRecord) -> Self:
@@ -287,7 +286,6 @@ def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
         "sensitivity_level": revision.sensitivity_level.value,
         "valid_from": revision.valid_from,
         "valid_until": revision.valid_until,
-        "last_verified_at": revision.last_verified_at,
     }
 
 
@@ -419,7 +417,6 @@ class MemoryRevisionView(StrictDto):
     sensitivity_level: str
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
     evidence: tuple[EvidenceView, ...]
 
     @classmethod
@@ -441,7 +438,6 @@ class MemoryRevisionView(StrictDto):
             sensitivity_level=revision.sensitivity_level.value,
             valid_from=revision.valid_from,
             valid_until=revision.valid_until,
-            last_verified_at=revision.last_verified_at,
             evidence=tuple(
                 EvidenceView(
                     conversation_id=source.conversation_id,
@@ -495,7 +491,6 @@ class RecalledMemoryView(StrictDto):
     sensitivity_level: str
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
     sources: tuple[RecallSourceView, ...]
     relations: tuple[MemoryRelationSummaryView, ...]
     relevance_score: float
@@ -529,7 +524,6 @@ class RecallReceipt(StrictDto):
                     sensitivity_level=item.sensitivity_level.value,
                     valid_from=item.valid_from,
                     valid_until=item.valid_until,
-                    last_verified_at=item.last_verified_at,
                     sources=tuple(
                         RecallSourceView(
                             conversation_id=source.conversation_id,

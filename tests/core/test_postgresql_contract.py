@@ -58,9 +58,10 @@ class PostgreSQLTestDatabase:
 def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     migrations = load_migrations()
 
-    # 合并后的 schema 只有一个 migration 文件。
+    # 合并后的 schema 有两个 migration 文件。
     assert [migration.version for migration in migrations] == [
         "0001_memory_schema.sql",
+        "0002_drop_last_verified_at.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -782,3 +783,139 @@ def _truncate_memory_tables(database_url: str) -> None:
                             memory_profiles
             """
         )
+
+
+def test_real_postgresql_team_memory_visible_to_member_not_outsider(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """真实 DB：团队成员召回团队记忆，非成员不可见。"""
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=2)
+    repository = PostgreSQLMemoryRepository(pool)
+    service = create_memory_service(repository, [TestMemoryProfile()])
+    try:
+        team_owner = "tenant-001:team:research-dept"
+        # 写入团队公共记忆。
+        team_memory = service.create_memory(
+            PrincipalContext(team_owner),
+            project_preference_command(),
+        )
+        assert team_memory.item.owner_id == team_owner
+        # 团队成员能召回。
+        member = PrincipalContext(
+            "tenant-001:member-a",
+            (team_owner,),
+        )
+        member_result = service.recall_memory(
+            member,
+            RecallQuery(
+                profile_id="project-work",
+                query="项目周报默认使用什么格式",
+                subject="weekly-report",
+                max_items=5,
+                token_budget=600,
+            ),
+        )
+        assert len(member_result.items) == 1
+        # 召回的记忆 owner 是团队 owner（通过 get_memory 确认）。
+        recalled_memory = service.get_memory(member, member_result.items[0].memory_id)
+        assert recalled_memory.item.owner_id == team_owner
+        # 非成员召回不到。
+        outsider = PrincipalContext("tenant-001:outsider")
+        outsider_result = service.recall_memory(
+            outsider,
+            RecallQuery(
+                profile_id="project-work",
+                query="项目周报默认使用什么格式",
+                subject="weekly-report",
+                max_items=5,
+                token_budget=600,
+            ),
+        )
+        assert outsider_result.items == ()
+    finally:
+        repository.close()
+
+
+def test_real_postgresql_review_promotes_to_team_owner(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """真实 DB：review 确认时 promote_to_team 写入团队 owner。"""
+
+    from memory_mcp.core import MessageRole, TurnEnvelope, TurnMessage
+
+    from tests.support.fakes import CandidateDurability, FakeCandidateExtractor
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=2)
+    repository = PostgreSQLMemoryRepository(pool)
+    extractor = FakeCandidateExtractor()
+    service = create_memory_service(
+        repository, [TestMemoryProfile()], candidate_extractor=extractor
+    )
+    try:
+        member = PrincipalContext(
+            "tenant-001:member-a",
+            ("tenant-001:team:research-dept",),
+        )
+        extractor.proposals = (
+            _candidate_proposal(
+                "周报默认用 markdown",
+                content="周报默认用 markdown",
+                durability=CandidateDurability.UNCERTAIN,
+            ),
+        )
+        service.capture_turn(
+            member,
+            TurnEnvelope(
+                profile_id="project-work",
+                conversation_id="conv-team-1",
+                source_turn_id="turn-team-1",
+                content="周报默认用 markdown",
+                observed_at=datetime(2026, 8, 3, tzinfo=UTC),
+                messages=(
+                    TurnMessage(
+                        role=MessageRole.USER,
+                        content="周报默认用 markdown",
+                        message_id="msg-1",
+                    ),
+                ),
+            ),
+        )
+        reviews = service.list_pending_reviews(member)
+        assert len(reviews) == 1
+        team_owner_id = "tenant-001:team:research-dept"
+        memory = service.confirm_review(
+            member,
+            reviews[0].review_id,
+            team_id="research-dept",
+            team_owner_ids=frozenset({team_owner_id}),
+        )
+        # 写入的 memory owner 是团队 owner，且团队成员能召回。
+        assert memory.item.owner_id == team_owner_id
+        recalled = service.recall_memory(
+            member,
+            RecallQuery(
+                profile_id="project-work",
+                query="周报 markdown",
+                max_items=5,
+                token_budget=600,
+            ),
+        )
+        assert any(item.memory_id == memory.item.memory_id for item in recalled.items)
+    finally:
+        repository.close()
+
+
+def _candidate_proposal(
+    text: str,
+    *,
+    subject: str = "weekly-report",
+    content: str | None = None,
+    durability: object | None = None,
+):
+    from tests.support.fakes import candidate_proposal
+
+    kwargs = {"subject": subject, "content": content or text}
+    if durability is not None:
+        kwargs["durability"] = durability
+    return candidate_proposal(text, **kwargs)

@@ -73,7 +73,6 @@ CREATE TABLE memory_revisions (
     sensitivity_level TEXT NOT NULL DEFAULT 'confidential',
     valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     valid_until TIMESTAMPTZ,
-    last_verified_at TIMESTAMPTZ,
     CONSTRAINT memory_revisions_positive_number
         CHECK (revision_number > 0),
     CONSTRAINT memory_revisions_content_non_empty
@@ -332,7 +331,6 @@ CREATE TABLE memory_review_items (
     sensitivity_level TEXT NOT NULL DEFAULT 'confidential',
     valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     valid_until TIMESTAMPTZ,
-    last_verified_at TIMESTAMPTZ,
     source_type TEXT NOT NULL DEFAULT 'conversation',
     source_uri TEXT,
     source_title TEXT,

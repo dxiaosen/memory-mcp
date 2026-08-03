@@ -21,7 +21,7 @@ _RECORD_FIELDS = """
     r.created_at AS revision_created_at, r.is_current,
     r.original_time_expression, r.normalized_time,
     r.extraction_confidence, r.verification_status, r.sensitivity_level,
-    r.valid_from, r.valid_until, r.last_verified_at
+    r.valid_from, r.valid_until
 """
 _CURRENT_JOIN = """
     FROM memory_items AS i
@@ -51,14 +51,14 @@ def find_recall_candidates(
         raise ValueError("search_text must not be empty")
     lexical_limit = 1 if limit == 1 else min(limit - 1, max(1, ceil(limit * 0.7)))
     base_conditions = [
-        "i.owner_id = %s",
+        "i.owner_id = ANY(%s)",
         "i.profile_id = %s",
         "r.lifecycle_status = 'active'",
         "r.valid_from <= %s",
         "(r.valid_until IS NULL OR r.valid_until > %s)",
     ]
     base_parameters: list[object] = [
-        principal.owner_id,
+        list(principal.visible_owner_ids),
         profile_id,
         effective_at,
         effective_at,
@@ -160,7 +160,7 @@ def load_recall_evidence(
                        ORDER BY created_at DESC, evidence_id DESC
                    ) AS source_rank
             FROM memory_evidence
-            WHERE owner_id = %s
+            WHERE owner_id = ANY(%s)
               AND revision_id = ANY(%s)
         )
         SELECT evidence_id, memory_id, revision_id, owner_id,
@@ -173,7 +173,7 @@ def load_recall_evidence(
         WHERE source_rank <= %s
         ORDER BY revision_id, created_at, evidence_id
         """,
-        (principal.owner_id, list(unique_ids), per_revision_limit),
+        (list(principal.visible_owner_ids), list(unique_ids), per_revision_limit),
     ).fetchall()
     grouped: dict[UUID, list[Evidence]] = {}
     for row in rows:

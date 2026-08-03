@@ -12,7 +12,11 @@ from memory_mcp.errors import (
     PermissionDeniedError,
     UnauthenticatedError,
 )
-from memory_mcp.settings import ConfiguredPrincipal, derive_owner_key
+from memory_mcp.settings import (
+    ConfiguredPrincipal,
+    derive_owner_key,
+    derive_team_owner_key,
+)
 
 
 class MemoryScope(StrEnum):
@@ -32,9 +36,13 @@ class RequestPrincipal(BaseModel):
     client_id: str = Field(min_length=1)
     default_profile_id: str = Field(min_length=1)
     scopes: frozenset[MemoryScope]
+    team_owner_ids: frozenset[str] = frozenset()
 
     def to_core(self) -> PrincipalContext:
-        return PrincipalContext(owner_id=self.owner_key)
+        return PrincipalContext(
+            owner_id=self.owner_key,
+            team_owner_ids=tuple(self.team_owner_ids),
+        )
 
 
 class StaticTokenVerifier(TokenVerifier):
@@ -57,6 +65,7 @@ class StaticTokenVerifier(TokenVerifier):
             claims={
                 "tenant_id": configured.tenant_id,
                 "default_profile_id": configured.default_profile_id,
+                "team_ids": sorted(configured.team_ids),
             },
         )
 
@@ -81,6 +90,17 @@ def current_request_principal() -> RequestPrincipal:
         owner_key = derive_owner_key(tenant_id, subject_id)
     except ValueError:
         raise UnauthenticatedError from None
+    raw_team_ids = claims.get("team_ids", ())
+    if not isinstance(raw_team_ids, (list, tuple)):
+        raise UnauthenticatedError
+    team_owner_ids: set[str] = set()
+    for team_id in raw_team_ids:
+        if not isinstance(team_id, str) or not team_id.strip():
+            raise UnauthenticatedError
+        try:
+            team_owner_ids.add(derive_team_owner_key(tenant_id, team_id))
+        except ValueError:
+            raise UnauthenticatedError from None
     return RequestPrincipal(
         owner_key=owner_key,
         tenant_id=tenant_id,
@@ -88,6 +108,7 @@ def current_request_principal() -> RequestPrincipal:
         client_id=access_token.client_id,
         default_profile_id=default_profile_id,
         scopes=frozenset(MemoryScope(scope) for scope in access_token.scopes),
+        team_owner_ids=frozenset(team_owner_ids),
     )
 
 

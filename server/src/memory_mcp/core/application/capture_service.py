@@ -453,8 +453,16 @@ class CaptureService:
         self,
         principal: PrincipalContext,
         review_id: UUID,
+        *,
+        team_id: str | None = None,
+        team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
-        return self._review_service.confirm(principal, review_id)
+        return self._review_service.confirm(
+            principal,
+            review_id,
+            team_id=team_id,
+            team_owner_ids=team_owner_ids,
+        )
 
     def reject_review(
         self,

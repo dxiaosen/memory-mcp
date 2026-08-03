@@ -75,6 +75,9 @@ class ReviewService:
         self,
         principal: PrincipalContext,
         review_id: UUID,
+        *,
+        team_id: str | None = None,
+        team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
         review = self._repository.get_review(principal, review_id)
         if review is None:
@@ -96,6 +99,17 @@ class ReviewService:
             review.candidate.profile_id,
             review.candidate.business_progress,
         )
+        # 团队提升：校验该 principal 有权写入指定团队，并确定写入用的 owner。
+        target_owner_id = principal.owner_id
+        if team_id is not None:
+            from memory_mcp.settings import derive_team_owner_key
+
+            expected = derive_team_owner_key(
+                principal.owner_id.split(":", 1)[0], team_id
+            )
+            if expected not in team_owner_ids:
+                raise ValueError("principal is not a member of the requested team")
+            target_owner_id = expected
         current_scope = self._repository.find_current(
             principal,
             profile_id=review.candidate.profile_id,
@@ -127,6 +141,7 @@ class ReviewService:
             memory = self._materializer.record(
                 review.candidate,
                 verification_status=VerificationStatus.USER_CONFIRMED,
+                owner_id=target_owner_id,
             )
         resolved = self._repository.resolve_review(
             principal,
@@ -151,6 +166,7 @@ class ReviewService:
             "memory.review.confirmed",
             memory_id=committed.item.memory_id,
             owner_ref=stable_reference(principal.owner_id),
+            promoted_to_team=team_id is not None,
             review_id=review_id,
         )
         log_content_event(

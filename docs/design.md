@@ -88,7 +88,7 @@ Memory MCP Server
 本期不实现：
 
 - 生产 OAuth/OIDC 授权服务器；
-- 团队共享记忆或跨用户授权；
+- 跨用户授权（团队记忆仅对团队成员可见，不做跨团队共享）；
 - 多 worker 自动伸缩与数据库级 RLS；
 - Redis/Kafka 消息队列；
 - Embedding、向量数据库和 HNSW；
@@ -372,7 +372,6 @@ MemoryRevision
 ├── verification_status
 ├── sensitivity_level
 ├── valid_from / valid_until?
-├── last_verified_at?
 ├── save_rationale
 ├── original_time_expression?
 └── normalized_time?
@@ -545,6 +544,7 @@ RequestPrincipal
 ├── tenant_id
 ├── subject_id
 ├── owner_key = tenant_id + ":" + subject_id
+├── team_owner_ids = ["tenant_id:team:team_id", ...]
 ├── client_id
 ├── default_profile_id
 └── scopes
@@ -555,13 +555,17 @@ RequestPrincipal
 | 字段 | 作用 |
 | --- | --- |
 | `tenant_id + subject_id` | 授权系统中的最终主体 |
-| `owner_key` | 服务端唯一派生的 Repository 隔离键 |
+| `owner_key` | 个人记忆的服务端唯一派生 Repository 隔离键 |
+| `team_owner_ids` | 该主体所属团队的公共记忆 owner key 集合；召回时与个人 owner 合并 |
 | `client_id` | 已认证客户端；静态 Token 使用凭据摘要引用 |
 | `default_profile_id` | Token 对应的受信默认记忆策略，不改变 owner 范围 |
 | `scopes` | read/write/review 操作授权 |
 
-owner 和认证客户端必须分开。静态映射配置 tenant、subject、默认 Profile 和 scopes；
-`owner_key` 由前两项确定性派生。当前不透明 Token 不含 MCP 可自动识别的业务
+owner 和认证客户端必须分开。静态映射配置 tenant、subject、默认 Profile、scopes 和可选
+team_ids；`owner_key` 由 tenant + subject 确定性派生，团队 owner key 由
+`tenant_id:team:team_id` 派生（`team:` 中缀确保与个人 owner 不冲突）。召回时用
+`visible_owner_ids = (owner_key, *team_owner_ids)` 集合过滤，个人和团队记忆按统一相关性排序。
+当前不透明 Token 不含 MCP 可自动识别的业务
 client claim，因此校验器用单向哈希产生稳定 `static-…` 审计引用。真实 OAuth/OIDC
 适配器应从已验证 Token 或 introspection 结果取得 `client_id`。`agent_id` 不是
 标准字段且当前没有独立语义，所以不保留。用户 A 的多个 Token 映射到相同 owner；
@@ -1063,7 +1067,7 @@ Profile policy 校验 relation type 和方向。相同 owner/source/target/type 
 Repository 首先执行：
 
 ```text
-owner
+owner 集合（个人 + 团队）
 → active/current
 → profile_id
 → valid_from <= now < valid_until（或无上限）
@@ -1073,7 +1077,9 @@ owner
 → 去重并限制为 `MEMORY_MCP_RECALL_CANDIDATE_LIMIT`
 ```
 
-候选上限由 Application 通过 Repository 端口下推，PostgreSQL 在 owner/Profile/
+候选查询用 `owner_id = ANY(%s)` 同时匹配个人 owner 和该用户所属团队的 owner
+（`visible_owner_ids`），使团队成员能召回团队公共记忆。非成员的 owner 不在集合内，
+无法访问团队记忆。候选上限由 Application 通过 Repository 端口下推，PostgreSQL 在 owner/Profile/
 current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择词法候选，再用
 近期候选补齐，默认总计 500、必须为正数。它能找回超过近期窗口的较早相关记忆，
 但不是 Embedding 语义索引。相关性逻辑永远看不到其他 owner 的记录。

@@ -78,14 +78,22 @@ class CandidateMaterializer:
         candidate: Candidate,
         *,
         verification_status: VerificationStatus | None = None,
+        owner_id: str | None = None,
     ) -> MemoryRecord:
+        """构造一条新记忆。
+
+        ``owner_id`` 默认取 candidate 的 owner；团队提升时传入团队 owner key，
+        使该记忆写入团队公共记忆而非个人记忆。
+        """
+
+        resolved_owner_id = owner_id or candidate.owner_id
         memory_id = self._id_factory()
         revision_id = self._id_factory()
         created_at = self._clock()
         return MemoryRecord(
             item=MemoryItem(
                 memory_id=memory_id,
-                owner_id=candidate.owner_id,
+                owner_id=resolved_owner_id,
                 profile_id=candidate.profile_id,
                 subject=candidate.subject,
                 memory_type=candidate.memory_type,
@@ -94,7 +102,7 @@ class CandidateMaterializer:
             current_revision=MemoryRevision(
                 revision_id=revision_id,
                 memory_id=memory_id,
-                owner_id=candidate.owner_id,
+                owner_id=resolved_owner_id,
                 revision_number=1,
                 content=candidate.content,
                 assertion_kind=candidate.assertion_kind,
@@ -110,7 +118,6 @@ class CandidateMaterializer:
                 sensitivity_level=candidate.sensitivity_level,
                 valid_from=candidate.valid_from,
                 valid_until=candidate.valid_until,
-                last_verified_at=candidate.last_verified_at,
                 original_time_expression=candidate.original_time_expression,
                 normalized_time=candidate.normalized_time,
             ),
@@ -120,6 +127,7 @@ class CandidateMaterializer:
                     memory_id=memory_id,
                     revision_id=revision_id,
                     created_at=created_at,
+                    owner_id=resolved_owner_id,
                 ),
             ),
         )
@@ -168,7 +176,6 @@ class CandidateMaterializer:
             sensitivity_level=candidate.sensitivity_level,
             valid_from=candidate.valid_from,
             valid_until=candidate.valid_until,
-            last_verified_at=candidate.last_verified_at,
             original_time_expression=candidate.original_time_expression,
             normalized_time=candidate.normalized_time,
         )
@@ -193,12 +200,14 @@ class CandidateMaterializer:
         memory_id: UUID,
         revision_id: UUID,
         created_at: datetime,
+        owner_id: str | None = None,
     ) -> Evidence:
+        resolved_owner_id = owner_id or candidate.owner_id
         return Evidence(
             evidence_id=self._id_factory(),
             memory_id=memory_id,
             revision_id=revision_id,
-            owner_id=candidate.owner_id,
+            owner_id=resolved_owner_id,
             conversation_id=candidate.conversation_id,
             source_turn_id=candidate.source_turn_id,
             source_expression=candidate.source_expression,
@@ -347,7 +356,6 @@ class CandidateProcessor:
                     if metadata_policy.validity_days is not None
                     else None
                 ),
-                last_verified_at=None,
                 business_progress=proposal.business_progress,
                 original_time_expression=proposal.original_time_expression,
                 normalized_time=proposal.normalized_time,

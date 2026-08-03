@@ -206,7 +206,6 @@ class MemoryService:
                     if metadata_policy.validity_days is not None
                     else None
                 ),
-                last_verified_at=None,
                 original_time_expression=command.original_time_expression,
                 normalized_time=command.normalized_time,
             ),
@@ -488,8 +487,16 @@ class MemoryService:
         self,
         principal: PrincipalContext,
         review_id: UUID,
+        *,
+        team_id: str | None = None,
+        team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
-        return self._capture_service.confirm_review(principal, review_id)
+        return self._capture_service.confirm_review(
+            principal,
+            review_id,
+            team_id=team_id,
+            team_owner_ids=team_owner_ids,
+        )
 
     def reject_review(
         self,

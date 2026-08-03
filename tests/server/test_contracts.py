@@ -268,6 +268,7 @@ def test_static_verifier_derives_an_opaque_stable_client_id() -> None:
     assert first.claims == {
         "default_profile_id": "general-work",
         "tenant_id": "default",
+        "team_ids": [],
     }
 
 

@@ -272,7 +272,6 @@ class Candidate:
     sensitivity_level: SensitivityLevel
     valid_from: datetime
     valid_until: datetime | None
-    last_verified_at: datetime | None
     business_progress: str | None = None
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
@@ -337,8 +336,6 @@ class Candidate:
             _require_aware_datetime(self.valid_until, "valid_until")
             if self.valid_until <= self.valid_from:
                 raise ValueError("valid_until must be later than valid_from")
-        if self.last_verified_at is not None:
-            _require_aware_datetime(self.last_verified_at, "last_verified_at")
         if self.normalized_time is not None:
             _require_aware_datetime(self.normalized_time, "normalized_time")
         if self.source_role is not None and not isinstance(

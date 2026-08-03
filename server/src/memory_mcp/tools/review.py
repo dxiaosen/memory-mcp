@@ -64,7 +64,11 @@ class ReviewTools(ToolSupport):
 
         @server.tool(
             name="confirm_pending_memory",
-            description="Confirm one owned pending candidate exactly once.",
+            description=(
+                "Confirm one owned pending candidate exactly once. "
+                "Set promote_to_team to write the memory as team-shared "
+                "public knowledge instead of personal memory."
+            ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
                 destructiveHint=False,
@@ -75,6 +79,7 @@ class ReviewTools(ToolSupport):
         async def confirm_pending_memory(
             review_id: str,
             ctx: Context,
+            promote_to_team: str | None = None,
         ) -> ReviewResolutionReceipt | ErrorResponse:
             current_request_id = request_id(ctx)
             try:
@@ -89,6 +94,10 @@ class ReviewTools(ToolSupport):
                     self._service.confirm_review,
                     principal.to_core(),
                     identifier,
+                    team_id=promote_to_team,
+                    team_owner_ids=frozenset(principal.team_owner_ids)
+                    if promote_to_team is not None
+                    else frozenset(),
                 )
                 receipt = ReviewResolutionReceipt(
                     request_id=current_request_id,

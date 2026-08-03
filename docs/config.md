@@ -117,6 +117,26 @@ transaction_instruction）。配置后**完全替换**默认规则集而非合�
 | `subject_id` | 是 | 授权系统中的不可变用户 ID |
 | `default_profile_id` | 否 | 该 Token 的默认 Profile；默认 `general-work`，启动时校验已注册 |
 | `scopes` | 否 | 默认 read/write/review，可收窄 |
+| `team_ids` | 否 | 该用户所属团队 ID 列表；召回时合并个人与团队记忆，见[多层记忆](#多层记忆) |
+
+### 多层记忆
+
+Token 配置 `team_ids` 后，该用户召回时同时匹配个人记忆和团队公共记忆。团队 owner key
+由 `tenant_id:team:team_id` 派生，与个人 owner key（`tenant_id:subject_id`）不冲突。
+个人记忆仍写个人 owner；团队公共记忆通过 review 确认时显式提升（`promote_to_team`
+参数）写入团队 owner，capture 热路径不改变。
+
+```json
+{
+  "<random-token>": {
+    "tenant_id": "tenant-001",
+    "subject_id": "subject-001",
+    "default_profile_id": "investment-research",
+    "team_ids": ["research-dept"],
+    "scopes": ["memory:read", "memory:write", "memory:review"]
+  }
+}
+```
 
 ```json
 {

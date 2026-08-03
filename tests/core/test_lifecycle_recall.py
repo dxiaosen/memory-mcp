@@ -8,6 +8,7 @@ import pytest
 from memory_mcp.core import (
     AdmissionDecision,
     AssertionKind,
+    CandidateDurability,
     CandidateProposal,
     CaptureStatus,
     EvidenceSourceType,
@@ -1232,3 +1233,149 @@ def test_recall_with_jieba_tokenizer_does_not_collapse_chinese_into_single_token
     target_tokens = set(tokenizer.tokenize("锂电池新能源前景"))
     # 分词后两侧都有"新能源"，word overlap 非空。
     assert query_tokens & target_tokens == {"新能源"}
+
+
+def test_team_memory_is_visible_to_team_members_but_not_outsiders() -> None:
+    """团队成员能召回团队公共记忆，非成员不可见。"""
+
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    team_owner = "tenant-001:team:research-dept"
+    # 写入一条团队公共记忆。
+    service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="团队周报默认用 markdown 格式",
+            subject="weekly-report",
+            source_expression="团队周报默认用 markdown 格式",
+        ),
+    )
+    # 团队成员（携带 team_owner_ids）能召回团队记忆。
+    member = PrincipalContext(
+        "tenant-001:member-a",
+        (team_owner,),
+    )
+    member_result = service.recall_memory(
+        member,
+        RecallQuery(
+            profile_id="general-work",
+            query="周报 markdown",
+        ),
+    )
+    assert len(member_result.items) == 1
+    assert "markdown" in member_result.rendered_context
+    # 非成员（无 team_owner_ids）召回不到团队记忆。
+    outsider = PrincipalContext("tenant-001:outsider")
+    outsider_result = service.recall_memory(
+        outsider,
+        RecallQuery(
+            profile_id="general-work",
+            query="周报 markdown",
+        ),
+    )
+    assert outsider_result.items == ()
+
+
+def test_personal_and_team_memories_ranked_together() -> None:
+    """个人和团队记忆按统一相关性排序，无来源加权。"""
+
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    team_owner = "tenant-001:team:research-dept"
+    # 团队记忆和成员个人记忆内容相关。
+    service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="周报用表格",
+            subject="weekly-report",
+            source_expression="周报用表格",
+        ),
+    )
+    member = PrincipalContext("tenant-001:member-a", (team_owner,))
+    service.create_memory(
+        member,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="周报用表格更清晰",
+            subject="weekly-report",
+            source_expression="周报用表格更清晰",
+        ),
+    )
+    result = service.recall_memory(
+        member,
+        RecallQuery(
+            profile_id="general-work",
+            query="周报表格",
+        ),
+    )
+    # 两条记忆都召回。
+    assert len(result.items) == 2
+
+
+def test_confirm_review_promotes_to_team_owner() -> None:
+    """review 确认时指定 promote_to_team，记忆写入团队 owner。"""
+
+    repository = InMemoryMemoryRepository()
+    extractor = FakeCandidateExtractor()
+    service = create_memory_service(
+        repository, [GeneralWorkProfile()], candidate_extractor=extractor
+    )
+    member = PrincipalContext(
+        "tenant-001:member-a",
+        ("tenant-001:team:research-dept",),
+    )
+    # 捕获一条候选，产生 pending review（写个人 owner）。
+    extractor.proposals = (
+        candidate_proposal(
+            "周报默认用 markdown",
+            content="周报默认用 markdown",
+            durability=CandidateDurability.UNCERTAIN,
+        ),
+    )
+    service.capture_turn(member, _turn("周报默认用 markdown", turn_id="turn-1"))
+    reviews = service.list_pending_reviews(member)
+    assert len(reviews) == 1
+    # 确认时提升为团队记忆。
+    team_owner_id = "tenant-001:team:research-dept"
+    memory = service.confirm_review(
+        member,
+        reviews[0].review_id,
+        team_id="research-dept",
+        team_owner_ids=frozenset({team_owner_id}),
+    )
+    # 写入的 memory owner 是团队 owner。
+    assert memory.item.owner_id == team_owner_id
+
+
+def test_confirm_review_rejects_unauthorized_team_promotion() -> None:
+    """无权写入指定团队的 principal 提升被拒绝。"""
+
+    repository = InMemoryMemoryRepository()
+    extractor = FakeCandidateExtractor()
+    service = create_memory_service(
+        repository, [GeneralWorkProfile()], candidate_extractor=extractor
+    )
+    # 该 principal 不属于 research-dept 团队。
+    member = PrincipalContext("tenant-001:member-a")
+    extractor.proposals = (
+        candidate_proposal(
+            "周报默认用 markdown",
+            content="周报默认用 markdown",
+            durability=CandidateDurability.UNCERTAIN,
+        ),
+    )
+    service.capture_turn(member, _turn("周报默认用 markdown", turn_id="turn-1"))
+    reviews = service.list_pending_reviews(member)
+    assert len(reviews) == 1
+    with pytest.raises(ValueError, match="not a member"):
+        service.confirm_review(
+            member,
+            reviews[0].review_id,
+            team_id="research-dept",
+            team_owner_ids=frozenset(),  # 不含 research-dept
+        )

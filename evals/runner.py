@@ -171,7 +171,6 @@ def _endpoint_record(case: RelationCase, endpoint) -> MemoryRecord:
         sensitivity_level=SensitivityLevel.INTERNAL,
         valid_from=_NOW,
         valid_until=None,
-        last_verified_at=None,
     )
     evidence = Evidence(
         evidence_id=evidence_id,

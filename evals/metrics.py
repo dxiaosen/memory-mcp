@@ -285,7 +285,6 @@ def _recall_record(case: RecallCase, item: RecallCorpusItem) -> MemoryRecord:
             sensitivity_level=SensitivityLevel.INTERNAL,
             valid_from=observed_at,
             valid_until=None,
-            last_verified_at=None,
         ),
         evidence=(
             Evidence(

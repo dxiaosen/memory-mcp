@@ -409,7 +409,6 @@ def _to_recalled_memory(
         sensitivity_level=revision.sensitivity_level,
         valid_from=revision.valid_from,
         valid_until=revision.valid_until,
-        last_verified_at=revision.last_verified_at,
         sources=(),
         relations=tuple(relations),
         relevance_score=score,

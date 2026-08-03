@@ -45,12 +45,22 @@ class ConfiguredPrincipal(BaseModel):
         min_length=1,
         pattern=IDENTITY_COMPONENT_PATTERN,
     )
+    team_ids: frozenset[str] = frozenset()
 
     @property
     def owner_key(self) -> str:
         """由可信租户和主体身份唯一派生存储隔离键。"""
 
         return derive_owner_key(self.tenant_id, self.subject_id)
+
+    @property
+    def team_owner_keys(self) -> tuple[str, ...]:
+        """该主体所属团队的公共记忆 owner key 集合。"""
+
+        return tuple(
+            derive_team_owner_key(self.tenant_id, team_id)
+            for team_id in sorted(self.team_ids)
+        )
 
 
 class MemoryServerSettings(BaseSettings):
@@ -216,3 +226,18 @@ def derive_owner_key(tenant_id: str, subject_id: str) -> str:
     if not _IDENTITY_COMPONENT_RE.fullmatch(subject_id):
         raise ValueError("subject_id has an invalid format")
     return f"{tenant_id}:{subject_id}"
+
+
+def derive_team_owner_key(tenant_id: str, team_id: str) -> str:
+    """用已校验的租户和团队 ID 生成团队公共记忆 owner key。
+
+    使用 ``team:`` 中缀确保与个人 owner key（``tenant_id:subject_id``）
+    不冲突——个人 subject_id 受 ``IDENTITY_COMPONENT_PATTERN`` 约束
+    不含冒号，而团队 key 的第二段以 ``team:`` 开头。
+    """
+
+    if not _IDENTITY_COMPONENT_RE.fullmatch(tenant_id):
+        raise ValueError("tenant_id has an invalid format")
+    if not _IDENTITY_COMPONENT_RE.fullmatch(team_id):
+        raise ValueError("team_id has an invalid format")
+    return f"{tenant_id}:team:{team_id}"

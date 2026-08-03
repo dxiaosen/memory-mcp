@@ -90,7 +90,7 @@ class InMemoryMemoryRepository:
         memory_id: UUID,
     ) -> MemoryRecord | None:
         record = self._records.get(memory_id)
-        if record is None or record.item.owner_id != principal.owner_id:
+        if record is None or record.item.owner_id not in principal.visible_owner_ids:
             return None
         return record
 
@@ -101,10 +101,11 @@ class InMemoryMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
+        owner_ids = principal.visible_owner_ids
         records = (
             record
             for record in self._records.values()
-            if record.item.owner_id == principal.owner_id
+            if record.item.owner_id in owner_ids
         )
         if active_only:
             resolved_time = effective_at or datetime.now(UTC)
@@ -130,10 +131,11 @@ class InMemoryMemoryRepository:
 
         subject_key = normalize_memory_text(subject) if subject is not None else None
         resolved_time = effective_at or datetime.now(UTC)
+        owner_ids = principal.visible_owner_ids
         records = (
             record
             for record in self._records.values()
-            if record.item.owner_id == principal.owner_id
+            if record.item.owner_id in owner_ids
             and record.item.profile_id == profile_id
             and record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
             and _is_effective(record.current_revision, resolved_time)
@@ -237,10 +239,11 @@ class InMemoryMemoryRepository:
         if per_revision_limit < 1:
             raise ValueError("per_revision_limit must be positive")
         requested = frozenset(revision_ids)
+        owner_ids = principal.visible_owner_ids
         return {
             record.current_revision.revision_id: record.evidence[-per_revision_limit:]
             for record in self._records.values()
-            if record.item.owner_id == principal.owner_id
+            if record.item.owner_id in owner_ids
             and record.current_revision.revision_id in requested
         }
 
@@ -438,9 +441,10 @@ class InMemoryMemoryRepository:
         if not requested:
             return ()
         resolved_time = effective_at or datetime.now(UTC)
+        owner_ids = principal.visible_owner_ids
         summaries: list[MemoryRelationSummary] = []
         for relation in self._relations.values():
-            if relation.owner_id != principal.owner_id:
+            if relation.owner_id not in owner_ids:
                 continue
             if not (
                 relation.source_memory_id in requested
@@ -498,7 +502,7 @@ class InMemoryMemoryRepository:
         memory_id: UUID,
     ) -> Sequence[MemoryHistoryEntry]:
         record = self._records.get(memory_id)
-        if record is None or record.item.owner_id != principal.owner_id:
+        if record is None or record.item.owner_id not in principal.visible_owner_ids:
             return ()
         return tuple(
             sorted(
@@ -722,12 +726,13 @@ class InMemoryMemoryRepository:
         *,
         status: ReviewStatus,
     ) -> Sequence[ReviewItem]:
+        owner_ids = principal.visible_owner_ids
         return tuple(
             sorted(
                 (
                     review
                     for review in self._reviews.values()
-                    if review.owner_id == principal.owner_id and review.status is status
+                    if review.owner_id in owner_ids and review.status is status
                 ),
                 key=lambda value: (value.created_at, value.review_id),
             )
@@ -739,7 +744,7 @@ class InMemoryMemoryRepository:
         review_id: UUID,
     ) -> ReviewItem | None:
         review = self._reviews.get(review_id)
-        if review is None or review.owner_id != principal.owner_id:
+        if review is None or review.owner_id not in principal.visible_owner_ids:
             return None
         return review
 
@@ -989,8 +994,9 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         record: MemoryRecord,
     ) -> None:
-        if record.item.owner_id != principal.owner_id:
-            raise ValueError("record owner must match trusted principal")
+        # 允许写入个人 owner 或 principal 所属团队的 owner（团队提升路径）。
+        if record.item.owner_id not in principal.visible_owner_ids:
+            raise ValueError("record owner must match trusted principal or team")
         profile_types = self._profile_types.get(record.item.profile_id)
         if profile_types is None:
             raise ProfileNotRegisteredError(
@@ -1061,9 +1067,10 @@ class InMemoryMemoryRepository:
         candidate = review.candidate
         revision = memory.current_revision
         source = memory.evidence[0]
+        # owner_id 允许不同：团队提升时 memory 写入团队 owner，
+        # candidate 仍是个人 owner。其他字段必须一致。
         if (
-            memory.item.owner_id != candidate.owner_id
-            or memory.item.profile_id != candidate.profile_id
+            memory.item.profile_id != candidate.profile_id
             or memory.item.subject != candidate.subject
             or memory.item.memory_type != candidate.memory_type
             or revision.content != candidate.content
@@ -1076,7 +1083,6 @@ class InMemoryMemoryRepository:
             or revision.sensitivity_level is not candidate.sensitivity_level
             or revision.valid_from != candidate.valid_from
             or revision.valid_until != candidate.valid_until
-            or revision.last_verified_at != candidate.last_verified_at
             or revision.original_time_expression != candidate.original_time_expression
             or revision.normalized_time != candidate.normalized_time
             or source.conversation_id != candidate.conversation_id

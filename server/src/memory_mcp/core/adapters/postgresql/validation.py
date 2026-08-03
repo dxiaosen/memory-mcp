@@ -112,9 +112,10 @@ def validate_review_memory(
     candidate = review.candidate
     item = memory.item
     revision = memory.current_revision
+    # owner_id 允许不同：团队提升时 memory 写入团队 owner，
+    # candidate 仍是个人 owner。其他字段必须一致。
     if (
-        item.owner_id != candidate.owner_id
-        or item.profile_id != candidate.profile_id
+        item.profile_id != candidate.profile_id
         or item.subject != candidate.subject
         or item.memory_type != candidate.memory_type
         or revision.content != candidate.content
@@ -127,7 +128,6 @@ def validate_review_memory(
         or revision.sensitivity_level is not candidate.sensitivity_level
         or revision.valid_from != candidate.valid_from
         or revision.valid_until != candidate.valid_until
-        or revision.last_verified_at != candidate.last_verified_at
         or revision.original_time_expression != candidate.original_time_expression
         or revision.normalized_time != candidate.normalized_time
     ):
@@ -135,9 +135,9 @@ def validate_review_memory(
     if len(memory.evidence) != 1:
         raise ValueError("confirmed memory requires one source evidence")
     source = memory.evidence[0]
+    # evidence owner 允许与 candidate owner 不同（团队提升）。
     if (
-        source.owner_id != candidate.owner_id
-        or source.conversation_id != candidate.conversation_id
+        source.conversation_id != candidate.conversation_id
         or source.source_turn_id != candidate.source_turn_id
         or source.source_expression != candidate.source_expression
         or source.observed_at != candidate.observed_at
