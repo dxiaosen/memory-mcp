@@ -22,6 +22,8 @@ from memory_mcp.logging import (
 
 MemoryScopeName = Literal["memory:read", "memory:write", "memory:review"]
 MIN_STATIC_TOKEN_LENGTH = 32
+# 身份分量字符集：首字符为字母或数字，其余允许 ``._-`` 但禁止冒号，
+# 保证 derive_owner_key 用 ``:`` 拼接的 tenant:subject 不会被歧义解析。
 IDENTITY_COMPONENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
 _IDENTITY_COMPONENT_RE = re.compile(IDENTITY_COMPONENT_PATTERN)
 
@@ -205,12 +207,12 @@ class MemoryServerSettings(BaseSettings):
                     "non-empty string"
                 )
             try:
-                compiled = re.compile(pattern)
+                re.compile(pattern)
             except re.error as exc:
                 raise ValueError(
                     f"MEMORY_MCP_SENSITIVE_RULES[{index}].pattern is invalid: {exc}"
                 ) from exc
-            rules.append({"category": category, "pattern": compiled.pattern})
+            rules.append({"category": category, "pattern": pattern})
         return rules
 
     @classmethod

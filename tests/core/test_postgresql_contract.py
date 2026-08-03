@@ -780,7 +780,8 @@ def _truncate_memory_tables(database_url: str) -> None:
                             memory_items,
                             memory_profile_relations,
                             memory_profile_types,
-                            memory_profiles
+                            memory_profiles,
+                            memory_capture_runs
             """
         )
 

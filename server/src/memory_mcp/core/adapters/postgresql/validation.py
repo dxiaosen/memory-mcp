@@ -50,6 +50,8 @@ def validate_capture_write(
     principal: PrincipalContext,
     write: CaptureWrite,
 ) -> None:
+    """写入前校验：owner 归属、幂等结构、引用完整性等不变量。"""
+
     result = write.result
     if result.owner_id != principal.owner_id:
         raise ValueError("capture owner must match trusted principal")
@@ -141,6 +143,8 @@ def validate_review_memory(
     review: ReviewItem,
     memory: MemoryRecord,
 ) -> None:
+    """确认 memory 的内容、evidence 与待审 candidate 完全一致。"""
+
     candidate = review.candidate
     item = memory.item
     revision = memory.current_revision

@@ -64,6 +64,8 @@ class StructuredCandidateExtractor:
         return self._schema_version
 
     def extract(self, request: ExtractionRequest) -> tuple[CandidateProposal, ...]:
+        """调用后端并逐条解析候选；非法输出转为 ``InvalidModelOutputError``。"""
+
         try:
             payload = self._backend(request)
             return tuple(_parse_candidate(item) for item in payload)
@@ -107,6 +109,8 @@ class StructuredRelationExtractor:
         self,
         request: RelationExtractionRequest,
     ) -> tuple[RelationProposal, ...]:
+        """调用后端解析关系；超限或非法输出转为 ``InvalidModelOutputError``。"""
+
         try:
             payload = self._backend(request)
             if len(payload) > MAX_RELATION_PROPOSALS:

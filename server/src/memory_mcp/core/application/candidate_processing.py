@@ -1,4 +1,4 @@
-"""候选校验、准入和记忆写入实体化。"""
+"""候选记忆处理：校验模型建议、执行准入决策、产出记忆写入与待确认项。"""
 
 import re
 from collections.abc import Callable, Sequence
@@ -52,7 +52,7 @@ _EXPLICIT_REPLACEMENT = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class CandidateProcessingResult:
-    """一批候选产生的原子写入组成。"""
+    """一批候选处理后的原子写入结果：新记忆、待确认项、重复证据与替换。"""
 
     candidates: tuple[Candidate, ...]
     outcomes: tuple[CaptureOutcome, ...]
@@ -63,7 +63,7 @@ class CandidateProcessingResult:
 
 
 class CandidateMaterializer:
-    """根据可信 Candidate 构造不可变领域写入。"""
+    """将通过校验的候选实体化为不可变的记忆写入结构。"""
 
     def __init__(
         self,
@@ -83,8 +83,9 @@ class CandidateMaterializer:
     ) -> MemoryRecord:
         """构造一条新记忆。
 
-        ``owner_id`` 默认取 candidate 的 owner；团队提升时传入团队 owner key，
-        使该记忆写入团队公共记忆而非个人记忆。
+        ``owner_id`` 默认取候选自身的 owner（即当前用户）；当待确认候选被确认
+        提升到团队时，由调用方传入团队 owner key，使记忆写入团队公共空间而非
+        个人空间。
         """
 
         resolved_owner_id = owner_id or candidate.owner_id
@@ -223,7 +224,7 @@ class CandidateMaterializer:
 
 
 class CandidateProcessor:
-    """校验并分类模型建议，生成原子 Repository 写入。"""
+    """校验候选建议、执行准入与生命周期判定，产出 Repository 原子写入。"""
 
     def __init__(
         self,
@@ -253,6 +254,13 @@ class CandidateProcessor:
         redacted_source: str,
         initial_outcomes: Sequence[CaptureOutcome] = (),
     ) -> CandidateProcessingResult:
+        """处理一批候选建议：校验来源、判定准入、处理重复/替换，产出原子写入。
+
+        对每个建议依次执行：来源校验 -> 敏感校验 -> 准入判定 -> 生命周期去重
+        （重复证据、显式替换或歧义待确认），最终分类为自动保存、待确认或丢弃。
+        ``initial_outcomes`` 携带在候选处理前已确定的结果（如敏感内容拦截），
+        一并合入返回。
+        """
         outcomes = list(initial_outcomes)
         candidates: list[Candidate] = []
         memories: list[MemoryRecord] = []
@@ -343,8 +351,9 @@ class CandidateProcessor:
                     else VerificationStatus.UNVERIFIED
                 ),
                 sensitivity_level=metadata_policy.sensitivity_level,
-                # normalized_time 描述文本中的业务时间（如“下周”），并不表示
-                # 这条记忆从未来才开始可见。有效期始终从可信事件时间计算。
+                # normalized_time 记录的是文本中表达的业务时间（如"下周三"），
+                # 并不意味着记忆要等到那个时间才可见；有效期始终从可信事件时间
+                # （observed_at）开始计算。
                 valid_from=turn.observed_at,
                 valid_until=(
                     turn.observed_at + timedelta(days=metadata_policy.validity_days)
@@ -358,6 +367,8 @@ class CandidateProcessor:
             )
             candidates.append(candidate)
             admission = self._admission_policy.decide(candidate)
+            # 即使通过准入，非用户来源（如助手/工具输出）的候选也降级为待确认，
+            # 避免把推断性内容直接自动写入。
             if (
                 admission.decision is AdmissionDecision.AUTO_SAVE
                 and turn.messages
@@ -374,6 +385,8 @@ class CandidateProcessor:
             scope_already_seen = candidate_scope in candidate_scopes
             candidate_scopes.add(candidate_scope)
             if scope_already_seen:
+                # 同一 subject+类型在本次批次出现多个候选，无法判定唯一目标，
+                # 降级为待确认。
                 if admission.decision is AdmissionDecision.AUTO_SAVE:
                     admission = AdmissionOutcome(
                         AdmissionDecision.PENDING,
@@ -390,11 +403,13 @@ class CandidateProcessor:
                 )
             target = current_scope[0] if len(current_scope) == 1 else None
             if len(current_scope) > 1:
+                # 现存多条同 subject+类型记忆，无法确定应更新哪条。
                 admission = AdmissionOutcome(
                     AdmissionDecision.PENDING,
                     "ambiguous_lifecycle_target",
                 )
             elif target is not None and target.item.memory_id in lifecycle_target_ids:
+                # 本轮已对该目标做过替换/重复证据，再次变更视为歧义。
                 admission = AdmissionOutcome(
                     AdmissionDecision.PENDING,
                     "lifecycle_target_already_changed",
@@ -422,6 +437,7 @@ class CandidateProcessor:
                     admission.decision is AdmissionDecision.AUTO_SAVE
                     and _is_explicit_replacement(candidate)
                 ):
+                    # 用户明确表达替换意图且来源为 EXPLICIT，直接生成替换写入。
                     replacements.append(
                         self._materializer.replacement(target, candidate)
                     )
@@ -435,6 +451,7 @@ class CandidateProcessor:
                         )
                     )
                     continue
+                # 存在同 subject+类型目标但非明确替换，交给用户确认。
                 admission = AdmissionOutcome(
                     AdmissionDecision.PENDING,
                     "ambiguous_lifecycle_conflict",
@@ -490,7 +507,7 @@ def _source_metadata(
     source_expression: str,
     guard: SensitiveContentGuard,
 ) -> dict[str, object]:
-    """只从可信消息块派生来源身份，不信任模型字段。"""
+    """从可信消息块派生候选的来源身份（角色、消息 ID 等），不信任模型自报字段。"""
 
     matching: list[TurnMessage] = []
     for message in turn.messages:
@@ -538,7 +555,7 @@ def _source_metadata(
 
 
 def _is_explicit_replacement(candidate: Candidate) -> bool:
-    """只接受用户明确表达的当前值或默认值变更。"""
+    """判断候选是否构成对已有记忆的显式替换：必须由用户明确表达当前值/默认值变更。"""
 
     return (
         candidate.source_role is MessageRole.USER

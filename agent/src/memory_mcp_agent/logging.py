@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 _MANAGED_HANDLER_ATTRIBUTE = "_memory_mcp_agent_managed"
+# 命中即整体脱敏的字段名；覆盖常见内容与凭证字段，避免日志泄露 prompt/answer。
 _SENSITIVE_FIELD_NAMES = {
     "answer",
     "api_key",
@@ -81,7 +82,10 @@ def log_event(
     event: str,
     **fields: Any,
 ) -> None:
-    """写入确定性排序并按字段名脱敏的单行事件。"""
+    """写入确定性排序并按字段名脱敏的单行事件。
+
+    字段按名称排序保证日志可 diff；命中敏感字段名时整体替换为 [REDACTED]。
+    """
 
     normalized_event = event.strip()
     if not normalized_event:

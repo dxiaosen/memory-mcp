@@ -104,7 +104,7 @@ class MemoryRepository(Protocol):
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
-        """列出当前用户的当前版本，并可排除非活动记忆。"""
+        """列出 owner 名下的当前版本记忆，可选排除非活动记忆。"""
 
         ...
 
@@ -118,7 +118,11 @@ class MemoryRepository(Protocol):
         effective_at: datetime | None = None,
         limit: int | None = None,
     ) -> Sequence[MemoryRecord]:
-        """在 Repository 内先完成 owner/current/active/profile_id/subject 缩小。"""
+        """在 Repository 内按 owner/current/active 再按 profile_id/subject 缩小范围。
+
+        结果自动限定为 principal.owner_key 名下、当前版本且活动状态的记忆；
+        可选的 subject 与 memory_type 进一步收窄命中集合。
+        """
 
         ...
 
@@ -132,7 +136,11 @@ class MemoryRepository(Protocol):
         effective_at: datetime,
         limit: int,
     ) -> RecallCandidateSet:
-        """返回 owner/Profile 内词法优先、近期补齐的有界候选。"""
+        """返回 owner/Profile 范围内词法优先、近期补齐的有界候选。
+
+        principal.owner_key 决定可见集合，profile_id 决定可参与的类型与提示；
+        subject 可选地收窄到同一主题。返回的候选已去重、按来源计数且总量有界。
+        """
 
         ...
 
@@ -197,7 +205,7 @@ class MemoryRepository(Protocol):
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRelationSummary]:
-        """批量返回当前 owner 指定记忆的一跳关系摘要。"""
+        """批量返回 owner 名下指定记忆的一跳关系摘要。"""
 
         ...
 
@@ -206,7 +214,7 @@ class MemoryRepository(Protocol):
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> Sequence[MemoryHistoryEntry]:
-        """返回当前 owner 显式请求的一项完整 revision 历史。"""
+        """返回 owner 显式请求的一项记忆的完整 revision 历史。"""
 
         ...
 

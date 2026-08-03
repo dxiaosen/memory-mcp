@@ -1,4 +1,8 @@
-"""不包含具体记忆配置业务词义的通用领域模型。"""
+"""记忆领域核心模型：身份、版本、来源证据与用户上下文。
+
+这些模型不绑定任何具体记忆配置（Profile）的业务词义，由上层 Profile 赋予
+memory_type、sensitivity 等字段的含义。
+"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +24,7 @@ def _require_aware_datetime(value: datetime, field_name: str) -> datetime:
 
 
 class AssertionKind(StrEnum):
-    """记忆内容的知识性质。"""
+    """记忆内容的知识性质（用户观点 / 用户事实 / 外部事实 / 系统推断）。"""
 
     USER_VIEW = "user_view"
     USER_PROVIDED_FACT = "user_provided_fact"
@@ -37,7 +41,7 @@ class MessageRole(StrEnum):
 
 
 class VerificationStatus(StrEnum):
-    """记忆内容目前获得了哪一类验证，不代表绝对事实。"""
+    """记忆内容已获得的验证类别，与内容是否为真是独立维度。"""
 
     UNVERIFIED = "unverified"
     USER_ASSERTED = "user_asserted"
@@ -46,7 +50,7 @@ class VerificationStatus(StrEnum):
 
 
 class SensitivityLevel(StrEnum):
-    """允许持久化内容的治理级别；禁止内容仍由敏感守卫阻断。"""
+    """允许持久化内容的敏感级别；被敏感守卫阻断的内容即使标为 restricted 仍不会入库。"""
 
     PUBLIC = "public"
     INTERNAL = "internal"
@@ -64,7 +68,7 @@ class EvidenceSourceType(StrEnum):
 
 
 class LifecycleStatus(StrEnum):
-    """由 Core 管理、记忆配置不得重新定义的有效状态。"""
+    """记忆的运行时生命周期状态，由 Core 统一管理，记忆配置不得重新定义。"""
 
     ACTIVE = "active"
     SUPERSEDED = "superseded"
@@ -76,9 +80,8 @@ class LifecycleStatus(StrEnum):
 class PrincipalContext:
     """由应用边界提供的可信当前用户上下文。
 
-     ``owner_id`` 是个人记忆的存储隔离键；``team_owner_ids`` 是该用户所属
-    团队的公共记忆 owner key 集合。召回时用 ``visible_owner_ids`` 同时匹配
-    个人和团队记忆。
+    ``owner_id`` 是个人记忆的存储隔离键；``team_owner_ids`` 是该用户所属团队的
+    公共记忆 owner key 集合。召回时用 ``visible_owner_ids`` 同时匹配个人和团队记忆。
     """
 
     owner_id: str
@@ -100,7 +103,7 @@ class PrincipalContext:
 
 @dataclass(frozen=True, slots=True)
 class MemoryItem:
-    """跨 revision 稳定的逻辑记忆身份。"""
+    """跨 revision 稳定的逻辑记忆身份（同一记忆的不同版本共享此身份）。"""
 
     memory_id: UUID
     owner_id: str
@@ -125,7 +128,7 @@ class MemoryItem:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRevision:
-    """某一时点不可变的记忆内容和状态。"""
+    """某一时点不可变的记忆内容和状态快照，是记忆的一个版本。"""
 
     revision_id: UUID
     memory_id: UUID
@@ -197,7 +200,7 @@ class MemoryRevision:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceDocument:
-    """文档/网页来源的引用元数据，仅 document/web source_type 有值。"""
+    """文档/网页来源的引用元数据，仅当 source_type 为 document/web 时填充。"""
 
     source_uri: str | None = None
     source_title: str | None = None
@@ -230,7 +233,7 @@ class EvidenceDocument:
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
-    """允许保存的来源表达。"""
+    """通过敏感守卫后可持久化的来源表达，用于追溯记忆的原始信息来源。"""
 
     evidence_id: UUID
     memory_id: UUID
@@ -291,7 +294,7 @@ class Evidence:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRecord:
-    """应用层一次返回的完整记忆卡片。"""
+    """应用层一次返回的完整记忆卡片，包含身份、当前版本和来源证据。"""
 
     item: MemoryItem
     current_revision: MemoryRevision

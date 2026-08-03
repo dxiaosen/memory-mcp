@@ -32,6 +32,8 @@ from memory_mcp.core.domain import (
 
 
 def to_capture_result(connection, row: Mapping[str, Any]) -> CaptureResult:
+    """从 capture 行和关联 outcome 行组装完整 CaptureResult。"""
+
     outcomes = tuple(
         CaptureOutcome(
             candidate_id=as_uuid(outcome["candidate_id"]),
@@ -75,6 +77,8 @@ def to_capture_result(connection, row: Mapping[str, Any]) -> CaptureResult:
 
 
 def to_review(row: Mapping[str, Any]) -> ReviewItem:
+    """把 review 行映射为 ReviewItem，含 candidate 和可选文档来源。"""
+
     candidate = Candidate(
         candidate_id=as_uuid(row["candidate_id"]),
         owner_id=row["owner_id"],
@@ -105,6 +109,8 @@ def to_review(row: Mapping[str, Any]) -> ReviewItem:
         source_message_id=row["source_message_id"],
         source_tool_name=row["source_tool_name"],
         source_type=EvidenceSourceType(row["source_type"]),
+        # doc_* 来自 LEFT JOIN 子表；FOR UPDATE 查询（_SELECT_REVIEW_FOR_UPDATE）
+        # 不含 JOIN，此时这些 key 缺失，.get() 返回 None——对话来源本来就没有文档字段。
         source_uri=row.get("doc_source_uri"),
         source_title=row.get("doc_source_title"),
         source_publisher=row.get("doc_source_publisher"),
@@ -128,6 +134,8 @@ def to_record(
     row: Mapping[str, Any],
     owner_id: str,
 ) -> MemoryRecord:
+    """从当前 revision 行组装 MemoryRecord，并加载其 Evidence。"""
+
     item = MemoryItem(
         memory_id=as_uuid(row["memory_id"]),
         owner_id=row["owner_id"],
@@ -161,6 +169,8 @@ def to_recall_candidate(row: Mapping[str, Any]) -> MemoryRecallCandidate:
 
 
 def to_revision(row: Mapping[str, Any]) -> MemoryRevision:
+    """映射 revision 行，兼容带前缀和不带前缀的列别名。"""
+
     observed_at = row.get("revision_observed_at", row.get("observed_at"))
     created_at = row.get("revision_created_at", row.get("created_at"))
     return MemoryRevision(
@@ -191,6 +201,8 @@ def load_evidence(
     owner_id: str,
     revision_id: UUID,
 ) -> tuple[Evidence, ...]:
+    """按 owner + revision 查询并映射全部 Evidence（含可选文档子表）。"""
+
     return tuple(
         to_evidence(source)
         for source in connection.execute(

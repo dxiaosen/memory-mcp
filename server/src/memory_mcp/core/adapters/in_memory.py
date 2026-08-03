@@ -45,7 +45,12 @@ from memory_mcp.core.ports import (
 
 
 class InMemoryMemoryRepository:
-    """严格模拟 owner 范围和记忆配置类型约束，不作为生产存储。"""
+    """严格模拟 owner 范围和记忆配置类型约束，不作为生产存储。
+
+    读取方法用 ``principal.visible_owner_ids`` 集合过滤（支持团队可见记忆），
+    写入校验允许 ``record.item.owner_id`` 是集合内任意值（团队提升路径），
+    与 PostgreSQL 读取用 ``ANY(%s)`` 集合、写入用单值 ``= %s`` 的约定一致。
+    """
 
     def __init__(self) -> None:
         self._records: dict[UUID, MemoryRecord] = {}
@@ -65,6 +70,8 @@ class InMemoryMemoryRepository:
         self._relation_lock = Lock()
 
     def register_profile(self, profile: MemoryProfile) -> None:
+        """注册 profile 的 memory_type 和 relation policy 配置。"""
+
         self._profile_types[profile.profile_id] = frozenset(profile.memory_types)
         self._profile_relation_policies[profile.profile_id] = dict(
             profile.relation_policies
@@ -75,6 +82,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         record: MemoryRecord,
     ) -> None:
+        # _validate_record 允许 record.owner_id 是 visible_owner_ids 集合内
+        # 任意值（团队提升），与读取用集合过滤的约定一致。
         self._validate_record(principal, record)
         if record.item.memory_id in self._records:
             raise ValueError("memory_id must be unique")
@@ -91,6 +100,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
+        """按可见 owner 集合读取单条记忆，不可见时返回 None。"""
+
         record = self._records.get(memory_id)
         if record is None or record.item.owner_id not in principal.visible_owner_ids:
             return None
@@ -103,6 +114,8 @@ class InMemoryMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
+        """列出可见 owner 集合内的全部当前记忆。"""
+
         owner_ids = principal.visible_owner_ids
         records = (
             record
@@ -361,6 +374,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
+        """把可见的 active revision 标记为 revoked。"""
+
         record = self.get(principal, memory_id)
         if record is None:
             return None
@@ -387,6 +402,8 @@ class InMemoryMemoryRepository:
         *,
         effective_at: datetime,
     ) -> MemoryRelation:
+        """显式写入手动关系，端点须在可见 owner 集合内且 active。"""
+
         if relation.origin is not RelationOrigin.MANUAL:
             raise ValueError("explicit relation write must be manual")
         self._validate_relation_write(
@@ -417,6 +434,8 @@ class InMemoryMemoryRepository:
         *,
         revoked_at: datetime,
     ) -> MemoryRelation | None:
+        """把可见的 active relation 标记为 revoked。"""
+
         with self._relation_lock:
             relation = self._relations.get(relation_id)
             if relation is None or relation.owner_id not in principal.visible_owner_ids:
@@ -439,6 +458,8 @@ class InMemoryMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRelationSummary]:
+        """列出与指定 memory 集合关联的关系摘要（含出入方向）。"""
+
         requested = frozenset(memory_ids)
         if not requested:
             return ()
@@ -503,6 +524,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> Sequence[MemoryHistoryEntry]:
+        """按 revision 倒序返回可见记忆的完整历史。"""
+
         record = self._records.get(memory_id)
         if record is None or record.item.owner_id not in principal.visible_owner_ids:
             return ()
@@ -523,6 +546,8 @@ class InMemoryMemoryRepository:
         source_turn_id: str,
         event_id: str | None = None,
     ) -> CaptureResult | None:
+        """按 event_id 或 legacy 四元组查询幂等 capture 结果。"""
+
         return self._captures.get(
             self._capture_lookup_key(
                 owner_id=principal.owner_id,
@@ -538,6 +563,13 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         write: CaptureWrite,
     ) -> CaptureResult:
+        """在一个锁内幂等提交 capture 及其全部派生写入。
+
+        语义与 PostgreSQL 版本对齐：已有且非 REPROCESS_REQUIRED 的
+        capture 直接重放返回；replacement 会同步把引用旧 revision 的
+        active relation 置为 stale。
+        """
+
         with self._capture_lock:
             return self._commit_capture_locked(principal, write)
 
@@ -546,6 +578,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         write: CaptureWrite,
     ) -> CaptureResult:
+        """在已持锁的前提下执行 capture 写入的校验与物化。"""
+
         result = write.result
         if result.owner_id != principal.owner_id:
             raise ValueError("capture owner must match trusted principal")
@@ -728,6 +762,8 @@ class InMemoryMemoryRepository:
         *,
         status: ReviewStatus,
     ) -> Sequence[ReviewItem]:
+        """列出可见 owner 集合内指定状态的待审项。"""
+
         owner_ids = principal.visible_owner_ids
         return tuple(
             sorted(
@@ -745,6 +781,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem | None:
+        """读取单条可见 review。"""
+
         review = self._reviews.get(review_id)
         if review is None or review.owner_id not in principal.visible_owner_ids:
             return None
@@ -761,6 +799,8 @@ class InMemoryMemoryRepository:
         duplicate_evidence: DuplicateEvidenceWrite | None = None,
         replacement: ReplacementWrite | None = None,
     ) -> ReviewItem | None:
+        """完成 review 决议及其派生写入，语义与 PostgreSQL 版本对齐。"""
+
         review = self.get_review(principal, review_id)
         if review is None:
             return None
@@ -894,6 +934,8 @@ class InMemoryMemoryRepository:
         memory_id: UUID,
         expected_revision_id: UUID,
     ) -> MemoryRecord:
+        """确认 lifecycle 目标存在、归属正确、仍是 active 当前版。"""
+
         record = records.get(memory_id)
         if (
             record is None
@@ -910,6 +952,8 @@ class InMemoryMemoryRepository:
         revision: MemoryRevision,
         evidence: Evidence,
     ) -> None:
+        """校验补充 evidence 归属当前 revision。"""
+
         if (
             evidence.owner_id != principal.owner_id
             or evidence.memory_id != revision.memory_id
@@ -923,6 +967,8 @@ class InMemoryMemoryRepository:
         current: MemoryRecord,
         replacement,
     ) -> None:
+        """校验 replacement revision 是 current 的后继且 evidence 一致。"""
+
         revision = replacement.revision
         if (
             revision.owner_id != principal.owner_id
@@ -948,6 +994,8 @@ class InMemoryMemoryRepository:
         records: dict[UUID, MemoryRecord],
         effective_at: datetime,
     ) -> None:
+        """校验关系端点可见、同 profile、符合 policy 且 active 生效。"""
+
         if relation.owner_id not in principal.visible_owner_ids:
             raise ValueError("relation owner must match trusted principal or team")
         if relation.status is not RelationStatus.ACTIVE:
@@ -997,6 +1045,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         record: MemoryRecord,
     ) -> None:
+        """校验 record 归属可见 owner 且 memory_type 已注册。"""
+
         # 允许写入个人 owner 或 principal 所属团队的 owner（团队提升路径）。
         if record.item.owner_id not in principal.visible_owner_ids:
             raise ValueError("record owner must match trusted principal or team")
@@ -1016,6 +1066,8 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         review: ReviewItem,
     ) -> None:
+        """校验 review 归属 principal 且 memory_type 已注册。"""
+
         if review.owner_id != principal.owner_id:
             raise ValueError("review owner must match trusted principal")
         if review.status is not ReviewStatus.PENDING:
@@ -1031,6 +1083,8 @@ class InMemoryMemoryRepository:
     def _capture_key(
         result: CaptureResult,
     ) -> tuple[str, ...]:
+        """从 CaptureResult 提取幂等查找键。"""
+
         return InMemoryMemoryRepository._capture_lookup_key(
             owner_id=result.owner_id,
             profile_id=result.profile_id,
@@ -1048,6 +1102,8 @@ class InMemoryMemoryRepository:
         source_turn_id: str,
         event_id: str | None,
     ) -> tuple[str, ...]:
+        """构造幂等键：有 event_id 用三元组，否则用 legacy 四元组。"""
+
         if event_id is not None:
             return (
                 owner_id,
@@ -1067,6 +1123,8 @@ class InMemoryMemoryRepository:
         review: ReviewItem,
         memory: MemoryRecord,
     ) -> None:
+        """校验确认 memory 的内容、evidence 与待审 candidate 完全一致。"""
+
         candidate = review.candidate
         revision = memory.current_revision
         source = memory.evidence[0]
@@ -1131,6 +1189,8 @@ def _evidence_document_mismatch(
 
 
 def _is_effective(revision: MemoryRevision, at_time: datetime) -> bool:
+    """revision 在指定时刻是否已生效且未过期。"""
+
     return revision.valid_from <= at_time and (
         revision.valid_until is None or revision.valid_until > at_time
     )
@@ -1150,6 +1210,8 @@ def _trigram_similarity(left: str, right: str) -> float:
 
 
 def _trigrams(value: str) -> frozenset[str]:
+    """去空格后取 3-gram 集合，短于 3 字符的退化为整体。"""
+
     compact = value.replace(" ", "")
     if len(compact) < 3:
         return frozenset({compact}) if compact else frozenset()
@@ -1161,7 +1223,7 @@ def _stale_revision_relations(
     principal: PrincipalContext,
     replacement: ReplacementWrite,
 ) -> dict[UUID, MemoryRelation]:
-    """返回物化 replacement 失效边后的关系副本。"""
+    """返回 replacement 后的关系副本，引用旧 revision 的 active 边置为 stale。"""
 
     stale_at = replacement.revision.created_at
     current_revision_id = replacement.revision.revision_id

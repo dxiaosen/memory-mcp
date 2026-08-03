@@ -9,7 +9,9 @@ from memory_mcp.core.domain.capture import CandidateProposal
 from memory_mcp.core.domain.relations import RelationEndpoint, RelationProposal
 from memory_mcp.core.ports.profiles import MemoryRelationPolicy
 
+# 单次关系抽取允许传入的端点上限，防止模型上下文膨胀。
 MAX_RELATION_ENDPOINTS = 40
+# 单次关系抽取返回的关系建议上限，有界输出便于预算控制。
 MAX_RELATION_PROPOSALS = 20
 
 

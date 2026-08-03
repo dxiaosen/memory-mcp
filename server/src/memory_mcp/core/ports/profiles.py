@@ -216,6 +216,8 @@ class ProfileRegistry:
         self._profiles[profile_id] = profile
 
     def get(self, profile_id: str) -> MemoryProfile:
+        """返回已注册的配置；未注册时抛 ProfileNotRegisteredError。"""
+
         try:
             return self._profiles[profile_id]
         except KeyError as exc:
@@ -224,6 +226,8 @@ class ProfileRegistry:
             ) from exc
 
     def validate_memory_type(self, profile_id: str, memory_type: str) -> None:
+        """校验 memory_type 是否被该 Profile 允许，否则抛 InvalidMemoryTypeError。"""
+
         profile = self.get(profile_id)
         if memory_type not in profile.memory_types:
             raise InvalidMemoryTypeError(
@@ -235,6 +239,8 @@ class ProfileRegistry:
         profile_id: str,
         business_progress: str | None,
     ) -> None:
+        """校验 business_progress 是否被该 Profile 允许；None 表示未提供，直接通过。"""
+
         if business_progress is None:
             return
         profile = self.get(profile_id)

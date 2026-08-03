@@ -1,4 +1,7 @@
-"""阶段二候选捕获、准入和待确认领域对象。"""
+"""候选捕获、准入与待确认领域对象。
+
+涵盖从会话轮次到候选建议、可信候选、审核项、捕获结果的完整链路。
+"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,7 +37,7 @@ def _require_aware_datetime(value: datetime, field_name: str) -> datetime:
 
 
 class AdmissionDecision(StrEnum):
-    """候选进入长期记忆前的四种互斥结果。"""
+    """候选进入长期记忆前的准入结果（自动入库 / 待确认 / 丢弃 / 阻断）。"""
 
     AUTO_SAVE = "auto_save"
     PENDING = "pending"
@@ -43,7 +46,7 @@ class AdmissionDecision(StrEnum):
 
 
 class CandidateDurability(StrEnum):
-    """模型对候选持续价值的结构化建议。"""
+    """模型对候选长期价值的结构化建议（持久 / 不确定 / 临时）。"""
 
     DURABLE = "durable"
     UNCERTAIN = "uncertain"
@@ -51,7 +54,7 @@ class CandidateDurability(StrEnum):
 
 
 class ExpressionBasis(StrEnum):
-    """候选是明确表达、弱推断还是含糊表达。"""
+    """候选内容的表达基础（显式表达 / 弱推断 / 含糊表达）。"""
 
     EXPLICIT = "explicit"
     INFERRED = "inferred"
@@ -59,7 +62,7 @@ class ExpressionBasis(StrEnum):
 
 
 class CaptureStatus(StrEnum):
-    """一次 source turn 捕获的持久化处理状态。"""
+    """一次会话轮次捕获的持久化处理状态。"""
 
     COMPLETED = "completed"
     FAILED = "failed"
@@ -67,7 +70,7 @@ class CaptureStatus(StrEnum):
 
 
 class ReviewStatus(StrEnum):
-    """待确认候选的用户处理状态。"""
+    """待确认候选的用户审核状态（待处理 / 已确认 / 已拒绝 / 已过期）。"""
 
     PENDING = "pending"
     CONFIRMED = "confirmed"
@@ -77,7 +80,7 @@ class ReviewStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TurnMessage:
-    """由 MCP adapter 校验后交给 Core 的单个消息块。"""
+    """由 MCP adapter 校验后交给 Core 的单个消息块，是会话轮次的一个组成单元。"""
 
     role: MessageRole
     content: str
@@ -132,7 +135,7 @@ class TurnMessage:
 
 @dataclass(frozen=True, slots=True)
 class TurnEnvelope:
-    """完成的一轮会话；owner 只能由独立的可信 PrincipalContext 提供。"""
+    """一次完成会话轮次的完整信封，owner 只能由独立的可信 PrincipalContext 提供。"""
 
     profile_id: str
     conversation_id: str
@@ -187,7 +190,7 @@ class TurnEnvelope:
 
 @dataclass(frozen=True, slots=True)
 class CandidateProposal:
-    """模型适配器返回的未受信候选建议。"""
+    """模型适配器返回的未受信候选建议，身份字段须由 Core 覆盖后才能成为可信候选。"""
 
     subject: str
     memory_type: str
@@ -250,7 +253,7 @@ class CandidateProposal:
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
-    """用可信身份和 source turn 覆盖模型建议后的原子候选。"""
+    """用可信身份和来源轮次覆盖模型建议后的原子候选，是准入判断的输入。"""
 
     candidate_id: UUID
     owner_id: str
@@ -372,7 +375,7 @@ class Candidate:
 
 @dataclass(frozen=True, slots=True)
 class ReviewItem:
-    """与活动记忆隔离、等待当前用户确认的候选。"""
+    """与活动记忆隔离存储、等待当前用户确认的候选。"""
 
     review_id: UUID
     candidate: Candidate
@@ -406,7 +409,7 @@ class ReviewItem:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionMetadata:
-    """可复现一次结构化抽取所需的版本信息。"""
+    """可复现一次结构化抽取所需的模型与配置版本信息。"""
 
     model_id: str
     prompt_version: str
@@ -431,7 +434,7 @@ class ExtractionMetadata:
 
 @dataclass(frozen=True, slots=True)
 class CaptureOutcome:
-    """不携带正文的单个候选处理结果。"""
+    """单个候选的准入处理结果，不携带记忆正文。"""
 
     candidate_id: UUID
     decision: AdmissionDecision
@@ -459,7 +462,7 @@ class CaptureOutcome:
 
 @dataclass(frozen=True, slots=True)
 class CaptureResult:
-    """一次幂等捕获的可持久化、无正文结果。"""
+    """一次幂等捕获事务的最终结果，不含记忆正文，可安全持久化。"""
 
     capture_id: UUID
     owner_id: str

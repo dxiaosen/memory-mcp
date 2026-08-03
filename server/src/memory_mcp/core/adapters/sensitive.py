@@ -81,6 +81,8 @@ class RegexSensitiveContentGuard:
         return cls(rules=rules or DEFAULT_SENSITIVE_RULES)
 
     def inspect(self, text: str) -> SensitiveInspection:
+        """按规则顺序脱敏，命中片段替换为 ``[REDACTED:<category>]``。"""
+
         redacted = text
         matched_categories: list[str] = []
         for rule in self._rules:

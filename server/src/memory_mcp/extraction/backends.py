@@ -110,6 +110,8 @@ class StructuredModel(Protocol):
 
 
 class SupportsStructuredOutput(Protocol):
+    """LangChain 聊天模型支持结构化输出的最小协议，便于测试桩注入。"""
+
     def with_structured_output(
         self,
         schema: type[BaseModel],

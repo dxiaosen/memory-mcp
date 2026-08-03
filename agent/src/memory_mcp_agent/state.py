@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _STATE_SCHEMA_VERSION = "2"
+# 同时支持 schema v1（旧版无 capture 字段）与 v2（当前版本），保证本地状态平滑升级。
 _SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({"1", _STATE_SCHEMA_VERSION})
 _DEFAULT_TTL = timedelta(hours=24)
 
@@ -26,7 +27,7 @@ class TurnStateConflictError(TurnStateError):
 
 
 class TurnState(BaseModel):
-    """Stop 捕获所需的最小持久状态。"""
+    """本地 outbox 中单轮次的最小持久状态：BeforeRun 存 prompt，AfterRun 追加 capture 字段。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -65,7 +66,11 @@ class TurnState(BaseModel):
 
 
 class TurnStateStore:
-    """使用摘要文件名和原子替换保存短期轮次状态。"""
+    """本地 outbox：使用摘要文件名和原子替换保存短期轮次状态。
+
+    每个 BeforeRun 写入 prompt，AfterRun 把 final_output 和 observed_at
+    原子追加到同一文件；投递成功后删除，失败则保留待下次 Stop 重投。
+    """
 
     def __init__(
         self,
@@ -110,7 +115,7 @@ class TurnStateStore:
         observed_at: datetime,
         profile_id: str | None,
     ) -> TurnState:
-        """在网络调用前原子保存固定的完整捕获 payload。"""
+        """在网络调用前原子保存固定的完整捕获 payload，保证 outbox 可重投。"""
 
         existing = self.load(session_id, turn_id)
         if existing is None:
@@ -209,6 +214,7 @@ class TurnStateStore:
             state = TurnState.model_validate_json(raw)
         except ValueError as exc:
             raise TurnStateError("invalid_turn_state") from exc
+        # 兼容历史版本：v1（仅 prompt）与 v2（含 capture）均允许读取。
         if state.schema_version not in _SUPPORTED_STATE_SCHEMA_VERSIONS:
             raise TurnStateError("unsupported_turn_state_version")
         if state.session_id != session_id or state.turn_id != turn_id:
@@ -246,5 +252,7 @@ class TurnStateStore:
         os.chmod(self._root, 0o700)
 
     def _path(self, session_id: str, turn_id: str) -> Path:
+        """用 session_id/turn_id 的摘要作为文件名，避免原始标识泄露到文件系统。"""
+
         digest = hashlib.sha256(f"{session_id}\x1f{turn_id}".encode()).hexdigest()
         return self._root / f"{digest}.json"

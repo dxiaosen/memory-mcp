@@ -1,4 +1,4 @@
-"""服务端内部的有界记忆维护用例。"""
+"""服务端内部的有界记忆维护用例：过期清理与待确认回收。"""
 
 import logging
 from collections.abc import Callable
@@ -16,7 +16,7 @@ PENDING_REVIEW_RETENTION = timedelta(days=30)
 
 
 class MemoryMaintenanceService:
-    """按可信时间执行一次跨 owner、无正文的维护批次。"""
+    """按可信时间执行一次有界维护批次：清理过期记忆、关系与超期待确认项。"""
 
     def __init__(
         self,
@@ -28,6 +28,7 @@ class MemoryMaintenanceService:
         self._clock = clock
 
     def run_once(self) -> MaintenanceResult:
+        """执行一批维护操作，返回过期与回收计数。"""
         started_at = perf_counter()
         effective_at = self._clock()
         result = self._repository.maintain(

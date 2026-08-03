@@ -1,4 +1,4 @@
-"""Pending review MCP 工具。"""
+"""待确认记忆候选的 MCP 工具：列表、确认与拒绝。"""
 
 import asyncio
 from typing import Any
@@ -90,6 +90,9 @@ class ReviewTools(ToolSupport):
                     "confirm_pending_memory",
                 )
                 identifier = UUID(review_id)
+                # promote_to_team 指定目标团队 ID：非空时把候选提升为团队共享记忆，
+                # 并以当前 principal 的 team_owner_ids 作为合法团队所有者；为 None 则
+                # 落地为个人记忆，不带团队所有者。
                 memory = await asyncio.to_thread(
                     self._service.confirm_review,
                     principal.to_core(),

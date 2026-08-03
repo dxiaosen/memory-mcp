@@ -1,4 +1,4 @@
-"""待确认记忆用例协调器。"""
+"""待确认候选用例：列出、读取、确认（含团队提升）与拒绝待确认记忆。"""
 
 import logging
 from collections.abc import Callable, Sequence
@@ -28,7 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ReviewService:
-    """在保持 Repository 原子性的前提下列出并处理待确认候选。"""
+    """管理待确认候选的生命周期：列出、确认（可提升到团队）或拒绝。"""
 
     def __init__(
         self,
@@ -47,6 +47,7 @@ class ReviewService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
+        """列出当前用户所有待确认的候选。"""
         reviews = self._repository.list_reviews(
             principal,
             status=ReviewStatus.PENDING,
@@ -62,6 +63,7 @@ class ReviewService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """读取一条待确认候选的详情。"""
         review = self._repository.get_review(principal, review_id)
         if review is None:
             raise ReviewNotFoundError("review is unavailable")
@@ -79,6 +81,12 @@ class ReviewService:
         team_id: str | None = None,
         team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
+        """确认一条待确认候选并写入记忆。
+
+        当传入 ``team_id`` 时执行团队提升：校验当前 principal 属于该团队，并把
+        记忆的 owner 从个人改为团队，使记忆写入团队公共空间。确认时按现有记忆
+        的情况决定是新建、追加重复证据还是生成替换。
+        """
         review = self._repository.get_review(principal, review_id)
         if review is None:
             raise ReviewNotFoundError("review is unavailable")
@@ -99,9 +107,9 @@ class ReviewService:
             review.candidate.profile_id,
             review.candidate.business_progress,
         )
-        # 团队提升：校验该 principal 有权写入指定团队，并确定写入用的 owner。
-        # 不反推 tenant_id 也不依赖 server.settings，直接从 principal 已携带的
-        # team_owner_ids 里匹配 ``:team:team_id`` 后缀的 owner key。
+        # 团队提升：确定写入用的 owner。不反推 tenant_id，也不依赖
+        # server.settings，而是直接从 principal 携带的 team_owner_ids 中匹配
+        # 形如 ``:team:{team_id}`` 后缀的 owner key；匹配不到则视为无权写入。
         target_owner_id = principal.owner_id
         if team_id is not None:
             suffix = f":team:{team_id}"
@@ -180,6 +188,7 @@ class ReviewService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """拒绝一条待确认候选，标记为已驳回（幂等）。"""
         existing = self._repository.get_review(principal, review_id)
         if existing is None:
             raise ReviewNotFoundError("review is unavailable")

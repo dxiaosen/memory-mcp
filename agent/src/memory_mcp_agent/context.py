@@ -18,6 +18,8 @@ class HookContext(BaseModel):
 
     @property
     def run_key(self) -> tuple[str, str, str]:
+        """用于去重和幂等的稳定三元组：(profile_id, conversation_id, turn_id)。"""
+
         return (
             self.profile_id or "<server-default>",
             self.conversation_id,

@@ -94,7 +94,12 @@ def create_pool(
 
 
 class PostgreSQLMemoryRepository:
-    """以 PostgreSQL 事务和约束作为持久化边界。"""
+    """以 PostgreSQL 事务和约束作为持久化边界。
+
+    读取查询用 ``owner_id = ANY(%s)`` 配合 ``principal.visible_owner_ids``
+    集合过滤（支持团队可见记忆）；写入语句用单值 ``owner_id = %s``，
+    确保数据归属精确到调用 principal 或其授权的团队 owner。
+    """
 
     def __init__(self, pool: PostgreSQLPool) -> None:
         self._pool = pool
@@ -112,6 +117,8 @@ class PostgreSQLMemoryRepository:
             validate_schema(connection)
 
     def register_profile(self, profile: MemoryProfile) -> None:
+        """幂等注册 profile 及其 memory_type/relation_type 集合。"""
+
         with self._pool.connection() as connection:
             connection.execute(
                 """
@@ -183,6 +190,7 @@ class PostgreSQLMemoryRepository:
         record: MemoryRecord,
     ) -> None:
         # 允许写入个人 owner 或 principal 所属团队的 owner（团队提升路径）。
+        # 写入用单值 owner_id = %s（见各类 INSERT 语句），读取才用 ANY(%s) 集合。
         if record.item.owner_id not in principal.visible_owner_ids:
             raise ValueError("record owner must match trusted principal or team")
         with self._pool.connection() as connection:
@@ -202,6 +210,8 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
+        """按 owner 可见集合读取单条当前记忆，不可见时返回 None。"""
+
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_CURRENT_RECORD} WHERE i.owner_id = ANY(%s) AND i.memory_id = %s",
@@ -218,6 +228,8 @@ class PostgreSQLMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRecord]:
+        """列出 owner 可见集合内的全部当前记忆。"""
+
         conditions = ["i.owner_id = ANY(%s)"]
         parameters: list[object] = [list(principal.visible_owner_ids)]
         if active_only:
@@ -248,6 +260,12 @@ class PostgreSQLMemoryRepository:
         effective_at: datetime | None = None,
         limit: int | None = None,
     ) -> Sequence[MemoryRecord]:
+        """在 owner/profile 边界内查找活动且生效的当前记忆。
+
+        subject 在 SQL 侧先做空白归一化粗筛，回到 Python 侧再用
+        ``normalize_memory_text`` 精确比对，避免数据库 collation 差异。
+        """
+
         if limit is not None and limit < 1:
             raise ValueError("limit must be positive")
         conditions = [
@@ -354,6 +372,8 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
+        """把可见的 active revision 标记为 revoked，返回更新后的记录。"""
+
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_CURRENT_RECORD} "
@@ -388,6 +408,8 @@ class PostgreSQLMemoryRepository:
         *,
         effective_at: datetime,
     ) -> MemoryRelation:
+        """显式写入手动关系，端点须在可见 owner 集合内且 active。"""
+
         if relation.owner_id not in principal.visible_owner_ids:
             raise ValueError("relation owner must match trusted principal or team")
         if relation.status is not RelationStatus.ACTIVE:
@@ -422,6 +444,8 @@ class PostgreSQLMemoryRepository:
         *,
         revoked_at: datetime,
     ) -> MemoryRelation | None:
+        """把可见的 active relation 标记为 revoked。"""
+
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_RELATION} "
@@ -457,6 +481,8 @@ class PostgreSQLMemoryRepository:
         active_only: bool,
         effective_at: datetime | None = None,
     ) -> Sequence[MemoryRelationSummary]:
+        """列出与指定 memory 集合关联的关系摘要（含出入方向）。"""
+
         requested = frozenset(memory_ids)
         if not requested:
             return ()
@@ -549,6 +575,8 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> Sequence[MemoryHistoryEntry]:
+        """按 revision 倒序返回可见记忆的完整历史（含每版 evidence）。"""
+
         with self._pool.connection() as connection:
             rows = connection.execute(
                 """
@@ -590,6 +618,8 @@ class PostgreSQLMemoryRepository:
         source_turn_id: str,
         event_id: str | None = None,
     ) -> CaptureResult | None:
+        """按 event_id 或 legacy 四元组查询幂等 capture 结果。"""
+
         if event_id is not None:
             where_clause = """
                 owner_id = %s
@@ -634,6 +664,14 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         write: CaptureWrite,
     ) -> CaptureResult:
+        """在一个事务内幂等提交 capture 及其全部派生写入。
+
+        用 advisory lock 防止同一幂等键并发写入；已存在且未标记
+        ``REPROCESS_REQUIRED`` 的 capture 直接重放返回，需要重处理时
+        先清理旧 outcome 再重新写入。replacement 会同步把引用旧
+        revision 的 active relation 置为 stale。
+        """
+
         validate_capture_write(principal, write)
         result = write.result
         stale_relation_count = 0
@@ -849,6 +887,8 @@ class PostgreSQLMemoryRepository:
         *,
         status: ReviewStatus,
     ) -> Sequence[ReviewItem]:
+        """列出 owner 可见集合内指定状态的待审项。"""
+
         with self._pool.connection() as connection:
             rows = connection.execute(
                 f"{_SELECT_REVIEW} "
@@ -863,6 +903,8 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem | None:
+        """读取单条可见 review（含 candidate 和可选文档来源）。"""
+
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_REVIEW} WHERE ri.owner_id = ANY(%s) AND ri.review_id = %s",
@@ -883,6 +925,13 @@ class PostgreSQLMemoryRepository:
         duplicate_evidence: DuplicateEvidenceWrite | None = None,
         replacement: ReplacementWrite | None = None,
     ) -> ReviewItem | None:
+        """在一个事务内完成 review 决议及其派生写入。
+
+        CONFIRMED 需要 memory/duplicate_evidence/replacement 三选一；
+        REJECTED 不允许携带任何派生写入。用 FOR UPDATE 锁定 review 行，
+        确保并发决议不会产生竞态。
+        """
+
         if status not in {ReviewStatus.CONFIRMED, ReviewStatus.REJECTED}:
             raise ValueError("review resolution must be confirmed or rejected")
         with self._pool.connection() as connection:
@@ -1012,6 +1061,8 @@ class PostgreSQLMemoryRepository:
         connection,
         result: CaptureResult,
     ) -> None:
+        """插入一条 capture run 行。"""
+
         connection.execute(
             """
             INSERT INTO memory_capture_runs (
@@ -1049,6 +1100,8 @@ class PostgreSQLMemoryRepository:
 
     @classmethod
     def _insert_record(cls, connection, record: MemoryRecord) -> None:
+        """插入 memory_item 及其当前 revision 和 evidence。"""
+
         item = record.item
         revision = record.current_revision
         connection.execute(
@@ -1076,6 +1129,8 @@ class PostgreSQLMemoryRepository:
         revision: MemoryRevision,
         evidence: tuple[Evidence, ...],
     ) -> None:
+        """插入 revision 行（首条 evidence 作为 primary_evidence_id）。"""
+
         connection.execute(
             """
             INSERT INTO memory_revisions (
@@ -1122,6 +1177,8 @@ class PostgreSQLMemoryRepository:
         connection,
         evidence: tuple[Evidence, ...],
     ) -> None:
+        """批量插入 evidence 行，有文档来源的再写 evidence_documents 子表。"""
+
         _executemany(
             connection,
             """
@@ -1193,6 +1250,8 @@ class PostgreSQLMemoryRepository:
         capture_id: UUID,
         review: ReviewItem,
     ) -> None:
+        """插入 review_item 行，有文档来源的再写 review_item_documents 子表。"""
+
         candidate = review.candidate
         connection.execute(
             """
@@ -1487,6 +1546,8 @@ def _insert_relation(
 def _executemany(
     connection, query: str, parameters: Sequence[Sequence[object]]
 ) -> None:
+    """批量执行，参数为空时跳过以避免无意义的往返。"""
+
     if not parameters:
         return
     with connection.cursor() as cursor:
@@ -1556,6 +1617,8 @@ FROM memory_relations
 
 
 def _load_relation(row: Mapping[str, Any]) -> MemoryRelation:
+    """把 relation 行映射为 MemoryRelation，自动 origin 关系构造 provenance。"""
+
     origin = RelationOrigin(row["origin"])
     provenance = (
         RelationProvenance(

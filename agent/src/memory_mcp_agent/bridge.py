@@ -21,7 +21,7 @@ from memory_mcp_agent.settings import MemoryHookSettings
 
 @dataclass(frozen=True, slots=True)
 class BeforeRunResult:
-    """一次性注入的上下文或稳定的 fail-open 警告。"""
+    """BeforeRun 的结果：成功时注入召回上下文，失败时返回 fail-open 警告。"""
 
     memory_context: str | None
     recalled_count: int
@@ -31,7 +31,7 @@ class BeforeRunResult:
 
 @dataclass(frozen=True, slots=True)
 class AfterRunResult:
-    """顶层任务成功后返回一次的捕获回执。"""
+    """AfterRun 的结果：顶层任务成功后返回一次的捕获回执。"""
 
     event_id: str
     status: str
@@ -46,7 +46,7 @@ class AfterRunResult:
 
 
 class MemoryHookRunConflictError(ValueError):
-    """同一个顶层任务标识被不同 payload 重用。"""
+    """同一个顶层任务标识被不同 payload 重用时抛出，用于保护幂等语义。"""
 
     def __init__(self, phase: str) -> None:
         self.phase = phase
@@ -66,7 +66,12 @@ class _AfterTask:
 
 
 class MemoryHookBridge:
-    """按顶层任务去重 Hook，并执行有界 fail-open 重试。"""
+    """按顶层任务去重 Hook，并执行有界 fail-open 重试。
+
+    同一个 run_key 的 Before/After 各只执行一次；若调用方以不同 payload
+    重用同一 run_key，则抛出 MemoryHookRunConflictError 以保证幂等。
+    当 fail_open 开启时，记忆服务的异常不会中断上层 Agent 任务。
+    """
 
     def __init__(
         self,
@@ -162,6 +167,7 @@ class MemoryHookBridge:
         context: HookContext,
         user_input: str,
     ) -> BeforeRunResult:
+        """执行一次召回；fail_open 关闭时向上抛出，开启时返回警告。"""
         try:
             response = await self._client.recall_memory(
                 profile_id=context.profile_id,
@@ -198,6 +204,7 @@ class MemoryHookBridge:
         final_output: str,
         observed_at: datetime,
     ) -> AfterRunResult:
+        """对可重试错误做有界重试，最终失败则按 fail_open 决定抛出或降级。"""
         event_id = _event_id(context)
         final_error: MemoryHookClientError | None = None
         attempts = 0
@@ -279,11 +286,15 @@ class MemoryHookBridge:
 
 
 def _event_id(context: HookContext) -> str:
+    """由 run_key 生成确定性 event_id，保证同一轮次重复投递幂等。"""
+
     identity = "\x1f".join(context.run_key)
     return f"memory-hook:{uuid5(NAMESPACE_URL, identity)}"
 
 
 def _fingerprint(payload: dict[str, object]) -> str:
+    """对 payload 计算稳定指纹，用于检测 run_key 是否被不同 payload 重用。"""
+
     canonical = json.dumps(
         payload,
         ensure_ascii=False,

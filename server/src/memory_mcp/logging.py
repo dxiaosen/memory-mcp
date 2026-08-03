@@ -171,7 +171,11 @@ def content_logging_enabled() -> bool:
 
 
 def stable_reference(value: str) -> str:
-    """返回稳定短引用且不记录原始标识。"""
+    """返回稳定的 12 位短引用，用于日志中关联身份而不泄露原始值。
+
+    使用 SHA-256 的前 12 个十六进制字符，同一输入恒定不变；截断后
+    不具备抗碰撞强度，仅用于审计关联而非安全索引。
+    """
 
     normalized = value.strip()
     if not normalized:
@@ -189,6 +193,8 @@ def _remove_managed_handlers(logger: logging.Logger) -> None:
 
 
 def _is_sensitive_field(field_name: str) -> bool:
+    """按名称和后缀判断字段是否敏感，敏感字段在日志中脱敏为 ``[REDACTED]``。"""
+
     normalized = field_name.casefold()
     return normalized in _SENSITIVE_FIELD_NAMES or normalized.endswith(
         _SENSITIVE_FIELD_SUFFIXES

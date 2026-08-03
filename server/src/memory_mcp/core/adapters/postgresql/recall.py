@@ -42,7 +42,12 @@ def find_recall_candidates(
     effective_at: datetime,
     limit: int,
 ) -> RecallCandidateSet:
-    """用索引词法候选优先，并从近期记录补满剩余容量。"""
+    """用 trigram 词法候选优先，再从近期记录补满剩余配额。
+
+    先以 ``pg_trgm`` 相似度选取 lexical 候选（上限 ``lexical_limit``），
+    再用 NOT EXISTS 排除已命中的记录，按 observed_at 补齐到 ``limit``。
+    owner 范围用 ``visible_owner_ids`` 集合过滤，支持团队可见记忆。
+    """
 
     if limit < 1:
         raise ValueError("limit must be positive")
@@ -139,7 +144,11 @@ def load_recall_evidence(
     revision_ids: tuple[UUID, ...],
     per_revision_limit: int,
 ) -> dict[UUID, tuple[Evidence, ...]]:
-    """一次查询每个 selected revision 最近的有限 Evidence。"""
+    """一次查询每个 selected revision 最近的有限 Evidence。
+
+    读取用 ``owner_id = ANY(%s)`` 配合 ``visible_owner_ids`` 集合过滤，
+    与写入路径用单值 ``owner_id = %s`` 的约定区分。
+    """
 
     if per_revision_limit < 1:
         raise ValueError("per_revision_limit must be positive")

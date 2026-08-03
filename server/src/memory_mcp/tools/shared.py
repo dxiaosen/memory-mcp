@@ -53,6 +53,8 @@ class ToolSupport:
 
     @staticmethod
     def _authorize(required_scope: MemoryScope) -> RequestPrincipal:
+        """解析当前请求身份并校验所需 scope，返回已授权的 principal。"""
+
         principal = current_request_principal()
         require_scope(principal, required_scope)
         return principal
@@ -65,6 +67,8 @@ class ToolSupport:
         *,
         event_id: str | None = None,
     ) -> float:
+        """记录工具调用开始日志，返回计时起点。"""
+
         started_at = perf_counter()
         fields: dict[str, object] = {
             "client_ref": stable_reference(principal.client_id),
@@ -93,6 +97,8 @@ class ToolSupport:
         result_count: int,
         **fields: object,
     ) -> None:
+        """记录工具调用完成日志，包含耗时和结果计数。"""
+
         log_event(
             _LOGGER,
             logging.INFO,
@@ -113,6 +119,8 @@ class ToolSupport:
         tool_name: str,
         error: Exception,
     ) -> ErrorResponse:
+        """把异常映射为对外 ErrorResponse 并按严重级别记录日志。"""
+
         code, message, retryable = _map_error(error)
         # 已知边界错误是预期的业务异常，记 WARNING；未知异常是潜在 bug，记 ERROR。
         log_level = (
@@ -148,6 +156,8 @@ class ToolSupport:
 
 
 def request_id(context: Context) -> str:
+    """返回当前请求的稳定标识，缺省时生成一次性 UUID。"""
+
     value = getattr(context, "request_id", None)
     return str(value) if value is not None else str(uuid4())
 
@@ -166,6 +176,12 @@ def enforce_strict_tool_arguments(server: FastMCP[Any]) -> None:
 
 
 def _map_error(error: Exception) -> tuple[ErrorCode, str, bool]:
+    """把内部异常映射为对外错误码、可展示消息和是否可重试。
+
+    已知边界异常按语义映射；明确的临时异常（网络/超时）标记可重试；
+    其余未知异常 fail fast，避免把编程错误当作临时故障反复重试。
+    """
+
     if isinstance(error, MemoryMcpBoundaryError):
         return error.code, error.public_message, error.retryable
     if isinstance(error, ProfileNotRegisteredError):

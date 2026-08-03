@@ -23,6 +23,7 @@ class MemoryHookSettings(BaseSettings):
     )
     profile_id: str | None = Field(default=None, min_length=1)
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    # fail_open 默认开启：记忆服务不可用时降级为 warning，不阻断 Agent。
     fail_open: bool = True
     recall_max_items: int = Field(default=5, ge=1, le=10)
     recall_token_budget: int = Field(default=600, ge=64, le=8_000)

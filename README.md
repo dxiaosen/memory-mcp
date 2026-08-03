@@ -166,6 +166,9 @@ OpenSpec 只承担规范和变更管理：
 - [策略路由与 Recall 加固](openspec/changes/harden-policy-routing-recall/)
 - [记忆维护与混合召回](openspec/changes/harden-memory-maintenance-recall/)
 - [召回与交付可靠性](openspec/changes/harden-recall-delivery-reliability/)
+- [中文分词与召回加固](openspec/changes/harden-recall-chinese-tokenization/)
+- [多层记忆](openspec/changes/add-multi-owner-memory/)
+- [Evidence 文档拆分](openspec/changes/split-evidence-document-metadata/)
 
 ## 验证
 
@@ -184,6 +187,9 @@ openspec-cn validate benchmark-investment-memory-quality --strict
 openspec-cn validate harden-policy-routing-recall --strict
 openspec-cn validate harden-memory-maintenance-recall --strict
 openspec-cn validate harden-recall-delivery-reliability --strict
+openspec-cn validate harden-recall-chinese-tokenization --strict
+openspec-cn validate add-multi-owner-memory --strict
+openspec-cn validate split-evidence-document-metadata --strict
 .venv/bin/python -m evals.runner
 ```
 

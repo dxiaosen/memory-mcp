@@ -16,6 +16,7 @@ from memory_mcp_agent.settings import MemoryHookSettings
 from memory_mcp_agent.state import TurnState, TurnStateError, TurnStateStore
 
 _LOGGER = logging.getLogger(__name__)
+# 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
 _EVENT_PHASES: dict[str, Literal["before_run", "after_run"]] = {
     "UserPromptSubmit": "before_run",
     "BeforeRun": "before_run",
@@ -68,16 +69,17 @@ class AgentHookInput(BaseModel):
     hook_event_name: str = Field(min_length=1)
     cwd: str = Field(min_length=1)
 
-    # 会话标识：session_id 是首批宿主字段，conversation_id 是通用合同字段。
+    # 会话标识：Codex/Claude Code 用 session_id，通用合同用 conversation_id，二者取一。
     session_id: str | None = Field(default=None, min_length=1)
     conversation_id: str | None = Field(default=None, min_length=1)
 
-    # 轮次标识：Codex、Claude Code 和通用合同各自使用以下一个字段。
+    # 轮次标识：run_id（通用）、turn_id（Codex）、prompt_id（Claude Code）三选一。
     turn_id: str | None = Field(default=None, min_length=1)
     prompt_id: str | None = Field(default=None, min_length=1)
     run_id: str | None = Field(default=None, min_length=1)
 
-    # 内容字段：同时接受首批宿主字段和通用合同字段。
+    # 内容字段：prompt（Codex/Claude Code）与 user_input（通用合同）取一；
+    # last_assistant_message（Codex/Claude Code）与 final_output（通用合同）取一。
     prompt: str | None = None
     user_input: str | None = None
     last_assistant_message: str | None = None
@@ -147,7 +149,11 @@ def render_command_hook_output(outcome: AgentHookOutcome) -> HookOutput:
 
 
 class AgentHookAdapter:
-    """在通用顶层轮次事件和 Memory Hook Bridge 之间接线。"""
+    """在通用顶层轮次事件和 Memory Hook Bridge 之间接线。
+
+    负责 BeforeRun 前写本地 outbox、AfterRun 前取出 staged payload 投递，
+    并在后续 Stop 事件中有界重投一个待发项（失败不阻断当前轮次）。
+    """
 
     def __init__(
         self,
@@ -252,7 +258,10 @@ class AgentHookAdapter:
         return AgentHookOutcome()
 
     async def _retry_one_pending(self, event: AgentTurnEvent) -> None:
-        """后续 Stop 有界重投一个旧 payload，任何失败都不阻断当前轮次。"""
+        """后续 Stop 有界重投一个旧 payload，任何失败都不阻断当前轮次。
+
+        只处理当前轮次之外的待发项；这是 outbox 投递的最后补偿手段。
+        """
 
         pending = self._state.pending_captures(
             exclude=(event.conversation_id, event.turn_id),
@@ -302,7 +311,7 @@ class AgentHookAdapter:
         state: TurnState,
         result: AfterRunResult,
     ) -> str | None:
-        """只有权威终态删除本地 payload，其余状态等待后续 Stop。"""
+        """只有权威终态删除本地 payload，其余状态等待后续 Stop 重投。"""
 
         if result.status == "completed":
             self._state.delete(state.session_id, state.turn_id)
@@ -349,6 +358,7 @@ def _one_value(
     missing_code: str,
     conflict_code: str,
 ) -> str:
+    """从多个候选字段中取唯一非空值；全空报 missing，多于一个报 conflict。"""
     value = _optional_one_value(values, conflict_code=conflict_code)
     if value is None or not value.strip():
         raise AgentHookInputError(missing_code)
@@ -360,6 +370,7 @@ def _optional_one_value(
     *,
     conflict_code: str,
 ) -> str | None:
+    """与 _one_value 同样的归一化，但允许全部缺失（返回 None）。"""
     present = {value for value in values if value is not None}
     if len(present) > 1:
         raise AgentHookInputError(conflict_code)

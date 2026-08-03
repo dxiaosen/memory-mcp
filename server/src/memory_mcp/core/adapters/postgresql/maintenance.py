@@ -13,7 +13,12 @@ def run_maintenance(
     review_cutoff: datetime,
     limit: int,
 ) -> MaintenanceResult:
-    """物化一批到期 revision/review 和依赖关系终态。"""
+    """物化一批到期 revision/review 和依赖关系终态。
+
+    revision 和 review 各占 ``limit`` 的一半配额，用
+    ``FOR UPDATE SKIP LOCKED`` 避免并发维护事务争抢同一行。
+    revision 过期后，引用它的 active relation 同步置为 stale。
+    """
 
     if limit < 1:
         raise ValueError("limit must be positive")

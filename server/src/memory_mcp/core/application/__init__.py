@@ -1,4 +1,4 @@
-"""通用记忆应用用例。"""
+"""记忆应用层：手动记忆操作、捕获、召回、维护与准入策略等用例的公共入口。"""
 
 from memory_mcp.core.application.admission import (
     AdmissionOutcome,

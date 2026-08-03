@@ -1,4 +1,4 @@
-"""Profile 驱动的自动关系端点选择与保守准入。"""
+"""Profile 驱动的自动关系抽取：端点选择、模型抽取与保守准入。"""
 
 import re
 from collections.abc import Callable
@@ -47,7 +47,7 @@ _NEGATED_RELATION_EVIDENCE = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class AutomaticRelationPlan:
-    """一次可选关系抽取产生的可信写入。"""
+    """一次关系抽取产出的计划：含准入通过的关系、原始建议与统计计数。"""
 
     endpoint_count: int = 0
     proposal_count: int = 0
@@ -57,7 +57,7 @@ class AutomaticRelationPlan:
 
 
 class AutomaticRelationPlanner:
-    """只把模型建议转换为符合 Profile 合同的活动关系。"""
+    """把模型关系建议转换为符合 Profile 合约的可信活动关系。"""
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class AutomaticRelationPlanner:
         subject_hint: str | None,
         trusted_user_sources: tuple[str, ...] | None,
     ) -> AutomaticRelationPlan:
-        """在有合法端点组合时抽取，并保守准入关系。"""
+        """在有合法端点组合时调用模型抽取关系，并保守准入通过的建议。"""
 
         if not profile.relation_policies:
             return AutomaticRelationPlan()
@@ -152,6 +152,7 @@ class AutomaticRelationPlanner:
         same_capture_memories: tuple[MemoryRecord, ...],
         effective_at: datetime,
     ) -> tuple[MemoryRecord, ...]:
+        """选取关系端点：优先本轮产生的新记忆，再按相关性补充已存在的记忆。"""
         eligible_types = frozenset(
             memory_type
             for policy in profile.relation_policies.values()
@@ -212,6 +213,7 @@ class AutomaticRelationPlanner:
         proposals: tuple[RelationProposal, ...],
         trusted_user_sources: tuple[str, ...] | None,
     ) -> tuple[tuple[MemoryRelation, ...], int]:
+        """对模型建议逐条做保守准入校验，返回通过的关系与被跳过的计数。"""
         endpoint_by_id = {record.item.memory_id: record for record in endpoint_records}
         accepted: list[MemoryRelation] = []
         accepted_keys: set[tuple[UUID, UUID, str]] = set()
@@ -302,6 +304,7 @@ class AutomaticRelationPlanner:
 
 
 def _endpoint(record: MemoryRecord) -> RelationEndpoint:
+    """把记忆记录转换为关系抽取所需的端点描述。"""
     return RelationEndpoint(
         memory_id=record.item.memory_id,
         memory_type=record.item.memory_type,
@@ -311,6 +314,7 @@ def _endpoint(record: MemoryRecord) -> RelationEndpoint:
 
 
 def _is_effective_record(record: MemoryRecord, effective_at: datetime) -> bool:
+    """判断记忆在给定时间点是否处于有效期内且状态为活动。"""
     revision = record.current_revision
     return (
         revision.lifecycle_status is LifecycleStatus.ACTIVE
@@ -323,6 +327,7 @@ def _has_compatible_pair(
     profile: MemoryProfile,
     endpoints: tuple[RelationEndpoint, ...],
 ) -> bool:
+    """判断端点集合中是否存在某条关系策略允许的源-目标类型对。"""
     for policy in profile.relation_policies.values():
         for source in endpoints:
             if source.memory_type not in policy.source_memory_types:
@@ -337,6 +342,7 @@ def _has_compatible_pair(
 
 
 def _relevance_score(record: MemoryRecord, source: str) -> int:
+    """用 subject 命中与字符二元组交叠给端点打粗排分，用于选补充端点。"""
     source_key = normalize_memory_text(source)
     subject_key = normalize_memory_text(record.item.subject)
     content_key = normalize_memory_text(record.current_revision.content)
@@ -349,6 +355,7 @@ def _relevance_score(record: MemoryRecord, source: str) -> int:
 
 
 def _bigrams(value: str) -> frozenset[str]:
+    """生成去空格后的相邻字符二元组集合。"""
     compact = "".join(character for character in value if not character.isspace())
     if len(compact) < 2:
         return frozenset({compact}) if compact else frozenset()
@@ -356,7 +363,7 @@ def _bigrams(value: str) -> frozenset[str]:
 
 
 def _has_negated_relation_evidence(source_expression: str) -> bool:
-    """明确否定关系动词时拒绝自动建边，避免模型反向解释原文。"""
+    """原文出现明确否定关系动词（如"不支持""does not challenge"）时拒绝自动建边。"""
 
     return _NEGATED_RELATION_EVIDENCE.search(source_expression) is not None
 
@@ -366,6 +373,7 @@ def _has_insufficient_endpoint_evidence(
     source: MemoryRecord,
     target: MemoryRecord,
 ) -> bool:
+    """原文对至少一端的端点文本匹配长度不足 2，视为证据不足。"""
     expression = _compact_text(source_expression)
     return (
         min(
@@ -382,7 +390,7 @@ def _has_clearly_reversed_direction(
     target: MemoryRecord,
     direction_cues: frozenset[str],
 ) -> bool:
-    """仅在 cue 两侧的端点文本给出明显反向证据时拒绝。"""
+    """当方向提示词两侧的端点文本更支持反向关系时，拒绝该建议方向。"""
 
     expression = _compact_text(source_expression)
     for raw_cue in direction_cues:
@@ -409,6 +417,7 @@ def _has_clearly_reversed_direction(
 
 
 def _endpoint_match_length(record: MemoryRecord, text: str) -> int:
+    """返回端点记忆的 subject/内容与给定文本的最长公共连续子串长度。"""
     return max(
         _longest_common_span(_compact_text(record.item.subject), text),
         _longest_common_span(_compact_text(record.current_revision.content), text),
@@ -416,12 +425,14 @@ def _endpoint_match_length(record: MemoryRecord, text: str) -> int:
 
 
 def _compact_text(value: str) -> str:
+    """规范化文本并去掉非字母数字字符，便于忽略空格与标点的匹配。"""
     return "".join(
         character for character in normalize_memory_text(value) if character.isalnum()
     )
 
 
 def _longest_common_span(left: str, right: str) -> int:
+    """用动态规划求两段文本的最长公共连续子串长度。"""
     if not left or not right:
         return 0
     previous = [0] * (len(right) + 1)

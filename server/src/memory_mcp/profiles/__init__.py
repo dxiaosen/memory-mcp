@@ -28,7 +28,7 @@ def built_in_profiles() -> tuple[GeneralWorkProfile, InvestmentResearchProfile]:
 
 
 def validate_built_in_profile(profile: MemoryProfile) -> None:
-    """校验内置 Profile 的版本已明确绑定当前策略内容。"""
+    """校验内置 Profile 的策略指纹与已注册的固定值一致，防止版本不变时策略漂移。"""
 
     key = (profile.profile_id, profile.profile_version)
     expected = _BUILT_IN_POLICY_FINGERPRINTS.get(key)

@@ -1,4 +1,4 @@
-"""模型辅助候选抽取的公开 API。"""
+"""模型辅助候选与关系抽取的公开 API。"""
 
 from memory_mcp.extraction.backends import (
     CandidateBatch,

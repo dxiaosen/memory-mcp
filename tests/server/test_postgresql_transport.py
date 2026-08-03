@@ -374,6 +374,7 @@ def _truncate(database_url: SecretStr) -> None:
                             memory_items,
                             memory_profile_relations,
                             memory_profile_types,
-                            memory_profiles
+                            memory_profiles,
+                            memory_capture_runs
             """
         )

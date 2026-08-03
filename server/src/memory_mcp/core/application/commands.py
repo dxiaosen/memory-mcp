@@ -1,4 +1,4 @@
-"""阶段一手动记忆操作的输入契约。"""
+"""手动创建记忆的输入契约与字段校验。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,6 +7,7 @@ from memory_mcp.core.domain import AssertionKind, LifecycleStatus
 
 
 def _require_text(value: str, field_name: str) -> str:
+    """要求文本字段去除首尾空白后非空，否则抛出 ValueError。"""
     normalized = value.strip()
     if not normalized:
         raise ValueError(f"{field_name} must not be empty")
@@ -15,7 +16,7 @@ def _require_text(value: str, field_name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CreateMemoryCommand:
-    """手动创建一张原子记忆卡片；owner 只能来自 ``PrincipalContext``。"""
+    """手动创建一张原子记忆卡片的输入契约；owner 由 PrincipalContext 决定。"""
 
     profile_id: str
     subject: str
@@ -33,6 +34,7 @@ class CreateMemoryCommand:
     normalized_time: datetime | None = None
 
     def __post_init__(self) -> None:
+        """校验必填文本非空、枚举类型正确、时间字段带时区。"""
         for field_name in (
             "profile_id",
             "subject",

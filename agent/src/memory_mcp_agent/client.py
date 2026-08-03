@@ -19,10 +19,13 @@ _MCP_PROTOCOL_HEADER = "mcp-protocol-version"
 try:
     _CLIENT_VERSION = version("memory-mcp-agent")
 except PackageNotFoundError:
+    # 未安装场景下用占位版本号，避免 initialize 握手缺少 clientInfo.version。
     _CLIENT_VERSION = "0+unknown"
 
 
 class _Receipt(BaseModel):
+    """MCP Tool 调用回执的公共字段，用于校验服务端响应结构。"""
+
     model_config = ConfigDict(extra="ignore")
 
     ok: bool
@@ -30,14 +33,20 @@ class _Receipt(BaseModel):
 
 
 class RecalledItem(BaseModel):
+    """召回得到的一条记忆快照，内容只读。"""
+
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     memory_id: str
     revision_id: str
+    # 命中该条记忆写入时的属主；团队记忆返回真实值，个人记忆为 None。
+    owner_id: str | None = None
     content: str
 
 
 class RecallResponse(_Receipt):
+    """recall_memory 的结构化响应，包含命中的记忆条目和渲染后的上下文。"""
+
     ok: Literal[True] = True
     items: tuple[RecalledItem, ...]
     rendered_context: str
@@ -47,6 +56,8 @@ class RecallResponse(_Receipt):
 
 
 class CaptureSummary(BaseModel):
+    """捕获阶段的记忆处置计数：自动保存、待审核、丢弃、被拦截。"""
+
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     auto_saved_count: int = 0
@@ -56,6 +67,8 @@ class CaptureSummary(BaseModel):
 
 
 class CaptureResponse(_Receipt):
+    """capture_completed_turn 的结构化响应，描述本轮捕获的终态与产物。"""
+
     ok: Literal[True] = True
     capture_id: str
     status: Literal["completed", "failed", "reprocess_required"]
@@ -67,7 +80,7 @@ class CaptureResponse(_Receipt):
 
 
 class MemoryHookClientError(RuntimeError):
-    """稳定且不含 Secret 的客户端错误。"""
+    """客户端对外暴露的稳定错误，只含稳定的错误码，不泄漏敏感信息。"""
 
     def __init__(
         self,
@@ -81,6 +94,8 @@ class MemoryHookClientError(RuntimeError):
 
 
 class MemoryHookClient(Protocol):
+    """主动记忆客户端协议：只暴露 recall 与 capture 两个 Tool 的调用契约。"""
+
     async def recall_memory(
         self,
         *,
@@ -357,6 +372,8 @@ def _json_rpc_result(
     response: httpx.Response,
     request_id: int,
 ) -> dict[str, Any]:
+    """解析 JSON-RPC 响应并校验 id 匹配，只接受非 error 结果。"""
+
     content_type = response.headers.get("content-type", "").casefold()
     if not content_type.startswith("application/json"):
         raise MemoryHookClientError("unsupported_mcp_response_type")
@@ -377,6 +394,8 @@ def _json_rpc_result(
 
 
 def _structured_payload(value: object) -> dict[str, Any]:
+    """从 MCP Tool 返回的 structuredContent 中提取有效 payload。"""
+
     if not isinstance(value, dict):
         raise MemoryHookClientError("missing_structured_response")
     nested = value.get("result")
@@ -385,6 +404,7 @@ def _structured_payload(value: object) -> dict[str, Any]:
 
 
 def _http_status_error(status_code: int) -> MemoryHookClientError:
+    """把 HTTP 状态码映射为稳定的客户端错误码，区分鉴权/可重试/永久拒绝。"""
     if status_code in {401, 403}:
         return MemoryHookClientError("memory_mcp_auth_rejected")
     if status_code in {408, 425, 429} or status_code >= 500:

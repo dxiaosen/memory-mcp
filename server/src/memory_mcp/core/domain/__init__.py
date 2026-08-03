@@ -1,4 +1,4 @@
-"""通用记忆领域模型。"""
+"""记忆领域模型统一导出。"""
 
 from memory_mcp.core.domain.capture import (
     AdmissionDecision,

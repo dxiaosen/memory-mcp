@@ -23,7 +23,11 @@ class ErrorCode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MemoryMcpBoundaryError(Exception):
-    """具有安全公开表示的预期边界错误。"""
+    """可安全返回给客户端的预期边界错误。
+
+    ``public_message`` 不含敏感上下文，可直接用于 MCP 错误响应；
+    ``code`` 是跨工具稳定的枚举，供客户端程序化判断。
+    """
 
     code: ErrorCode
     public_message: str
@@ -31,6 +35,8 @@ class MemoryMcpBoundaryError(Exception):
 
 
 class UnauthenticatedError(MemoryMcpBoundaryError):
+    """缺少有效访问 Token 或 Token 无法识别。"""
+
     def __init__(self) -> None:
         super().__init__(
             ErrorCode.UNAUTHENTICATED,
@@ -39,6 +45,8 @@ class UnauthenticatedError(MemoryMcpBoundaryError):
 
 
 class PermissionDeniedError(MemoryMcpBoundaryError):
+    """已认证主体缺少执行该操作所需的 scope。"""
+
     def __init__(self, required_scope: str) -> None:
         super().__init__(
             ErrorCode.PERMISSION_DENIED,
@@ -47,6 +55,8 @@ class PermissionDeniedError(MemoryMcpBoundaryError):
 
 
 class UnsupportedContractVersionError(MemoryMcpBoundaryError):
+    """客户端提交的 completed-turn 契约版本不被支持。"""
+
     def __init__(self, version: str) -> None:
         super().__init__(
             ErrorCode.UNSUPPORTED_CONTRACT_VERSION,

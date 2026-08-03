@@ -1,4 +1,4 @@
-"""不包含业务正文的系统维护结果。"""
+"""系统后台维护结果，不含记忆正文，可安全持久化。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,7 +6,7 @@ from datetime import datetime
 
 @dataclass(frozen=True, slots=True)
 class MaintenanceResult:
-    """一次有界维护事务完成的状态转换计数。"""
+    """一次有界维护事务完成后的状态转换计数，包括过期记忆、过期审核与失效关系。"""
 
     effective_at: datetime
     expired_memory_count: int

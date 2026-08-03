@@ -1,4 +1,4 @@
-"""不依赖具体记忆配置业务词义的确定性候选准入规则。"""
+"""不依赖具体记忆配置业务词义的确定性候选准入策略：保守、可解释。"""
 
 from dataclasses import dataclass
 
@@ -13,14 +13,17 @@ from memory_mcp.core.domain import (
 
 @dataclass(frozen=True, slots=True)
 class AdmissionOutcome:
-    """程序规则给出的唯一准入决策和稳定原因码。"""
+    """程序规则给出的准入决策及其稳定原因码。"""
 
     decision: AdmissionDecision
     reason_code: str
 
 
 class ConservativeAdmissionPolicy:
-    """显式且高置信的持久内容才允许自动保存。"""
+    """保守准入策略：仅当内容显式、高置信且持久时才允许自动保存。
+
+    临时或不确定内容直接丢弃；非显式、系统推断或低置信内容降级为待确认。
+    """
 
     def __init__(self, *, auto_save_confidence: float = 0.8) -> None:
         if not 0.0 <= auto_save_confidence <= 1.0:
@@ -28,6 +31,7 @@ class ConservativeAdmissionPolicy:
         self._auto_save_confidence = auto_save_confidence
 
     def decide(self, candidate: Candidate) -> AdmissionOutcome:
+        """按持久性 -> 断言来源 -> 显式性 -> 置信度的顺序判定准入决策。"""
         if candidate.durability is CandidateDurability.TEMPORARY:
             return AdmissionOutcome(
                 AdmissionDecision.DISCARD,

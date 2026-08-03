@@ -1,4 +1,4 @@
-"""捕获流程编排及其待确认兼容门面。"""
+"""捕获流程编排：协调候选抽取、敏感内容校验、准入与原子写入，并暴露待确认门面。"""
 
 import logging
 import re
@@ -56,7 +56,7 @@ _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")
 
 
 class CaptureService:
-    """在保持公开门面的同时协调抽取与提交。"""
+    """协调一轮对话的记忆捕获：抽取候选、准入决策、关系规划并原子提交结果。"""
 
     def __init__(
         self,
@@ -117,7 +117,7 @@ class CaptureService:
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
-        """进入模型抽取前串行化同一进程内的重试。"""
+        """捕获一轮对话的记忆，按事件/轮次键加锁以保证同进程内重试串行执行。"""
 
         if turn.event_id is not None:
             key = (principal.owner_id, "event", turn.event_id)
@@ -137,7 +137,7 @@ class CaptureService:
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
-        """捕获一个轮次并原子提交互斥结果。"""
+        """在已持锁的前提下执行捕获：敏感校验、模型抽取、候选处理、关系规划并提交。"""
 
         extractor = self._candidate_extractor
         guard = self._sensitive_guard
@@ -438,7 +438,7 @@ class CaptureService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
-        """通过稳定的 CaptureService 门面列出未处理候选。"""
+        """列出当前用户待确认的候选记忆。"""
 
         return self._review_service.list_pending(principal)
 
@@ -447,6 +447,7 @@ class CaptureService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """读取一条待确认候选的详情。"""
         return self._review_service.get(principal, review_id)
 
     def confirm_review(
@@ -457,6 +458,7 @@ class CaptureService:
         team_id: str | None = None,
         team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
+        """确认一条候选并写入记忆，可选提升到指定团队。"""
         return self._review_service.confirm(
             principal,
             review_id,
@@ -469,6 +471,7 @@ class CaptureService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """拒绝一条候选，标记为已驳回。"""
         return self._review_service.reject(principal, review_id)
 
     def _commit_capture_failure(
@@ -517,6 +520,7 @@ class CaptureService:
 
 
 def _has_processable_content(value: str) -> bool:
+    """去掉脱敏标记后判断是否还剩可处理内容，避免对空文本调用模型抽取。"""
     without_markers = _REDACTION_MARKER.sub("", value)
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
 
@@ -526,7 +530,7 @@ def _relation_endpoint_records(
     principal: PrincipalContext,
     processed: CandidateProcessingResult,
 ) -> tuple[MemoryRecord, ...]:
-    """把本轮 new/duplicate/replacement 的确定目标优先交给关系阶段。"""
+    """收集本轮产生的新增/重复/替换记忆目标，供关系规划阶段优先作为端点使用。"""
 
     records = list(processed.memories)
     for duplicate in processed.duplicate_evidence:
@@ -547,7 +551,7 @@ def _relation_endpoint_records(
 
 
 class _KeyedLocks:
-    """用于单进程重叠捕获的引用计数锁。"""
+    """按捕获键引用计数的锁池，用于串行化同进程内同一轮次的重叠捕获。"""
 
     def __init__(self) -> None:
         self._guard = Lock()

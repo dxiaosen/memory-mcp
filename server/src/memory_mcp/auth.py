@@ -36,6 +36,8 @@ class RequestPrincipal(BaseModel):
     client_id: str = Field(min_length=1)
     default_profile_id: str = Field(min_length=1)
     scopes: frozenset[MemoryScope]
+    # 由 tenant_id + team_id 派生的团队公共记忆 owner key 集合，与个人
+    # owner_key（tenant_id:subject_id）命名空间分离，授权后可读写团队记忆。
     team_owner_ids: frozenset[str] = frozenset()
 
     def to_core(self) -> PrincipalContext:
@@ -54,6 +56,8 @@ class StaticTokenVerifier(TokenVerifier):
         self._mappings = dict(mappings)
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        """匹配已配置的静态 Token，未匹配时返回 None 表示拒绝。"""
+
         configured = self._mappings.get(token)
         if configured is None:
             return None
@@ -116,6 +120,8 @@ def require_scope(
     principal: RequestPrincipal,
     required_scope: MemoryScope,
 ) -> None:
+    """主体缺少所需 scope 时抛出权限拒绝错误。"""
+
     if required_scope not in principal.scopes:
         raise PermissionDeniedError(required_scope.value)
 

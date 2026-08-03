@@ -12,6 +12,7 @@ from memory_mcp_agent.bridge import (
 )
 from memory_mcp_agent.context import HookContext
 
+# Agent 调用契约：(user_input, memory_context) -> final_output
 AgentCallable = Callable[[str, str | None], Awaitable[str]]
 
 
@@ -38,6 +39,7 @@ class HookedAgentRunner:
         context: HookContext,
         user_input: str,
     ) -> RunnerResult:
+        """先召回注入上下文，再执行 Agent，最后捕获完整轮次。"""
         recalled = await self._bridge.before_run(context, user_input)
         final_output = await self._agent(user_input, recalled.memory_context)
         captured = await self._bridge.after_run_success(

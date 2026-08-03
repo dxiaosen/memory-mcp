@@ -39,7 +39,7 @@ from memory_mcp.settings import ConfiguredPrincipal, MemoryServerSettings
 from memory_mcp.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
-# 连续 has_more 续批的软上限与触发后的退避秒数，避免紧密循环占用 DB 连接。
+# 连续 has_more 续批的软上限与触发后的退避秒数；见 _run_maintenance_loop。
 _MAINTENANCE_HAS_MORE_SOFT_LIMIT = 8
 _MAINTENANCE_HAS_MORE_BACKOFF_SECONDS = 1
 
@@ -83,7 +83,7 @@ class MaintenanceHealth:
         self._last_error_type = type(error).__name__
 
     def snapshot(self) -> dict[str, object]:
-        """返回可直接序列化的稳定健康合同。"""
+        """返回可直接序列化的稳定健康契约。"""
 
         return {
             "state": self._state,
@@ -121,9 +121,13 @@ class MemoryMcpServer(FastMCP[Any]):
         return self._maintenance_health
 
     def streamable_http_app(self):
+        """构建并缓存 Streamable HTTP ASGI 应用，注入存储与维护生命周期。"""
+
         if self._streamable_app is not None:
             return self._streamable_app
         app = super().streamable_http_app()
+        # 需要管理存储生命周期或维护循环时，包一层 lifespan：在 ASGI 启动
+        # 时启动后台维护任务，关闭时先停止维护再释放存储。
         if self._close_storage is not None or (
             self._run_maintenance is not None and self._maintenance_interval_seconds > 0
         ):
@@ -169,7 +173,12 @@ def create_memory_mcp_server(
     extraction_settings: ExtractionSettings | None = None,
     profiles: Iterable[MemoryProfile] | None = None,
 ) -> MemoryMcpServer:
-    """创建具备完整认证边界的 Memory MCP 服务。"""
+    """组装 Memory MCP 服务并注册认证、健康检查与维护循环。
+
+    未注入 ``memory_service`` 时按 settings 自动构建 PostgreSQL 仓储、
+    敏感内容守卫与内置 Profile；注入时复用调用方提供的实现，且存储
+    健康检查交由调用方负责。
+    """
 
     principals = settings.require_configured_principals()
     close_storage: Callable[[], None] | None = None
@@ -211,7 +220,8 @@ def create_memory_mcp_server(
             recall_candidate_limit=settings.recall_candidate_limit,
         )
     else:
-
+        # 外部注入 memory_service 时，存储健康检查由调用方负责，此处禁用
+        # /health 对存储的探测，避免越权访问。
         def health_check() -> None:
             return None
 
@@ -276,10 +286,13 @@ async def _run_maintenance_loop(
     stop_event: asyncio.Event,
     health: MaintenanceHealth | None = None,
 ) -> None:
-    """维护失败与 MCP 服务隔离；积压时让出事件循环后继续下一批。
+    """周期性运行记忆维护，异常不影响 MCP 服务。
 
-    连续 ``has_more`` 超过软上限时插入短延迟，避免在异常持续不推进的
-    场景下形成紧密循环持续占用数据库连接。
+    每轮成功且仍有积压（``has_more``）时立即进入下一批；连续续批超过
+    ``_MAINTENANCE_HAS_MORE_SOFT_LIMIT`` 后插入
+    ``_MAINTENANCE_HAS_MORE_BACKOFF_SECONDS`` 短延迟，避免在积压持续不
+    推进的场景下形成紧密循环而长时间占用数据库连接。异常只记录和降级
+    健康状态，不向外传播。
     """
 
     consecutive_has_more = 0

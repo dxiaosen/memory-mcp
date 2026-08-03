@@ -1,4 +1,4 @@
-"""确定性、owner-first 的最小召回协调器。"""
+"""确定性、以 owner 为界的最小召回协调器：排序、关系加权与 token 裁剪。"""
 
 import json
 import logging
@@ -41,10 +41,10 @@ _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _RELEVANCE_THRESHOLD = 0.18
 _RELATION_BOOST = 0.12
 _PROFILE_HINT_BOOST = 0.16
-# subject 精确命中加成。原值 0.45 会让 subject 命中但正文无关的记忆 clamp
-# 到 1.0，压过正文高度相关的记忆；下调到 0.2 让正文相关度仍有话语权。
+# subject 精确命中加成。原值 0.45 会把仅 subject 命中但正文无关的记忆拉到
+# 1.0，压过正文高度相关的记忆；下调到 0.2，让正文相关度仍有话语权。
 _SUBJECT_EXACT_MATCH_BOOST = 0.2
-# CJK 字符范围（含兼容表意文字），用于 token 估算按字符类别区分。
+# CJK 字符范围（含兼容表意文字），用于 token 估算时按字符类别区分。
 _CJK_RANGES = (
     (0x3400, 0x4DBF),  # CJK 扩展 A
     (0x4E00, 0x9FFF),  # CJK 统一表意文字
@@ -54,7 +54,7 @@ _CJK_RANGES = (
 
 
 class RecallService:
-    """从 Repository 的已隔离 current 集合中排序和裁剪。"""
+    """从 Repository 已隔离的当前记忆集合中排序、关系加权并按 token 预算裁剪。"""
 
     def __init__(
         self,
@@ -80,6 +80,7 @@ class RecallService:
         principal: PrincipalContext,
         query: RecallQuery,
     ) -> RecallResult:
+        """对当前用户的活动记忆做相关性排序并按 token 预算裁剪，生成召回上下文。"""
         log_content_event(
             "memory.recall.input",
             max_items=query.max_items,
@@ -212,6 +213,8 @@ class RecallService:
                     for relation in recalled.relations
                 )
             ):
+                # 超预算时，先尝试去掉该记忆的关系文本（仅保留自身）再估算，
+                # 以在预算内保留这条与已选记忆有关联的内容。
                 line = _render_item(recalled, frozenset())
                 prospective = "\n".join((_SAFE_CONTEXT_HEADER, *rendered_lines, line))
                 prospective_tokens = _estimate_tokens(prospective)
@@ -273,6 +276,7 @@ class RecallService:
 
 
 def _empty_result(token_budget: int) -> RecallResult:
+    """无相关记忆时的空结果：在预算内返回兜底文案，超预算则返回空串。"""
     estimated = _estimate_tokens(_NO_RELEVANT_CONTEXT)
     if estimated > token_budget:
         return RecallResult(
@@ -292,6 +296,7 @@ def _empty_result(token_budget: int) -> RecallResult:
 
 
 def _traced_result(result: RecallResult) -> RecallResult:
+    """记录召回输出日志后原样返回结果。"""
     log_content_event(
         "memory.recall.output",
         estimated_tokens=result.estimated_tokens,
@@ -310,6 +315,7 @@ def _score_record(
     recall_hints: Mapping[str, frozenset[str]],
     tokenizer: MemoryTokenizer,
 ) -> float:
+    """计算一条记忆的基础相关性分数：文本相关性 + Profile 信号 + subject 精确命中。"""
     search_text = " ".join(
         value for value in (query.query, query.task_intent) if value is not None
     )
@@ -344,7 +350,7 @@ def _profile_relevance(
     recall_hints: Mapping[str, frozenset[str]],
     tokenizer: MemoryTokenizer,
 ) -> float:
-    """在通用文本相关性上叠加由 Profile 声明的有限类型信号。"""
+    """在通用文本相关性基础上，叠加 Profile 声明的有限类型信号（提示词命中、优先级）。"""
 
     score = _text_relevance(query, target, tokenizer)
     query_key = normalize_memory_text(query)
@@ -364,6 +370,7 @@ def _text_relevance(
     target: str,
     tokenizer: MemoryTokenizer,
 ) -> float:
+    """确定性文本相关性：子串包含 + 词交叠 + 字符二元组交叠，上限 0.9。"""
     query_key = normalize_memory_text(query)
     target_key = normalize_memory_text(target)
     if not query_key or not target_key:
@@ -383,6 +390,7 @@ def _text_relevance(
 
 
 def _character_pairs(value: str) -> set[str]:
+    """生成相邻字符二元组集合，用于基于字符 bigram 的相关性比较。"""
     compact = value.replace(" ", "")
     if len(compact) < 2:
         return {compact} if compact else set()
@@ -394,6 +402,7 @@ def _to_recalled_memory(
     score: float,
     relations: Sequence[MemoryRelationSummary] = (),
 ) -> RecalledMemory:
+    """把召回候选记录转换为对外暴露的召回结果项。"""
     revision = record.current_revision
     return RecalledMemory(
         memory_id=record.item.memory_id,
@@ -417,6 +426,7 @@ def _to_recalled_memory(
 
 
 def _source_summaries(sources: Sequence[Evidence]) -> tuple[RecallSourceSummary, ...]:
+    """把证据记录转换为召回结果中的来源摘要。"""
     return tuple(
         RecallSourceSummary(
             conversation_id=source.conversation_id,
@@ -435,6 +445,7 @@ def _render_item(
     item: RecalledMemory,
     already_selected_ids: frozenset[UUID],
 ) -> str:
+    """把一条记忆渲染为上下文文本行，仅展示指向已选记忆的关系以避免前向引用。"""
     rendered = (
         "- memory "
         f"(revision_id={item.revision_id}, "
@@ -470,6 +481,7 @@ def _group_relations(
     relations: Sequence[MemoryRelationSummary],
     candidate_ids: frozenset[UUID],
 ) -> dict[UUID, tuple[MemoryRelationSummary, ...]]:
+    """把关系按其当前端点分组，只保留对端也落入候选集合的关系。"""
     grouped: dict[UUID, list[MemoryRelationSummary]] = {}
     for summary in relations:
         if summary.related_memory_id not in candidate_ids:
@@ -488,6 +500,7 @@ def _relation_aware_score(
     base_scores: Mapping[UUID, float],
     relations_by_memory: Mapping[UUID, Sequence[MemoryRelationSummary]],
 ) -> float:
+    """在基础分数上叠加关系加成：若存在已过阈值的邻居记忆则提升排名分。"""
     base = base_scores[memory_id]
     if base < _RELEVANCE_THRESHOLD:
         return base
@@ -501,10 +514,10 @@ def _relation_aware_score(
 
 
 def _estimate_tokens(value: str) -> int:
-    """按字符类别估算 token：CJK 约 1 token/字，其他约 1 token/4 字符。
+    """按字符类别粗估 token 占用：CJK 约 1 token/字，其他约 1 token/4 字符。
 
-    原 ``len/3`` 对纯中文严重低估（30 字中文估算 10 token，实际约 30 token），
-    导致 ``token_budget`` 实际塞入远超预算的中文内容。
+    原先用 ``len/3`` 估算对纯中文严重低估（30 字中文估为 10 token，实际约
+    30 token），导致按 ``token_budget`` 裁剪时塞入远超预算的中文内容。
     """
     if not value:
         return 1

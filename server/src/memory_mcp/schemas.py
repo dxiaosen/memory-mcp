@@ -33,6 +33,8 @@ from memory_mcp.errors import ErrorCode
 
 
 class StrictDto(BaseModel):
+    """禁止额外字段的 DTO 基类，用于对外契约的严格校验。"""
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -40,6 +42,8 @@ NonEmptyText = Annotated[str, Field(min_length=1)]
 
 
 class RoleMessageV1(StrictDto):
+    """completed-turn 事件中单条消息的输入契约。"""
+
     role: Literal["user", "assistant", "tool"]
     content: NonEmptyText
     message_id: str | None = Field(default=None, min_length=1)
@@ -68,6 +72,8 @@ class RoleMessageV1(StrictDto):
 
 
 class CompletedTurnEventV1(StrictDto):
+    """一次已完成对话轮次的捕获事件输入契约。"""
+
     contract_version: NonEmptyText
     event_id: NonEmptyText
     profile_id: NonEmptyText
@@ -149,6 +155,8 @@ class CaptureSummary(StrictDto):
 
 
 class CaptureReceipt(StrictDto):
+    """捕获操作的返回凭证，包含统计摘要与创建/待审项 ID。"""
+
     ok: Literal[True] = True
     request_id: str
     capture_id: UUID
@@ -192,6 +200,8 @@ class CaptureReceipt(StrictDto):
 
 
 class EvidenceDocumentView(StrictDto):
+    """证据引用的外部文档元数据视图。"""
+
     source_uri: str | None = None
     source_title: str | None = None
     source_publisher: str | None = None
@@ -488,8 +498,12 @@ class RecallSourceView(StrictDto):
 
 
 class RecalledMemoryView(StrictDto):
+    """召回结果中的单条记忆视图。"""
+
     memory_id: UUID
     revision_id: UUID
+    # 记忆归属的 owner key：个人记忆为 tenant:subject，团队公共记忆为
+    # tenant:team:team_id。不与请求主体的 owner_id 混淆，仅用于标识来源。
     owner_id: str
     profile_id: str
     subject: str
@@ -508,6 +522,8 @@ class RecalledMemoryView(StrictDto):
 
 
 class RecallReceipt(StrictDto):
+    """召回操作的返回凭证，包含结果列表、渲染上下文与 token 预算。"""
+
     ok: Literal[True] = True
     request_id: str
     items: tuple[RecalledMemoryView, ...]

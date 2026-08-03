@@ -1,4 +1,7 @@
-"""通用记忆生命周期的确定性文本规则和历史视图。"""
+"""记忆生命周期的确定性文本规则和历史视图。
+
+提供文本归一化、分词契约与兜底分词器，以及历史版本查询结果。
+"""
 
 import re
 import unicodedata
@@ -56,7 +59,7 @@ def tokenize_memory_text(
 
 @dataclass(frozen=True, slots=True)
 class MemoryHistoryEntry:
-    """一个不可变 revision 及其来源，供显式历史查询使用。"""
+    """一个不可变历史版本及其来源证据，供显式历史查询使用。"""
 
     revision: MemoryRevision
     evidence: tuple[Evidence, ...]

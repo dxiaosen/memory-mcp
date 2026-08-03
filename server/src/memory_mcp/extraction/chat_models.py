@@ -24,9 +24,8 @@ def create_chat_model(settings: ExtractionSettings) -> BaseChatModel:
         common_options["base_url"] = settings.base_url
 
     if settings.provider == "deepseek":
-        # 候选抽取强制使用一个 schema tool。DeepSeek V4 默认启用 thinking，
-        # 但 thinking 模式不接受 LangChain 的具名 tool_choice。
-        # 抽取不需要思维链，因此固定关闭 thinking。
+        # 结构化抽取依赖具名 schema tool，而 DeepSeek V4 的 thinking 模式
+        # 不兼容 LangChain 的 tool_choice。抽取任务不需要思维链，因此固定关闭。
         return ChatDeepSeek(
             **common_options,
             extra_body={"thinking": {"type": "disabled"}},

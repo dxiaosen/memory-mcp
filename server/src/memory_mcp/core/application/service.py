@@ -1,4 +1,4 @@
-"""通用记忆应用门面。"""
+"""记忆应用层主门面：对外暴露手动记忆操作，对内委托捕获、召回和维护用例。"""
 
 import logging
 from collections.abc import Callable, Sequence
@@ -53,7 +53,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class MemoryService:
-    """提供手动记忆操作，并将阶段二用例委托给 CaptureService。"""
+    """手动记忆操作的主入口，并将捕获、召回、维护等用例委托给对应子服务。"""
 
     def __init__(
         self,
@@ -98,7 +98,7 @@ class MemoryService:
         )
 
     def register_profile(self, profile: MemoryProfile) -> None:
-        """同时登记运行时记忆配置和持久化约束。"""
+        """登记一个记忆配置：先校验，再写入持久化约束并注册到运行时。"""
 
         self._profile_registry.validate_registration(profile)
         self._repository.register_profile(profile)
@@ -112,7 +112,7 @@ class MemoryService:
         )
 
     def run_maintenance(self) -> MaintenanceResult:
-        """只供 Server 内部 runner 调用，不注册为公共 MCP 工具。"""
+        """运行一次记忆维护批次（过期清理等），仅供 Server 内部调用，不对外暴露为 MCP 工具。"""
 
         return self._maintenance_service.run_once()
 
@@ -121,7 +121,7 @@ class MemoryService:
         principal: PrincipalContext,
         command: CreateMemoryCommand,
     ) -> MemoryRecord:
-        """在可信当前用户范围内手动创建一张记忆卡片。"""
+        """在当前用户范围内手动创建一张记忆卡片，含敏感内容校验与证据记录。"""
 
         started_at = perf_counter()
         owner_reference = stable_reference(principal.owner_id)
@@ -247,7 +247,7 @@ class MemoryService:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord:
-        """读取当前用户的记忆，不区分不存在和越权。"""
+        """读取当前用户的一条记忆，不存在与越权统一返回不可用。"""
 
         record = self._repository.get(principal, memory_id)
         if record is None:
@@ -277,7 +277,7 @@ class MemoryService:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> Sequence[MemoryHistoryEntry]:
-        """显式返回一项记忆的 current 与 superseded revision。"""
+        """返回一项记忆的全部修订历史（当前版与被取代版）。"""
 
         if self._repository.get(principal, memory_id) is None:
             raise MemoryNotFoundError("memory is unavailable")
@@ -295,7 +295,7 @@ class MemoryService:
         *,
         include_inactive: bool = False,
     ) -> Sequence[MemoryRecord]:
-        """列出当前用户的活动记忆，或显式包含非活动历史。"""
+        """列出当前用户的记忆，默认只返回活动记忆，可显式包含非活动项。"""
 
         records = self._repository.list(
             principal,
@@ -321,7 +321,7 @@ class MemoryService:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord:
-        """幂等撤销当前 owner 的活动记忆并保留可追溯历史。"""
+        """幂等撤销当前用户的一条活动记忆，保留可追溯历史。"""
 
         record = self._repository.revoke(principal, memory_id)
         if record is None:
@@ -343,7 +343,7 @@ class MemoryService:
         target_memory_id: UUID,
         relation_type: str,
     ) -> MemoryRelation:
-        """在两个 owned、有效的稳定记忆身份之间建立有向关系。"""
+        """在两条同 owner、同 profile 且有效的记忆之间建立有向关系。"""
 
         if source_memory_id == target_memory_id:
             raise InvalidMemoryRelationError("memory relation cannot be a self loop")
@@ -366,8 +366,7 @@ class MemoryService:
             target.item.memory_type,
         )
         now = self._clock()
-        # relation 的 owner 跟随端点记忆的 owner：个人记忆建关系 owner 是个人，
-        # 团队记忆建关系 owner 是团队。
+        # 关系的 owner 跟随端点记忆：个人记忆间的关系归个人，团队记忆间的关系归团队。
         relation_owner = source.item.owner_id
         relation = MemoryRelation(
             relation_id=self._id_factory(),
@@ -411,7 +410,7 @@ class MemoryService:
         principal: PrincipalContext,
         relation_id: UUID,
     ) -> MemoryRelation:
-        """幂等撤销一条 owned 关系并保留审计时间。"""
+        """幂等撤销一条当前用户拥有的关系，保留审计时间。"""
 
         relation = self._repository.revoke_relation(
             principal,
@@ -438,7 +437,7 @@ class MemoryService:
         *,
         include_inactive: bool = False,
     ) -> Sequence[MemoryRelationSummary]:
-        """读取一项 owned 记忆的一跳关系。"""
+        """读取一条用户拥有的记忆的一跳关系。"""
 
         if self._repository.get(principal, memory_id) is None:
             raise MemoryNotFoundError("memory is unavailable")
@@ -454,6 +453,7 @@ class MemoryService:
         principal: PrincipalContext,
         turn: TurnEnvelope,
     ) -> CaptureResult:
+        """从一轮对话中抽取并写入候选记忆，委托给捕获子服务。"""
         return self._capture_service.capture_turn(principal, turn)
 
     def recall_memory(
@@ -461,7 +461,7 @@ class MemoryService:
         principal: PrincipalContext,
         query: RecallQuery,
     ) -> RecallResult:
-        """只从当前 owner 的 active/current 集合生成召回上下文。"""
+        """从当前用户的活动/当前记忆集合生成召回上下文，委托给召回子服务。"""
 
         started_at = perf_counter()
         result = self._recall_service.recall(principal, query)
@@ -481,6 +481,7 @@ class MemoryService:
         self,
         principal: PrincipalContext,
     ) -> Sequence[ReviewItem]:
+        """列出当前用户待确认的候选记忆。"""
         return self._capture_service.list_pending_reviews(principal)
 
     def get_review(
@@ -488,6 +489,7 @@ class MemoryService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """读取一条待确认候选的详情。"""
         return self._capture_service.get_review(principal, review_id)
 
     def confirm_review(
@@ -498,6 +500,7 @@ class MemoryService:
         team_id: str | None = None,
         team_owner_ids: frozenset[str] = frozenset(),
     ) -> MemoryRecord:
+        """确认一条候选并写入记忆，可选提升到指定团队。"""
         return self._capture_service.confirm_review(
             principal,
             review_id,
@@ -510,4 +513,5 @@ class MemoryService:
         principal: PrincipalContext,
         review_id: UUID,
     ) -> ReviewItem:
+        """拒绝一条候选，标记为已驳回。"""
         return self._capture_service.reject_review(principal, review_id)

@@ -1,4 +1,4 @@
-"""Owner-scoped 召回请求和结果。"""
+"""Owner 作用域的召回请求与结果。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,7 +26,7 @@ def _required_text(value: str, field_name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRecallCandidate:
-    """召回排序使用的 Item/Revision 快照，不提前携带来源正文。"""
+    """召回排序使用的记忆身份与当前版本快照，不携带来源正文以推迟加载。"""
 
     item: MemoryItem
     current_revision: MemoryRevision
@@ -42,7 +42,7 @@ class MemoryRecallCandidate:
 
 @dataclass(frozen=True, slots=True)
 class RecallQuery:
-    """应用层召回条件；owner 由独立 PrincipalContext 提供。"""
+    """应用层召回查询条件，owner 由独立的可信 PrincipalContext 提供。"""
 
     profile_id: str
     query: str
@@ -74,7 +74,7 @@ class RecallQuery:
 
 @dataclass(frozen=True, slots=True)
 class RecallSourceSummary:
-    """最小可追溯来源摘要。"""
+    """召回结果中可追溯的来源摘要，只保留追溯所需的最小信息。"""
 
     conversation_id: str | None
     source_turn_id: str
@@ -87,7 +87,7 @@ class RecallSourceSummary:
 
 @dataclass(frozen=True, slots=True)
 class RecalledMemory:
-    """召回命中的精确 current revision。"""
+    """召回命中的当前版本记忆，包含正文、来源摘要、关系摘要和相关度评分。"""
 
     memory_id: UUID
     revision_id: UUID
@@ -110,7 +110,7 @@ class RecalledMemory:
 
 @dataclass(frozen=True, slots=True)
 class RecallResult:
-    """结构化命中和可安全注入 Agent 的服务端渲染块。"""
+    """召回结果集合与服务端预渲染的安全上下文块，可直接注入 Agent。"""
 
     items: tuple[RecalledMemory, ...]
     rendered_context: str

@@ -1,4 +1,8 @@
-"""通用 Agent 主动记忆 command Hook。"""
+"""通用 Agent 主动记忆 command Hook 入口。
+
+作为独立进程被各宿主（Codex/Claude Code 等）的 command Hook 调用，
+从 stdin 读取单个事件 JSON，向 stdout 输出单个确定性 JSON。
+"""
 
 from __future__ import annotations
 
@@ -43,6 +47,7 @@ def main() -> None:
 
 
 async def _run(stream: TextIO) -> HookOutput:
+    """解析单个 Hook 事件并执行归一化、召回或捕获，失败一律降级为 warning。"""
     try:
         payload = json.load(stream)
         if not isinstance(payload, dict):

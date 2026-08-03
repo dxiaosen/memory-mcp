@@ -26,7 +26,7 @@ def create_memory_service(
     recall_candidate_limit: int = 500,
     tokenizer: MemoryTokenizer | None = None,
 ) -> MemoryService:
-    """创建服务并显式注册全部记忆配置。"""
+    """创建 ``MemoryService`` 并注册全部记忆配置，未指定适配器时使用默认实现。"""
 
     service = MemoryService(
         repository,

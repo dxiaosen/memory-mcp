@@ -1,4 +1,4 @@
-"""通用记忆关系领域模型。"""
+"""记忆关系领域模型：关系建议、可信关系、关系摘要与方向。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,7 +22,7 @@ def _aware(value: datetime, field_name: str) -> datetime:
 
 
 class RelationStatus(StrEnum):
-    """关系自身的治理状态；端点状态仍由 MemoryRevision 管理。"""
+    """关系自身的治理状态；关系端点的记忆状态仍由 MemoryRevision 管理。"""
 
     ACTIVE = "active"
     STALE = "stale"
@@ -38,7 +38,7 @@ class RelationOrigin(StrEnum):
 
 
 class RelationScope(StrEnum):
-    """关系是跟随稳定记忆身份，还是只对指定 revision 成立。"""
+    """关系的作用范围：跟随稳定记忆身份（item）或仅对指定版本（revision）成立。"""
 
     ITEM = "item"
     REVISION = "revision"
@@ -53,7 +53,7 @@ class RelationDirection(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RelationEndpoint:
-    """关系模型可引用的一项可信、无 owner 摘要。"""
+    """关系抽取时可引用的一端记忆摘要，不含 owner，由 Core 补全。"""
 
     memory_id: UUID
     memory_type: str
@@ -73,7 +73,7 @@ class RelationEndpoint:
 
 @dataclass(frozen=True, slots=True)
 class RelationProposal:
-    """模型输出的未受信关系建议；身份只能引用可信端点目录。"""
+    """模型输出的未受信关系建议，两端只能引用 Core 提供的可信端点目录。"""
 
     source_memory_id: UUID
     target_memory_id: UUID
@@ -111,7 +111,7 @@ class RelationProposal:
 
 @dataclass(frozen=True, slots=True)
 class RelationProvenance:
-    """自动关系的单份可信抽取证据，不包含 owner 或凭据。"""
+    """自动关系抽取的单份可信证据，不含 owner 或凭据，用于追溯来源。"""
 
     capture_id: UUID
     conversation_id: str
@@ -151,7 +151,7 @@ class RelationProvenance:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRelation:
-    """同 owner、同 Profile 的两个稳定 MemoryItem 之间的有向边。"""
+    """同 owner、同 Profile 的两个稳定记忆之间的有向边，按来源和范围受治理。"""
 
     relation_id: UUID
     owner_id: str
@@ -265,7 +265,7 @@ class MemoryRelation:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRelationSummary:
-    """面向详情和召回的一跳关系，不复制另一端正文。"""
+    """面向详情和召回的一跳关系摘要，不复制另一端的记忆正文。"""
 
     relation: MemoryRelation
     direction: RelationDirection
