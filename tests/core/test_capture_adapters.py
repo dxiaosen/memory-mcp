@@ -214,3 +214,52 @@ def _relation_request(
             ),
         ),
     )
+
+
+def test_sensitive_guard_from_config_uses_default_when_unconfigured() -> None:
+    """未配置规则时回退默认规则集。"""
+
+    guard = RegexSensitiveContentGuard.from_config(None)
+    result = guard.inspect("密码是 abc123")
+    assert "credential" in result.categories
+
+
+def test_sensitive_guard_from_config_injects_custom_rules() -> None:
+    """配置注入的自定义规则覆盖默认规则集。"""
+
+    configured = [
+        {"category": "project_codename", "pattern": "阿波罗"},
+    ]
+    guard = RegexSensitiveContentGuard.from_config(configured)
+    result = guard.inspect("项目代号阿波罗启动")
+    assert "project_codename" in result.categories
+    assert "[REDACTED:project_codename]" in result.redacted_text
+    # 自定义规则集不包含默认 credential 规则。
+    default_result = guard.inspect("密码是 abc123")
+    assert "credential" not in default_result.categories
+
+
+def test_sensitive_guard_from_config_drops_invalid_pattern() -> None:
+    """非法正则模式在 settings 解析阶段被拒绝，不到达 guard。"""
+
+    from memory_mcp.settings import MemoryServerSettings
+
+    settings = MemoryServerSettings(
+        auth_tokens='{"token": {"tenant_id": "t", "subject_id": "s"}}',
+        sensitive_rules='[{"category": "bad", "pattern": "["}]',
+    )
+    with pytest.raises(ValueError, match="invalid"):
+        settings.configured_sensitive_rules()
+
+
+def test_sensitive_guard_from_config_rejects_non_array() -> None:
+    """非 JSON 数组的敏感规则配置被拒绝。"""
+
+    from memory_mcp.settings import MemoryServerSettings
+
+    settings = MemoryServerSettings(
+        auth_tokens='{"token": {"tenant_id": "t", "subject_id": "s"}}',
+        sensitive_rules='{"category": "x", "pattern": "y"}',
+    )
+    with pytest.raises(ValueError, match="JSON array"):
+        settings.configured_sensitive_rules()

@@ -3,10 +3,36 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from typing import Protocol
 
 from memory_mcp.core.domain.models import Evidence, MemoryRevision
 
 _WHITESPACE = re.compile(r"\s+")
+# Python 的 ``\w`` 在 Unicode 模式下会把无空格分隔的 CJK 连续文本当作单个
+# token，导致中文 word overlap 信号失效。这里按 ASCII 词边界与 CJK 单字切分，
+# 作为没有外部分词器时的兜底；真正投研召回由 adapter 层注入 jieba 分词器。
+_FALLBACK_WORD = re.compile(r"[A-Za-z0-9_]+|[一-鿿豈-鶴]", re.UNICODE)
+
+
+class MemoryTokenizer(Protocol):
+    """把文本切分为稳定 token 序列的纯函数契约。"""
+
+    def tokenize(self, text: str) -> tuple[str, ...]:
+        """返回归一化后的 token 序列，不改变原始文本。"""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class SimpleTokenizer:
+    """不依赖外部库的兜底分词器，按 ASCII 词与 CJK 单字切分。"""
+
+    def tokenize(self, text: str) -> tuple[str, ...]:
+        normalized = normalize_memory_text(text)
+        if not normalized:
+            return ()
+        return tuple(
+            token.casefold() for token in _FALLBACK_WORD.findall(normalized) if token
+        )
 
 
 def normalize_memory_text(value: str) -> str:
@@ -16,6 +42,16 @@ def normalize_memory_text(value: str) -> str:
         " ",
         unicodedata.normalize("NFKC", value).casefold().strip(),
     )
+
+
+def tokenize_memory_text(
+    value: str,
+    tokenizer: MemoryTokenizer | None = None,
+) -> tuple[str, ...]:
+    """生成用于相关度计算的稳定 token 序列。"""
+
+    resolved = tokenizer or SimpleTokenizer()
+    return resolved.tokenize(value)
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,7 +17,10 @@ from memory_mcp.core.domain.capture import (
 )
 from memory_mcp.core.domain.lifecycle import (
     MemoryHistoryEntry,
+    MemoryTokenizer,
+    SimpleTokenizer,
     normalize_memory_text,
+    tokenize_memory_text,
 )
 from memory_mcp.core.domain.maintenance import MaintenanceResult
 from memory_mcp.core.domain.models import (
@@ -74,6 +77,7 @@ __all__ = [
     "MemoryRelation",
     "MemoryRelationSummary",
     "MemoryRevision",
+    "MemoryTokenizer",
     "MessageRole",
     "PrincipalContext",
     "RecallQuery",
@@ -90,8 +94,10 @@ __all__ = [
     "ReviewItem",
     "ReviewStatus",
     "SensitivityLevel",
+    "SimpleTokenizer",
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",
     "normalize_memory_text",
+    "tokenize_memory_text",
 ]

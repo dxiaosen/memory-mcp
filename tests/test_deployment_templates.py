@@ -2,6 +2,7 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
 from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.settings import MemoryServerSettings
 from memory_mcp_agent import MemoryHookSettings
@@ -53,7 +54,12 @@ def test_server_environment_template_contains_only_production_service_settings()
     assert "MEMORY_MCP_AUTH_TOKENS_JSON" not in text
 
 
-def test_agent_environment_template_contains_only_hook_settings() -> None:
+def test_agent_environment_template_contains_only_hook_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 隔离 shell 里可能存在的同名环境变量，确保测试只读取 .env.example。
+    monkeypatch.delenv("MEMORY_MCP_URL", raising=False)
+    monkeypatch.delenv("MEMORY_MCP_TOKEN", raising=False)
     env_file = _ROOT / "agent" / ".env.example"
 
     settings = MemoryHookSettings(_env_file=env_file)

@@ -1164,3 +1164,71 @@ def test_two_services_reject_overlapping_event_with_different_payloads() -> None
     assert len(outcomes) == 1
     assert len(errors) == 1
     assert len(repository.list(principal, active_only=True)) == 1
+
+
+def test_chinese_tokenizer_segments_unspaced_cjk_into_words() -> None:
+    """jieba 分词让无空格中文的 word overlap 信号真正生效。"""
+
+    from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
+    from memory_mcp.core.domain import SimpleTokenizer
+
+    jieba_tokens = JiebaTokenizer().tokenize("看好新能源锂电池前景")
+    simple_tokens = SimpleTokenizer().tokenize("看好新能源锂电池前景")
+    # jieba 切出真实词；SimpleTokenizer 兜底按单字切。
+    assert "新能源" in jieba_tokens
+    assert "锂电池" in jieba_tokens
+    assert all(len(tok) == 1 for tok in simple_tokens)
+
+
+def test_tokenizer_drops_pure_punctuation_tokens() -> None:
+    """纯标点（如连字符）不应作为 word overlap 的有效 token。"""
+
+    from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
+
+    tokens = JiebaTokenizer().tokenize("zxqv-unique-778899")
+    assert tokens == ("zxqv", "unique", "778899")
+
+
+def test_chinese_recall_word_overlap_finds_semantically_related_memory() -> None:
+    """分词后，query 与记忆正文有共同中文词时 word overlap 信号生效。"""
+
+    from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
+    from memory_mcp.core.application.recall_service import _text_relevance
+
+    tokenizer = JiebaTokenizer()
+    # "看好新能源" 与 "锂电池前景" 没有字面包含关系，但分词后可能
+    # 在某些场景产生弱信号；这里验证分词本身让 word 集合非空。
+    score = _text_relevance("新能源", "锂电池新能源前景", tokenizer)
+    assert score > 0.0
+
+
+def test_estimate_tokens_counts_cjk_chars_individually() -> None:
+    """token 估算对中文按约 1 token/字，不再严重低估。"""
+
+    from memory_mcp.core.application.recall_service import _estimate_tokens
+
+    chinese_text = "看价新能源锂电池" * 5  # 30 个中文字
+    assert _estimate_tokens(chinese_text) >= 30
+
+
+def test_estimate_tokens_uses_4_chars_per_token_for_ascii() -> None:
+    """token 估算对 ASCII 约 1 token/4 字符。"""
+
+    from memory_mcp.core.application.recall_service import _estimate_tokens
+
+    ascii_text = "a" * 40
+    assert _estimate_tokens(ascii_text) == 10
+
+
+def test_recall_with_jieba_tokenizer_does_not_collapse_chinese_into_single_token() -> (
+    None
+):
+    """回归：旧 ``\\w+`` 把整段中文当一个 token，导致 word overlap 失效。"""
+
+    from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
+
+    tokenizer = JiebaTokenizer()
+    query_tokens = set(tokenizer.tokenize("看好新能源"))
+    target_tokens = set(tokenizer.tokenize("锂电池新能源前景"))
+    # 分词后两侧都有"新能源"，word overlap 非空。
+    assert query_tokens & target_tokens == {"新能源"}

@@ -360,5 +360,19 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
 
 
 def _truncate(database_url: SecretStr) -> None:
+    # 外键已移除，CASCADE 不再级联清空；显式清空全部 memory 表。
     with _connect_safely(database_url) as connection:
-        connection.execute("TRUNCATE TABLE memory_profiles CASCADE")
+        connection.execute(
+            """
+            TRUNCATE TABLE memory_capture_outcomes,
+                            memory_relations,
+                            memory_review_items,
+                            memory_capture_runs,
+                            memory_evidence,
+                            memory_revisions,
+                            memory_items,
+                            memory_profile_relations,
+                            memory_profile_types,
+                            memory_profiles
+            """
+        )

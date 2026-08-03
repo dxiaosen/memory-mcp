@@ -62,6 +62,24 @@ class RegexSensitiveContentGuard:
     ) -> None:
         self._rules = rules
 
+    @classmethod
+    def from_config(
+        cls,
+        configured: list[dict[str, str]] | None,
+    ) -> RegexSensitiveContentGuard:
+        """从服务端配置构造；未配置时回退默认规则。"""
+
+        if not configured:
+            return cls()
+        rules = tuple(
+            SensitiveRule(
+                category=item["category"],
+                pattern=re.compile(item["pattern"]),
+            )
+            for item in configured
+        )
+        return cls(rules=rules or DEFAULT_SENSITIVE_RULES)
+
     def inspect(self, text: str) -> SensitiveInspection:
         redacted = text
         matched_categories: list[str] = []

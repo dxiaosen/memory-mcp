@@ -82,6 +82,7 @@ class MemoryServerSettings(BaseSettings):
     auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/memory-mcp-auth")
     resource_server_url: AnyHttpUrl | None = None
     auth_tokens: SecretStr = SecretStr("{}")
+    sensitive_rules: SecretStr | None = None
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_file: Path | None = Path(".memory-mcp/logs/memory-mcp.log")
@@ -156,6 +157,51 @@ class MemoryServerSettings(BaseSettings):
         if not principals:
             raise ValueError("At least one MEMORY_MCP_AUTH_TOKENS mapping is required")
         return principals
+
+    def configured_sensitive_rules(self) -> list[dict[str, str]] | None:
+        """解析可选的敏感规则 JSON；未配置时返回 None 使用默认规则。
+
+        JSON 是 ``[{"category": str, "pattern": str}, ...]`` 数组。
+        规则按声明顺序应用；空数组视为"不覆盖默认"而非"清空规则"。
+        """
+
+        if self.sensitive_rules is None:
+            return None
+        raw = self.sensitive_rules.get_secret_value().strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("MEMORY_MCP_SENSITIVE_RULES must be valid JSON") from exc
+        if not isinstance(payload, list):
+            raise ValueError("MEMORY_MCP_SENSITIVE_RULES must be a JSON array")
+        rules: list[dict[str, str]] = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"MEMORY_MCP_SENSITIVE_RULES[{index}] must be a JSON object"
+                )
+            category = item.get("category")
+            pattern = item.get("pattern")
+            if not isinstance(category, str) or not category.strip():
+                raise ValueError(
+                    f"MEMORY_MCP_SENSITIVE_RULES[{index}].category must be a "
+                    "non-empty string"
+                )
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ValueError(
+                    f"MEMORY_MCP_SENSITIVE_RULES[{index}].pattern must be a "
+                    "non-empty string"
+                )
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"MEMORY_MCP_SENSITIVE_RULES[{index}].pattern is invalid: {exc}"
+                ) from exc
+            rules.append({"category": category, "pattern": compiled.pattern})
+        return rules
 
     @classmethod
     def from_environment(cls) -> Self:

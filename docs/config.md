@@ -29,11 +29,12 @@ PostgreSQL URI 中的保留字符必须 percent-encode，例如 `@` 写为 `%40`
 
 | 类别 | 性质 | 说明 |
 | --- | --- | --- |
-| owner-first、Evidence、准入、revision 和敏感拦截 | 代码固定 | 环境变量不能绕过领域约束 |
+| owner-first、Evidence、准入、revision | 代码固定 | 环境变量不能绕过领域约束 |
+| 敏感拦截规则 | 默认代码固定，可配置注入 | 默认规则集可通过 `MEMORY_MCP_SENSITIVE_RULES` 覆盖 |
 | `general-work`、`investment-research` | 代码固定 | Profile 类型、版本、策略指纹、有效期和关系策略 |
 | MCP 工具与 DTO v1 | 代码固定 | 工具参数不接受 owner |
 | PostgreSQL schema | migration 管理 | 服务启动前独立升级 |
-| 维护批次 `500`、pending review 保留 `30` 天 | 代码固定 | 防止无界事务和长期悬挂候选 |
+| 维护批次 `500`、pending review 保留 `30` 天、续批退避 | 代码固定 | 防止无界事务和长期悬挂候选 |
 | Agent outbox TTL `24h`、每次 Stop 补送 `1` 条 | 代码固定 | 有界恢复，不形成后台队列 |
 | Server 网络、连接池和预算 | 环境可配置 | 有类型与范围校验 |
 | 静态 Principal 映射 | 环境可配置 | 可替换为 OAuth/OIDC 认证适配器 |
@@ -79,8 +80,26 @@ Profile、元数据、自动关系、`profile_version` 和 `profile_fingerprint`
 
 维护 runner 与 Server 共用进程和 PostgreSQL 连接池，但同步数据库调用在线程中执行，
 不会阻塞 MCP 事件循环。每批最多处理 500 个 revision/review；积压时让出事件循环后
-立即续批。`/health` 的 `maintenance.state` 为 `disabled/starting/ok/degraded`；维护
-降级不会在数据库健康时返回 503。普通部署保持默认值即可，Agent 不读取也不配置该变量。
+立即续批，连续 `has_more` 超过软上限（8 次）后插入 1 秒退避，避免在异常持续不推进的
+场景下形成紧密循环持续占用连接；`has_more=False` 或失败重置计数。`/health` 的
+`maintenance.state` 为 `disabled/starting/ok/degraded`；维护降级不会在数据库健康时返回
+503。普通部署保持默认值即可，Agent 不读取也不配置该变量。
+
+可选的 `MEMORY_MCP_SENSITIVE_RULES` 是一个 JSON 数组，每项为
+`{"category": str, "pattern": str}`，用于覆盖默认敏感规则集：
+
+```json
+[
+  {"category": "project_codename", "pattern": "阿波罗"},
+  {"category": "internal_contact", "pattern": "(?:手机|电话)\\s*[:：]?\\s*\\d{11}"}
+]
+```
+
+未配置时使用内置默认规则（credential、account_secret、real_holding、
+transaction_instruction）。配置后**完全替换**默认规则集而非合并；空数组视为未配置。
+非法正则在启动阶段安全失败。投研场景的默认 `transaction_instruction` 规则可能误伤
+"买入格力电器"这类研究偏好文本，部署可按需调整，但敏感规则是安全决策，调整前需评估
+覆盖范围。详细规则语义见[日志规范](logging.md)。
 
 ### 3.3 静态认证
 

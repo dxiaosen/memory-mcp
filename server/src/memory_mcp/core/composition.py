@@ -3,7 +3,9 @@
 from collections.abc import Iterable
 
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
+from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
 from memory_mcp.core.application import MemoryService
+from memory_mcp.core.domain import MemoryTokenizer
 from memory_mcp.core.ports import (
     CandidateExtractor,
     MemoryProfile,
@@ -22,6 +24,7 @@ def create_memory_service(
     relation_extractor: RelationExtractor | None = None,
     sensitive_guard: SensitiveContentGuard | None = None,
     recall_candidate_limit: int = 500,
+    tokenizer: MemoryTokenizer | None = None,
 ) -> MemoryService:
     """创建服务并显式注册全部记忆配置。"""
 
@@ -32,6 +35,7 @@ def create_memory_service(
         relation_extractor=relation_extractor,
         sensitive_guard=sensitive_guard or RegexSensitiveContentGuard(),
         recall_candidate_limit=recall_candidate_limit,
+        tokenizer=tokenizer or JiebaTokenizer(),
     )
     for profile in profiles:
         service.register_profile(profile)

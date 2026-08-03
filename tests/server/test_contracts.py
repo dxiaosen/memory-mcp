@@ -7,6 +7,7 @@ from uuid import UUID
 import anyio
 import pytest
 from memory_mcp.app import (
+    _MAINTENANCE_HAS_MORE_SOFT_LIMIT,
     MaintenanceHealth,
     _run_maintenance_loop,
     _run_server,
@@ -458,3 +459,70 @@ def test_interactive_shutdown_does_not_expose_keyboard_interrupt() -> None:
             raise KeyboardInterrupt
 
     _run_server(InterruptingServer())
+
+
+def test_unknown_exception_maps_to_non_retryable_fail_fast() -> None:
+    """未知异常（编程错误）不应被映射为可重试，避免反复重试 bug。"""
+
+    from memory_mcp.errors import ErrorCode
+    from memory_mcp.tools.shared import _map_error
+
+    code, _message, retryable = _map_error(TypeError("unexpected bug"))
+    assert code is ErrorCode.TEMPORARILY_UNAVAILABLE
+    assert retryable is False
+
+
+def test_os_error_maps_to_retryable() -> None:
+    """明确临时性异常仍标记可重试。"""
+
+    from memory_mcp.errors import ErrorCode
+    from memory_mcp.tools.shared import _map_error
+
+    code, _message, retryable = _map_error(OSError("db temporarily unreachable"))
+    assert code is ErrorCode.TEMPORARILY_UNAVAILABLE
+    assert retryable is True
+
+
+def test_value_error_maps_to_invalid_event() -> None:
+    from memory_mcp.errors import ErrorCode
+    from memory_mcp.tools.shared import _map_error
+
+    code, _message, retryable = _map_error(ValueError("bad payload"))
+    assert code is ErrorCode.INVALID_EVENT
+    assert retryable is False
+
+
+def test_maintenance_loop_backs_off_after_consecutive_has_more() -> None:
+    """连续 has_more 超过软上限时插入退避延迟，避免紧密循环。"""
+
+    async def run() -> None:
+        from memory_mcp.core.domain import MaintenanceResult
+
+        stop_event = asyncio.Event()
+        call_count = 0
+
+        def operation() -> MaintenanceResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count > _MAINTENANCE_HAS_MORE_SOFT_LIMIT + 1:
+                stop_event.set()
+            return MaintenanceResult(
+                effective_at=datetime(2026, 8, 3, tzinfo=UTC),
+                expired_memory_count=10,
+                expired_review_count=0,
+                stale_relation_count=0,
+                has_more=True,
+            )
+
+        task = asyncio.create_task(
+            _run_maintenance_loop(
+                operation,
+                interval_seconds=300,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.wait_for(task, timeout=10)
+        # 软上限 + 1 次后续调用后触发退避再继续，最终因 stop_event 终止。
+        assert call_count > _MAINTENANCE_HAS_MORE_SOFT_LIMIT
+
+    anyio.run(run)

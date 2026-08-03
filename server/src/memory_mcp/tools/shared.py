@@ -1,5 +1,6 @@
 """MCP 工具模块共享的认证、日志、错误映射和 schema 收紧。"""
 
+import asyncio
 import logging
 from time import perf_counter
 from typing import Any
@@ -113,9 +114,25 @@ class ToolSupport:
         error: Exception,
     ) -> ErrorResponse:
         code, message, retryable = _map_error(error)
+        # 已知边界错误是预期的业务异常，记 WARNING；未知异常是潜在 bug，记 ERROR。
+        log_level = (
+            logging.WARNING
+            if isinstance(error, MemoryMcpBoundaryError | ProfileNotRegisteredError)
+            or isinstance(
+                error,
+                IdempotencyConflictError
+                | MemoryNotFoundError
+                | InvalidMemoryRelationError
+                | MemoryRelationNotFoundError
+                | ReviewNotFoundError
+                | CaptureNotConfiguredError
+                | ValueError,
+            )
+            else logging.ERROR
+        )
         log_event(
             _LOGGER,
-            logging.WARNING,
+            log_level,
             "memory.mcp.tool.failed",
             error_code=code.value,
             error_type=type(error).__name__,
@@ -183,8 +200,16 @@ def _map_error(error: Exception) -> tuple[ErrorCode, str, bool]:
         )
     if isinstance(error, ValueError):
         return ErrorCode.INVALID_EVENT, "The request payload is invalid.", False
+    # 明确临时性异常（网络、超时）仍可重试；其余未知异常 fail fast，避免
+    # 把编程错误当作临时故障反复重试。
+    if isinstance(error, OSError | TimeoutError | asyncio.TimeoutError):
+        return (
+            ErrorCode.TEMPORARILY_UNAVAILABLE,
+            "The memory service is temporarily unavailable.",
+            True,
+        )
     return (
         ErrorCode.TEMPORARILY_UNAVAILABLE,
-        "The memory service is temporarily unavailable.",
-        True,
+        "The memory service encountered an unexpected error.",
+        False,
     )

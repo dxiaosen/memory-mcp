@@ -1089,16 +1089,24 @@ Application 对候选计算：
 
 - query 与 task intent 的规范化文本；
 - 完整短语包含关系；
-- Unicode word overlap；
+- 经可注入分词器切分的 word overlap（投研场景默认 jieba 精确模式，关闭 HMM
+  以保证离线评测确定性；纯标点 token 被丢弃，避免连字符产生虚假重叠）；
 - 字符二元组 overlap，改善中文小样本召回；
-- subject 完全相等加权；
+- subject 完全相等加权（`0.2`，不再压过正文相关度）；
 - MemoryProfile memory type priority；
 - 当另一端自身也达到 threshold 时，最多 `0.12` 的一跳关系加权；
 - observed time 作为稳定排序补充。
 
-只有基础文本分数达到 relevance threshold 的记录才进入结果；数据库 lexical score
-只负责候选生成，不替代应用分数。关系不能独自把不相关 endpoint 拉入召回，也不递归
-扩展候选。当前算法故意可解释、无外部 Embedding 或模型调用依赖。
+`core.domain` 定义 `MemoryTokenizer` 协议和 `SimpleTokenizer` 兜底实现，`core.adapters`
+提供基于 jieba 的生产实现；组合根注入分词器，召回用例不直接依赖 jieba。word overlap
+信号此前因 Python `\w` 把无空格 CJK 当作单 token 而对中文失效，分词注入后该信号真正
+生效。
+
+打分常量（relevance threshold `0.18`、relation boost `0.12`、profile hint boost
+`0.16`、subject exact-match boost `0.2`）均为命名模块级常量，经离线评测校准且不回退
+`recall_at_k`。只有基础文本分数达到 relevance threshold 的记录才进入结果；数据库
+lexical score 只负责候选生成，不替代应用分数。关系不能独自把不相关 endpoint 拉入
+召回，也不递归扩展候选。当前算法故意可解释、无外部 Embedding 或模型调用依赖。
 
 ### 13.3 subject 语义
 
@@ -1123,7 +1131,10 @@ Server 同时控制：
 - Server 硬上限；
 - rendered context header 成本。
 
-当前 token 数是保守字符估算，不绑定 provider tokenizer。选中条目按预算逐个
+token 估算按字符类别区分：CJK 字符约 1 token/字，ASCII 约 1 token/4 字符，混合文本
+按类别累加。此前单一 `len/3` 对中文严重低估（30 字中文估算 10 token，实际约 30 token），
+导致 `token_budget` 实际塞入远超预算的中文内容；按类别估算后渲染预算反映真实占用。
+估算仍不绑定具体 provider tokenizer，只保证不再严重低估。选中条目按预算逐个
 加入；关系只在两个 endpoint 都已选中时渲染，并同样计入预算。关系元数据放不下时
 先省略关系，再决定是否省略整个 item；任一截断都标记 truncated。无相关内容返回空 items，Hook 将
 `memory_context=None`，不会注入“没有记忆”占位。
@@ -1318,11 +1329,8 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 
 ### 15.2 领域约束
 
-数据库通过 UUID、TIMESTAMPTZ、外键、复合 owner 引用、check constraint、部分
-唯一索引和 deferred constraint 保证：
+数据库通过 UUID、TIMESTAMPTZ、CHECK constraint、复合 owner 引用唯一约束和部分唯一索引保证：
 
-- 引用 owner 一致；
-- profile_id/type 已注册；
 - verification/sensitivity 枚举和 confidence 范围合法；
 - validity 是合法半开时间窗口；
 - Evidence source type 和可选引用文本合法；
@@ -1331,11 +1339,15 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 - primary Evidence 完整；
 - review resolution 不产生跨 owner Memory；
 - replacement 不出现两个 current；
-- relation 两端同 owner/同 Profile、无 self-loop、类型已注册；
-- 每个 owner/source/target/type 最多一条 active relation；origin/scope/provenance、
-  revision 外键以及 active/stale/revoked 时间状态一致。
+- relation 无 self-loop、origin/scope/provenance 和 active/stale/revoked 时间状态一致；
+- 每个 owner/source/target/type 最多一条 active relation。
 
-Application 校验提供友好错误；数据库约束提供最终防线。
+引用完整性（owner 一致、profile_id/type 已注册、relation 两端存在且同 owner/同 Profile）由
+应用层事务和 advisory lock 保证，不依赖数据库外键。`commit_capture` 在事务内用 advisory lock
+串行化，`_insert_relation` 显式 `SELECT ... FOR UPDATE OF i, r` 检查端点存在性和有效性，
+`replace`/`revoke`/`review` 操作都锁定目标行后再更新。CHECK/UNIQUE 约束仍防止非法状态。
+
+Application 校验提供友好错误；数据库 CHECK/UNIQUE 约束提供最终防线。
 
 ### 15.3 Repository 事务
 
@@ -1365,29 +1377,17 @@ Migration：
 - 发布时显式运行；
 - 默认 `MIGRATE_ON_STARTUP=false`。
 
-当前顺序为：
+当前只有一个 migration 文件：
 
-1. `0001_memory_core.sql`：建立初始 Memory Core schema；
-2. `0002_lifecycle_recall.sql`：增加生命周期召回索引；
-3. `0003_profile_naming.sql`：原地把旧 `scenario/policy_version` 命名迁移为
-   `profile_id/profile_version`，通过 rename 保留已有数据；
-4. `0004_memory_metadata.sql`：增加 revision confidence/verification/sensitivity/
-   validity，Evidence citation 字段和 pending candidate 对应字段；历史 confidence
-   保持 null，`valid_from` 从原 `observed_at` 回填；
-5. `0005_metadata_rollback_compat.sql`：为 `valid_from` 增加数据库时间默认值，只用于
-   旧版 Server 短期回滚写入；新版始终显式使用可信 `observed_at`；
-6. `0006_memory_relations.sql`：增加 Profile relation type 目录、关系表、同
-   owner/Profile endpoint 外键、状态约束和 active 唯一索引，不回填现有记忆；
-7. `0007_relation_provenance.sql`：增加 origin/scope、revision 快照、自动 provenance
-   和 stale 生命周期；旧关系保守标记为 `legacy/item`，不伪造历史证据。
-8. `0008_policy_routing_recall.sql`：给 capture 增加策略指纹，历史行明确写为
-   `legacy-unknown`；重建事件/来源唯一约束，使 Profile 升级不制造重复捕获。
-9. `0009_memory_maintenance_recall.sql`：安装 `pg_trgm`，增加 subject/content 混合召回
-   索引和维护索引，并加入 review `expired` 终态及 relation stale 兼容约束。
+1. `0001_memory_schema.sql`：完整的 Memory MCP schema，包含所有表、CHECK/UNIQUE 约束、
+   索引和 `pg_trgm` 扩展。外键约束全部移除，引用完整性由应用层事务和 advisory lock 保证。
+
+该文件由原 9 个增量 migration（`0001`-`0009`）折叠合并而成，以最终表结构直接 `CREATE TABLE`，
+去掉了中间的 `ALTER`/`RENAME`/`ADD COLUMN` 语句。开发阶段已清空 `memory_schema_migrations`
+表，因此可安全合并而不产生 checksum 冲突。
 
 任何已执行 migration 都可能存在于部署数据库中，因此不能修改其内容或 checksum。
-新安装同样按九条顺序执行，最终 schema 只暴露 profile
-命名。
+新安装按文件名顺序执行；`schema.py` 校验已执行 migration 的 checksum 未被篡改。
 
 这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
 

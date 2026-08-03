@@ -3,7 +3,6 @@
 import json
 import logging
 import math
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -13,13 +12,16 @@ from memory_mcp.core.domain import (
     Evidence,
     MemoryRecallCandidate,
     MemoryRelationSummary,
+    MemoryTokenizer,
     PrincipalContext,
     RecalledMemory,
     RecallQuery,
     RecallResult,
     RecallSourceSummary,
     RelationDirection,
+    SimpleTokenizer,
     normalize_memory_text,
+    tokenize_memory_text,
 )
 from memory_mcp.core.ports import (
     MemoryRepository,
@@ -36,10 +38,19 @@ _SAFE_CONTEXT_HEADER = (
     "User views are unverified preferences, not verified facts."
 )
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
-_WORD = re.compile(r"\w+", re.UNICODE)
 _RELEVANCE_THRESHOLD = 0.18
 _RELATION_BOOST = 0.12
 _PROFILE_HINT_BOOST = 0.16
+# subject 精确命中加成。原值 0.45 会让 subject 命中但正文无关的记忆 clamp
+# 到 1.0，压过正文高度相关的记忆；下调到 0.2 让正文相关度仍有话语权。
+_SUBJECT_EXACT_MATCH_BOOST = 0.2
+# CJK 字符范围（含兼容表意文字），用于 token 估算按字符类别区分。
+_CJK_RANGES = (
+    (0x3400, 0x4DBF),  # CJK 扩展 A
+    (0x4E00, 0x9FFF),  # CJK 统一表意文字
+    (0xF900, 0xFAFF),  # CJK 兼容表意文字
+    (0x20000, 0x2A6DF),  # CJK 扩展 B
+)
 
 
 class RecallService:
@@ -53,6 +64,7 @@ class RecallService:
         *,
         clock: Callable[[], datetime],
         candidate_limit: int,
+        tokenizer: MemoryTokenizer | None = None,
     ) -> None:
         if candidate_limit < 1:
             raise ValueError("candidate_limit must be positive")
@@ -61,6 +73,7 @@ class RecallService:
         self._sensitive_guard = sensitive_guard
         self._clock = clock
         self._candidate_limit = candidate_limit
+        self._tokenizer = tokenizer or SimpleTokenizer()
 
     def recall(
         self,
@@ -114,6 +127,7 @@ class RecallService:
                 query,
                 profile.recall_priorities,
                 profile.recall_hints,
+                self._tokenizer,
             )
             for record in candidates
         }
@@ -294,6 +308,7 @@ def _score_record(
     query: RecallQuery,
     priorities: Mapping[str, int],
     recall_hints: Mapping[str, frozenset[str]],
+    tokenizer: MemoryTokenizer,
 ) -> float:
     search_text = " ".join(
         value for value in (query.query, query.task_intent) if value is not None
@@ -311,12 +326,13 @@ def _score_record(
         record.item.memory_type,
         priorities,
         recall_hints,
+        tokenizer,
     )
     if query.subject is not None and (
         normalize_memory_text(query.subject)
         == normalize_memory_text(record.item.subject)
     ):
-        score += 0.45
+        score += _SUBJECT_EXACT_MATCH_BOOST
     return round(min(score, 1.0), 6)
 
 
@@ -326,10 +342,11 @@ def _profile_relevance(
     memory_type: str,
     priorities: Mapping[str, int],
     recall_hints: Mapping[str, frozenset[str]],
+    tokenizer: MemoryTokenizer,
 ) -> float:
     """在通用文本相关性上叠加由 Profile 声明的有限类型信号。"""
 
-    score = _text_relevance(query, target)
+    score = _text_relevance(query, target, tokenizer)
     query_key = normalize_memory_text(query)
     if any(
         normalize_memory_text(hint) in query_key
@@ -342,7 +359,11 @@ def _profile_relevance(
     return round(min(score, 1.0), 6)
 
 
-def _text_relevance(query: str, target: str) -> float:
+def _text_relevance(
+    query: str,
+    target: str,
+    tokenizer: MemoryTokenizer,
+) -> float:
     query_key = normalize_memory_text(query)
     target_key = normalize_memory_text(target)
     if not query_key or not target_key:
@@ -350,8 +371,8 @@ def _text_relevance(query: str, target: str) -> float:
     score = 0.0
     if query_key in target_key or target_key in query_key:
         score += 0.7
-    query_words = set(_WORD.findall(query_key))
-    target_words = set(_WORD.findall(target_key))
+    query_words = set(tokenize_memory_text(query_key, tokenizer))
+    target_words = set(tokenize_memory_text(target_key, tokenizer))
     if query_words:
         score += len(query_words & target_words) / len(query_words) * 0.25
     query_pairs = _character_pairs(query_key)
@@ -486,4 +507,22 @@ def _relation_aware_score(
 
 
 def _estimate_tokens(value: str) -> int:
-    return max(1, math.ceil(len(value) / 3))
+    """按字符类别估算 token：CJK 约 1 token/字，其他约 1 token/4 字符。
+
+    原 ``len/3`` 对纯中文严重低估（30 字中文估算 10 token，实际约 30 token），
+    导致 ``token_budget`` 实际塞入远超预算的中文内容。
+    """
+    if not value:
+        return 1
+    cjk_count = 0
+    other_count = 0
+    for char in value:
+        code = ord(char)
+        if char.isspace():
+            continue
+        if any(low <= code <= high for low, high in _CJK_RANGES):
+            cjk_count += 1
+        else:
+            other_count += 1
+    estimated = cjk_count + other_count / 4
+    return max(1, math.ceil(estimated))

@@ -58,103 +58,62 @@ class PostgreSQLTestDatabase:
 def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     migrations = load_migrations()
 
+    # 合并后的 schema 只有一个 migration 文件。
     assert [migration.version for migration in migrations] == [
-        "0001_memory_core.sql",
-        "0002_lifecycle_recall.sql",
-        "0003_profile_naming.sql",
-        "0004_memory_metadata.sql",
-        "0005_metadata_rollback_compat.sql",
-        "0006_memory_relations.sql",
-        "0007_relation_provenance.sql",
-        "0008_policy_routing_recall.sql",
-        "0009_memory_maintenance_recall.sql",
+        "0001_memory_schema.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
     sql = migrations[0].sql
-    for required_fragment in (
-        "memory_items",
-        "memory_capture_runs_event_unique",
-        "memory_revisions_one_current_idx",
-        "DEFERRABLE INITIALLY DEFERRED",
-        "TIMESTAMPTZ",
-        "UUID",
-        "owner_id",
-    ):
-        assert required_fragment in sql
-
-    profile_migration = migrations[2].sql
+    # 核心表和索引存在。
     for required_fragment in (
         "memory_profiles",
         "memory_profile_types",
+        "memory_profile_relations",
+        "memory_items",
+        "memory_revisions",
+        "memory_evidence",
+        "memory_capture_runs",
+        "memory_review_items",
+        "memory_relations",
+        "memory_capture_outcomes",
+        "memory_capture_runs_event_unique",
+        "memory_revisions_one_current_idx",
+        "memory_relations_one_active_idx",
+        "memory_items_recall_subject_trgm_idx",
+        "memory_revisions_recall_content_trgm_idx",
+        "memory_revisions_maintenance_expiry_idx",
+        "memory_review_items_maintenance_idx",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        "TIMESTAMPTZ",
+        "UUID",
+        "owner_id",
         "profile_id",
         "profile_version",
-        "RENAME COLUMN scenario TO profile_id",
-    ):
-        assert required_fragment in profile_migration
-
-    metadata_migration = migrations[3].sql
-    for required_fragment in (
+        "profile_fingerprint",
         "extraction_confidence",
         "verification_status",
         "sensitivity_level",
         "valid_from",
         "source_type",
         "citation_locator",
-        "memory_revisions_owner_effective_idx",
-    ):
-        assert required_fragment in metadata_migration
-
-    rollback_compatibility_migration = migrations[4].sql
-    assert "ALTER COLUMN valid_from SET DEFAULT CURRENT_TIMESTAMP" in (
-        rollback_compatibility_migration
-    )
-
-    relation_migration = migrations[5].sql
-    for required_fragment in (
-        "memory_profile_relations",
-        "memory_relations_owned_source",
-        "memory_relations_owned_target",
-        "memory_relations_not_self",
-        "memory_relations_one_active_idx",
-        "memory_relations_owner_profile_idx",
-    ):
-        assert required_fragment in relation_migration
-
-    provenance_migration = migrations[6].sql
-    for required_fragment in (
         "origin TEXT NOT NULL DEFAULT 'legacy'",
         "scope TEXT NOT NULL DEFAULT 'item'",
         "source_revision_id",
-        "memory_relations_capture_owner",
         "memory_relations_provenance_state",
-        "conversation_id IS NOT NULL",
-        "confidence IS NOT NULL",
-        "stale_reason TEXT",
-        "stale_reason IS NOT NULL",
+        "status IN ('pending', 'confirmed', 'rejected', 'expired')",
         "status IN ('active', 'stale', 'revoked')",
     ):
-        assert required_fragment in provenance_migration
+        assert required_fragment in sql, f"missing fragment: {required_fragment}"
 
-    hardening_migration = migrations[7].sql
-    for required_fragment in (
-        "profile_fingerprint",
-        "owner_id, event_id",
-        "DROP CONSTRAINT memory_capture_runs_source_unique",
-        "WHERE event_id IS NULL",
-    ):
-        assert required_fragment in hardening_migration
-
-    maintenance_migration = migrations[8].sql
-    for required_fragment in (
-        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
-        "status IN ('pending', 'confirmed', 'rejected', 'expired')",
-        "memory_items_recall_subject_trgm_idx",
-        "memory_revisions_recall_content_trgm_idx",
-        "memory_revisions_maintenance_expiry_idx",
-        "memory_review_items_maintenance_idx",
-    ):
-        assert required_fragment in maintenance_migration
+    # 外键全部移除：引用完整性由应用层事务和 advisory lock 保证。
+    assert "FOREIGN KEY" not in sql
+    assert "REFERENCES" not in sql
+    # 中间迁移步骤（ALTER/RENAME）在合并后不再存在。
+    assert "RENAME COLUMN scenario TO profile_id" not in sql
+    assert "DROP CONSTRAINT memory_capture_runs_source_unique" not in sql
+    # valid_from 默认值在 CREATE TABLE 里直接声明，不再用 ALTER。
+    assert "valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" in sql
 
 
 def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
@@ -807,5 +766,19 @@ def test_real_postgresql_overlapping_event_retry_and_service_restart(
 
 
 def _truncate_memory_tables(database_url: str) -> None:
+    # 外键已移除，CASCADE 不再级联清空；显式清空全部 memory 表。
     with _connect_safely(database_url) as connection:
-        connection.execute("TRUNCATE TABLE memory_profiles CASCADE")
+        connection.execute(
+            """
+            TRUNCATE TABLE memory_capture_outcomes,
+                            memory_relations,
+                            memory_review_items,
+                            memory_capture_runs,
+                            memory_evidence,
+                            memory_revisions,
+                            memory_items,
+                            memory_profile_relations,
+                            memory_profile_types,
+                            memory_profiles
+            """
+        )

@@ -22,6 +22,7 @@ from memory_mcp.core.domain import (
     MemoryRelation,
     MemoryRelationSummary,
     MemoryRevision,
+    MemoryTokenizer,
     PrincipalContext,
     RecallQuery,
     RecallResult,
@@ -66,6 +67,7 @@ class MemoryService:
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] | None = None,
         recall_candidate_limit: int = 500,
+        tokenizer: MemoryTokenizer | None = None,
     ) -> None:
         self._repository = repository
         self._profile_registry = profile_registry
@@ -88,6 +90,7 @@ class MemoryService:
             sensitive_guard,
             clock=self._clock,
             candidate_limit=recall_candidate_limit,
+            tokenizer=tokenizer,
         )
         self._maintenance_service = MemoryMaintenanceService(
             repository,

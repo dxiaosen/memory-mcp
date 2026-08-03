@@ -29,6 +29,7 @@ from memory_mcp.core.adapters.postgresql import (
 from memory_mcp.core.adapters.postgresql.schema import (
     apply_migrations as apply_postgresql_migrations,
 )
+from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.composition import create_memory_service
 from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import ExtractionSettings
@@ -38,6 +39,9 @@ from memory_mcp.settings import ConfiguredPrincipal, MemoryServerSettings
 from memory_mcp.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
+# 连续 has_more 续批的软上限与触发后的退避秒数，避免紧密循环占用 DB 连接。
+_MAINTENANCE_HAS_MORE_SOFT_LIMIT = 8
+_MAINTENANCE_HAS_MORE_BACKOFF_SECONDS = 1
 
 
 class _RunnableServer(Protocol):
@@ -195,11 +199,15 @@ def create_memory_mcp_server(
 
         configured_profiles = tuple(profiles or built_in_profiles())
         _validate_default_profiles(principals.values(), configured_profiles)
+        sensitive_guard = RegexSensitiveContentGuard.from_config(
+            settings.configured_sensitive_rules()
+        )
         memory_service = create_memory_service(
             repository,
             configured_profiles,
             candidate_extractor=configured_extractor,
             relation_extractor=configured_relation_extractor,
+            sensitive_guard=sensitive_guard,
             recall_candidate_limit=settings.recall_candidate_limit,
         )
     else:
@@ -268,17 +276,32 @@ async def _run_maintenance_loop(
     stop_event: asyncio.Event,
     health: MaintenanceHealth | None = None,
 ) -> None:
-    """维护失败与 MCP 服务隔离；积压时让出事件循环后继续下一批。"""
+    """维护失败与 MCP 服务隔离；积压时让出事件循环后继续下一批。
 
+    连续 ``has_more`` 超过软上限时插入短延迟，避免在异常持续不推进的
+    场景下形成紧密循环持续占用数据库连接。
+    """
+
+    consecutive_has_more = 0
     while not stop_event.is_set():
         try:
             result = await asyncio.to_thread(operation)
             if health is not None:
                 health.observe_success(result)
-            delay = 0 if result.has_more else interval_seconds
+            if result.has_more:
+                consecutive_has_more += 1
+                delay = (
+                    0
+                    if consecutive_has_more <= _MAINTENANCE_HAS_MORE_SOFT_LIMIT
+                    else _MAINTENANCE_HAS_MORE_BACKOFF_SECONDS
+                )
+            else:
+                consecutive_has_more = 0
+                delay = interval_seconds
         except Exception as exc:
             if health is not None:
                 health.observe_failure(exc)
+            consecutive_has_more = 0
             log_event(
                 _LOGGER,
                 logging.ERROR,
