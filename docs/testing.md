@@ -88,13 +88,12 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' \
 `PostgreSQL schema is up to date` 表示全部 migration 已应用且 checksum 一致，不是
 “没有数据库表”。
 
-`0008_policy_routing_recall.sql` 会新增 capture 策略指纹并收紧跨版本唯一约束。
-当前 `0009_memory_maintenance_recall.sql` 安装 `pg_trgm`、增加混合召回/维护索引，
-并允许 pending review 进入 `expired` 终态。`health` 会同时检查 migration checksum、
-扩展和四个必需索引。
+`0001_memory_schema.sql` 安装 `pg_trgm` 扩展、创建全部表和索引（含召回/维护索引）。
+开发阶段只有一个 schema 文件，改 schema 直接修改该文件并用 `migrate --rebuild` 重建。
+`health` 会同时检查 migration checksum、扩展和四个必需索引。
 现有 disposable PostgreSQL contract 还会实际执行混合候选、最终 revision 的批量
 Evidence 水合、owner 隔离和重复维护；它不是 SQL 文本断言。未配置专用测试库时这些
-用例明确 skip，不能写成“已通过真实 PostgreSQL”。
+用例明确 skip，不能写成”已通过真实 PostgreSQL”。
 共享开发/生产库只运行非破坏性的 `migrate/health`；会 truncate 的 contract/E2E 仍
 必须使用名称含 `test` 的专用库。
 

@@ -15,6 +15,14 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("migrate", "health"))
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "开发模式：schema 文件 checksum 变更时 drop 重建。"
+            "生产环境不要使用此标志，它会清空所有数据。"
+        ),
+    )
     args = parser.parse_args()
 
     settings = MemoryServerSettings.from_environment()
@@ -24,7 +32,10 @@ def main() -> None:
         check_health(database_url)
         print("Memory PostgreSQL is healthy")
         return
-    applied = apply_migrations(database_url)
+    applied = apply_migrations(
+        database_url,
+        rebuild_on_checksum_change=args.rebuild,
+    )
     if applied:
         print("Applied PostgreSQL migrations: " + ", ".join(applied))
     else:

@@ -1,7 +1,9 @@
 # Memory MCP 端到端使用
 
-本文从空环境跑通 Server、数据库、真实模型和一个 Agent Host。全部变量见
-[配置参考](config.md)，宿主 Hook 配置见[Agent 主动记忆](agents.md)。
+本文面向**开发者和第一次使用者**，从空环境跑通 Server、数据库、真实模型和一个
+Agent Host。生产部署的完整步骤（systemd、安全组、ALB/CLB）见
+[部署指南](deploy.md)。全部配置项见[配置参考](config.md)，宿主 Hook 配置见
+[Agent 主动记忆](agents.md)。
 
 ## 1. 部署拓扑
 
@@ -169,11 +171,10 @@ Agent 进程只读取自己的 URL 和 Token，不能把多枚 Token 合并进�
 它不会读取数据库或调用模型。真实模型评测必须显式增加 `--live-model`，结果说明见
 [投研记忆评测](evaluation.md)。
 
-## 9. 网络、日志与故障排查
+## 9. 故障排查
 
-同一 VPC/VPN 可直接访问 `http://<private-ip>:8765/mcp`，不需要 Nginx；监听
-`0.0.0.0` 时要限制安全组。公网使用负载均衡器终止 HTTPS，禁止直接暴露携带静态
-Token 的明文 HTTP。完整步骤见[部署指南](deploy.md)。
+网络拓扑和公网 HTTPS 配置见[部署指南](deploy.md)，日志字段与脱敏见
+[日志规范](logging.md)。
 
 | 现象 | 处理 |
 | --- | --- |
@@ -185,6 +186,3 @@ Token 的明文 HTTP。完整步骤见[部署指南](deploy.md)。
 | run key conflict | 不同 payload 必须使用新的顶层 turn ID |
 | AfterRun 较慢 | 当前等待有界 receipt 并有本地 outbox；只有跨主机削峰/持续后台投递才引入 queue |
 | 日志出现正文 | 关闭 `MEMORY_MCP_LOG_CONTENT` 并清理内容日志 |
-
-BeforeRun/AfterRun 的准确时机、Codex/Claude Code 配置和通用 Python API 见
-[Agent 主动记忆](agents.md)；日志字段与脱敏见[日志规范](logging.md)。

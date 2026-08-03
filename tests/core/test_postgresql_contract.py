@@ -58,11 +58,9 @@ class PostgreSQLTestDatabase:
 def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     migrations = load_migrations()
 
-    # 合并后的 schema 有三个 migration 文件。
+    # 开发阶段只维护一个 schema 文件，不每次变更新建增量 migration。
     assert [migration.version for migration in migrations] == [
         "0001_memory_schema.sql",
-        "0002_drop_last_verified_at.sql",
-        "0003_split_evidence_documents.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 

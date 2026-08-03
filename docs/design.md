@@ -279,9 +279,10 @@ memory-mcp/
 │       │   │   │   ├── mapping.py
 │       │   │   │   ├── validation.py
 │       │   │   │   ├── schema.py
-│       │   │   │   └── migrations/
+│       │   │   │   └── migrations/   # 0001 schema + 0002/0003 增量
 │       │   │   ├── in_memory.py
-│       │   │   ├── sensitive.py
+│       │   │   ├── tokenizer.py    # jieba 中文分词 adapter
+│       │   │   ├── sensitive.py    # 可配置脱敏守卫
 │       │   │   └── structured_model.py
 │       │   └── composition.py
 │       ├── extraction/
@@ -318,11 +319,17 @@ memory-mcp/
 │       ├── logging.py              # Agent 非内容运行日志
 │       ├── runner.py
 │       └── settings.py
+├── evals/                        # 投研记忆评测：数据集、runner、metrics
 ├── examples/
 │   ├── agents/                    # 宿主 Hook 配置模板
 │   ├── client.py
 │   └── hook_runner.py
 ├── tests/
+│   ├── support/fakes.py           # 测试替身：FakeExtractor/TestProfile
+│   ├── core/                      # 领域/应用/适配器契约测试
+│   ├── server/                    # MCP 传输与契约测试
+│   ├── agent/                     # Agent bridge/hosts/state 测试
+│   └── extraction/                # 模型抽取 adapter 测试
 ├── deploy/systemd/
 ├── docs/
 └── openspec/
@@ -1055,7 +1062,7 @@ suppression，应建立独立规范，不能复用 revoke/expired 偷做物理�
 `link_memories` 只接受两个 owned、同 Profile、active/current/effective 的 Item，并由
 Profile policy 校验 relation type 和方向。相同 owner/source/target/type 的重放由
 应用与 PostgreSQL 活动部分唯一索引收敛为同一关系。它创建 `manual/item` 边；历史
-无法证明来源的 `0006` 数据迁移为 `legacy/item`，不伪造 provenance。
+无法证明来源的旧数据标记为 `legacy/item`，不伪造 provenance。
 
 `revoke_memory_relation` 把关系改为 `revoked` 并记录可信时间，不删除 endpoint；
 重复撤销返回相同记录。`get_memory` 默认只返回活动关系，`include_history=true` 才
@@ -1384,28 +1391,18 @@ Repository facade 负责完整事务。`mapping.py` 负责 row → domain，
 
 ### 15.4 Migration
 
-Migration：
+开发阶段只维护一个 schema 文件 `0001_memory_schema.sql`，不每次变更新建增量 migration。
+改 schema 时直接修改该文件，用 `memory-mcp-db migrate --rebuild` 重建（checksum 变更时
+drop 重建）。生产环境不用 `--rebuild`，checksum 变更会启动失败——生产应通过正式发布流程
+管理 schema 变更。
 
-- 按版本排序；
+Migration 机制：
+
+- 按文件名排序执行；
 - 保存 SHA-256 checksum；
-- 使用 advisory lock；
-- 已执行文件不能修改；
-- 发布时显式运行；
-- 默认 `MIGRATE_ON_STARTUP=false`。
-
-当前只有一个 migration 文件：
-
-1. `0001_memory_schema.sql`：完整的 Memory MCP schema，包含所有表、CHECK/UNIQUE 约束、
-   索引和 `pg_trgm` 扩展。外键约束全部移除，引用完整性由应用层事务和 advisory lock 保证。
-
-该文件由原 9 个增量 migration（`0001`-`0009`）折叠合并而成，以最终表结构直接 `CREATE TABLE`，
-去掉了中间的 `ALTER`/`RENAME`/`ADD COLUMN` 语句。开发阶段已清空 `memory_schema_migrations`
-表，因此可安全合并而不产生 checksum 冲突。
-
-任何已执行 migration 都可能存在于部署数据库中，因此不能修改其内容或 checksum。
-新安装按文件名顺序执行；`schema.py` 校验已执行 migration 的 checksum 未被篡改。
-
-这是为了避免多个应用进程同时争抢 schema 变更，并让发布失败可见。
+- 使用 advisory lock 防并发；
+- 默认 `MIGRATE_ON_STARTUP=false`；
+- `--rebuild` 标志仅在开发阶段使用，会清空数据。
 
 ### 15.5 连接池与生命周期
 
@@ -1432,244 +1429,55 @@ HTTP health 还返回无正文的 `maintenance`：`state` 为 `disabled/starting
 `degraded` 仍返回 HTTP 200；数据库或 schema 不健康才返回 503。健康响应不包含 DSN、
 Token、owner、memory/review 标识或正文。
 
-## 16. 配置设计
+## 16. 配置、部署、日志与测试的设计决策
 
-### 16.1 两个发行包、两个部署单元与配置分组
+以下四个维度有独立的操作文档（[配置](config.md)、[部署](deploy.md)、
+[日志](logging.md)、[测试](testing.md)）。本节只记录**为什么这样设计**的决策，
+不重复操作步骤。
 
-| 发行包 | Python 包/命令 | 生产职责 |
-| --- | --- | --- |
-| `memory-mcp` | `memory_mcp`、`memory-mcp`、`memory-mcp-db` | Server、Core、模型、PostgreSQL |
-| `memory-mcp-agent` | `memory_mcp_agent`、`memory-mcp-hook` | 远程主动记忆 Client 与 Host adapter |
+### 16.1 两个发行包与配置分组
 
-二者由一个 uv workspace 开发和测试，但生产依赖互不引用。根
-`pyproject.toml` 是不发布的 virtual workspace，只通过 dev group 引用两个
-member，让全量测试在同一仓库环境运行；它不会产生第三个 wheel，也不会把 Agent
-依赖带入 `memory-mcp`。
+两个发行包（`memory-mcp` Server 和 `memory-mcp-agent` 轻量 Client）由一个 uv
+workspace 开发和测试，但生产依赖互不引用。根 `pyproject.toml` 是不发布的 virtual
+workspace，不产生第三个 wheel，也不把 Agent 依赖带入 Server。
 
-| 配置组 | 内容 |
-| --- | --- |
-| Database | PostgreSQL DSN、连接池、迁移开关和连接超时 |
-| Server | HTTP 监听、MCP/健康路径、无状态模式、渲染预算和 Recall 候选上限 |
-| Authentication | issuer、resource URL、默认 Profile 和静态 Token/Principal 映射 |
-| Model | provider、model name、API key、base URL、temperature、超时和重试 |
-| Logging | 日志级别、滚动文件参数和独立内容日志开关 |
-| Memory profile | 正式记忆配置固定在代码，版本、策略指纹和 Prompt 版本随捕获写入审计数据 |
+配置分六组：Database、Server、Authentication、Model、Logging、Memory profile。前五组
+由 `MEMORY_MCP_*` 环境变量配置，Memory profile 是代码固定规则（版本、策略指纹、
+Prompt 版本随捕获写入审计数据，不可由环境变量覆盖）。Agent Host 只要求
+`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`，默认省略 `profile_id`，由 Token 的
+`default_profile_id` 在服务端解析。详细配置项和默认值见[配置参考](config.md)。
 
-前五组属于 Memory MCP Server，统一由根目录模板中的 `MEMORY_MCP_*` 配置；
-Memory profile 是相关但不可由环境变量覆盖的规则边界。
-模型与候选生成使用更直观的 `MEMORY_MCP_MODEL_*` 子前缀，但仍由 Server 组合根
-加载，不是单独部署的模型服务。内部代码继续使用 `extraction` 表达信息抽取职责。
+### 16.2 日志的设计约束
 
-Agent Host 是第二个独立部署单元，只安装轻量 `memory-mcp-agent`。每个 Agent
-进程只要求
-`MEMORY_MCP_URL` 和 `MEMORY_MCP_TOKEN`。Agent 默认省略 `profile_id`，由 Token 的
-`default_profile_id` 在服务端解析；未配置该字段的旧映射兼容为 `general-work`。
-fail-open、召回预算、capture 重试和状态 TTL 使用代码默认值。多个 Agent 使用
-相同变量名，由各自进程环境或 EnvironmentFile 提供不同值，不使用动态身份前缀，
-也不读取其他 Agent 的 Secret。
+日志的核心设计约束是：**业务正文不进入 operational log**。`log_event` 只记录稳定
+引用、状态、数量、错误码和耗时；`log_content_event` 仅在显式 `MEMORY_MCP_LOG_CONTENT=true`
+时输出应用字段，且 Bearer Token、DSN、API Key 和敏感规则拦截的原文在任何模式下都
+不进入日志。`stable_reference` 用 SHA-256 前 12 位引用 owner/event/client，不暴露原始标识。
+完整事件名和字段规范见[日志规范](logging.md)。
 
-`server/.env.example` 只描述 Server 的生产形态：真实模型抽取、一个 Principal、
-无 backend 选择器、无 fixed fixture、无多身份验收矩阵。
-`agent/.env.example` 只描述一个 Agent。fixed 候选由自动化测试代码持有；
-跨 Agent/跨用户三身份矩阵由验收流程显式建立。
+### 16.3 部署的设计约束
 
-### 16.2 加载优先级
+部署的核心设计约束是：**PostgreSQL 不开放公网，ECS 应用端口只允许可信网段或负载
+均衡器**。私网直连不需要 Nginx；公网由 ALB/CLB 终止 HTTPS 后转发到 ECS 私网 HTTP。
+进程管理用 systemd：oneshot unit 运行 migration，service unit 运行 `memory-mcp`，
+EnvironmentFile 提供 Secret。发布顺序是先 migration、后 restart、最后 health 和 MCP
+smoke；回滚应用版本但不破坏性回滚已成功的兼容 migration。详细命令见
+[部署指南](deploy.md)。
 
-```text
-显式构造参数
-> 进程环境变量
-> .env
-> 代码默认值
-```
+### 16.4 测试的设计约束
 
-服务端本地运行默认读取根目录 `.env`。`MemoryHookSettings` 不隐式读取该文件；
-Agent 部署使用自己的进程环境，示例程序可以通过 `--env-file` 显式选择一个
-Agent 文件。显式构造参数主要用于测试依赖注入，正式部署使用 EnvironmentFile
-或等价 Secret 机制。
+测试的核心设计约束是：**测试替身只存在于 `tests/support`，不进入生产源码或发行包**。
+分层：Core 单元用 InMemory + Fake Extractor（无网络）；MCP transport 用本机真实 HTTP +
+InMemory；PostgreSQL 契约用真实测试库 + Fake Extractor；Agent wheel 隔离测试用独立 venv。
+必须真实验证的项包括：migration/checksum/transaction、MCP 鉴权、进程重启幂等、
+owner 隔离、真实 provider 抽取、日志无正文、Ctrl+C 优雅关闭、Agent wheel 不含 Server
+依赖。测试数据库必须数据库名含 `test`，fixture 前后 truncate，不自动读取生产 `.env`。
+投研评测（`evals/`）默认离线，只评估 recall/safety，不连接 PostgreSQL 或模型。
+详细命令和分层见[测试文档](testing.md)，评测基准见[投研记忆评测](evaluation.md)。
 
-### 16.3 Secret
+## 17. 扩展策略
 
-按 Secret 处理：
-
-- PostgreSQL DSN；
-- 静态 Token JSON；
-- Hook Bearer Token；
-- model API key。
-
-Secret 不进入 repr、日志、Git、systemd unit、命令行参数或 MCP URL。DSN 中的
-保留字符必须 percent-encode；本地 `.env` 权限应为 `600`。
-
-全部变量、默认值、范围和测试/真实基础设施边界见[配置参考](config.md)。
-
-## 17. 日志与可观测性
-
-### 17.1 默认运行日志
-
-- request ID；
-- capture/event 的稳定摘要；
-- owner/client 的稳定假名引用；
-- tool；
-- profile_id/profile_version；
-- status 和 error code；
-- result count；
-- duration；
-- retry/replay/truncated。
-
-### 17.2 显式内容日志
-
-`MEMORY_MCP_LOG_CONTENT=false` 是代码和模板默认值。受控手工联调设置为 `true`
-并重启后，专用 `memory_mcp.content` logger 额外记录：
-
-- SensitiveGuard 脱敏后的完成轮次和 subject hint；
-- 通过持久化前敏感检查的候选；
-- 准入 outcome 和事务提交结果；
-- 当前 owner 范围内的召回 query、排序候选和最终 rendered context；
-- 手动创建、读取、列表和 pending review 的业务对象。
-
-服务启动必须写入 WARNING，提示当前日志会持久化业务内容。联调结束后关闭开关，
-重启服务并清理生成的内容日志。
-
-### 17.3 永久禁止字段
-
-- Bearer Token；
-- DSN；
-- model API key；
-- blocked 原文；
-- backend exception message。
-
-上述字段在普通和内容模式下都禁止。结构化日志用 `event="..." key=value`
-表达；普通日志中的 owner/client 等值先经过稳定哈希，既能关联同一主体的多个
-请求，又不直接输出真实标识。
-
-### 17.4 指标边界
-
-当前日志可测：
-
-- capture/recall 延迟；
-- 四类准入数量；
-- replay；
-- recall result count；
-- error code；
-- 跨 Agent client。
-
-本地单次 smoke 延迟不是 SLA。阶段六需在部署网络上测 p50/p95、并发、超时和
-恢复。
-
-完整事件规范见[日志规范](logging.md)。
-
-## 18. 部署设计
-
-### 18.1 私网直连
-
-```text
-Agent in VPC/VPN
-  → http://ECS_PRIVATE_IP:8765/mcp
-  → Memory MCP
-  → RDS private endpoint
-```
-
-该形态不需要 Nginx。ECS 安全组只允许可信 Agent 网段访问应用端口。
-
-### 18.2 公网
-
-```text
-Public Agent
-  → HTTPS 443
-  → ALB/CLB
-  → ECS private HTTP 8765
-  → Memory MCP
-```
-
-要求：
-
-- 负载均衡器持有有效证书；
-- Authorization header 原样转发；
-- ECS `8765` 只允许负载均衡器安全组；
-- PostgreSQL 不开放公网；
-- 不使用公网明文 HTTP + Bearer Token。
-
-### 18.3 进程管理
-
-- `uv sync --frozen --no-dev --package memory-mcp` 只安装 Server member；
-- Agent Host 从版本化 wheel 或 registry 固定版本安装 `memory-mcp-agent`；
-- oneshot systemd unit 运行 migration；
-- service unit 运行 `memory-mcp`；
-- EnvironmentFile 提供 Secret；
-- 日志目录单独授权；
-- 发布先 migration，后 restart，最后 health 和 MCP smoke；
-- 回滚应用版本，不破坏性回滚已经成功的兼容 migration。
-
-详细命令见[部署文档](deploy.md)。
-
-## 19. 测试设计
-
-### 19.1 分层
-
-| 层 | Repository | Extractor | 网络 |
-| --- | --- | --- | --- |
-| Core 单元 | InMemory | Fake | 无 |
-| Extraction 单元 | 无 | Structured fake | 无 |
-| MCP transport | InMemory | Fake | 本机真实 HTTP |
-| Hook 单元 | Fake Client | 无 | 无 |
-| PostgreSQL contract | PostgreSQL test DB | Fake | DB |
-| PostgreSQL MCP E2E | PostgreSQL test DB | 注入测试 Fake | 真实 MCP HTTP |
-| Real-model smoke | PostgreSQL test DB | 真实 provider | MCP + Model API |
-| Agent wheel isolation | 无 | 无 | 隔离 venv、发行元数据与 console script |
-
-### 19.2 什么是测试替身
-
-- `InMemoryMemoryRepository`：只替代 PostgreSQL；
-- `FakeCandidateExtractor`：只替代模型；
-- `FakeRelationExtractor`：按请求中的可信端点生成确定关系建议；
-- `_StructuredModel`：验证 LangChain schema 边界；
-- `_agent`：只提供业务 Agent 接线示例；
-- `FakeCandidateExtractor` 由 `tests/support` 提供确定性候选；不进入生产源码或发行包。
-
-### 19.3 必须真实验证
-
-- PostgreSQL migration/checksum/transaction；
-- MCP 初始化、鉴权、tools/list、tools/call；
-- 进程重启后幂等；
-- 同 owner Agent A/B 共享；
-- 不同 owner 隔离；
-- 真实 provider 的 CandidateBatch/RelationBatch；
-- 默认日志无正文，内容模式可观察通过敏感检查的核心流程；
-- 两种日志模式都不含 Secret 和敏感规则拦截的原文；
-- Ctrl+C/ASGI lifespan 关闭资源；
-- Agent wheel 只暴露 `memory-mcp-hook`，不安装 Server 命令、数据库、模型框架或
-  完整 MCP SDK。
-
-### 19.4 测试数据库安全
-
-外部测试只接受数据库名包含 `test` 的专用库，并在每个 fixture 前后 truncate。
-普通本地 pytest 不自动读取 `.env` 清库；必须显式提供
-`MEMORY_MCP_TEST_DATABASE_URL`。
-
-### 19.5 投研质量评估
-
-顶层 `evals/` 是不进入发行包的开发边界。当前 investment v4 基准使用 52 个中文案例
-覆盖八类投研记忆、六类关系、空结果/同义改写/报告期/实体/大窗口召回和金融敏感
-边界。默认运行完全
-离线且只评估 recall/safety；candidate/relation 显示为未评测，不允许用金标回放产生
-模型分数。Recall case 会建立正式 `MemoryRecord` 并调用公开
-`MemoryService.recall_memory`，因此生命周期、阈值、关系、预算和最终排序与生产链路
-一致，不再直接调用私有打分函数。显式 `--live-model` 才运行 candidate/relation，
-recall/safety 继续运行同一生产确定性实现，报告必须标明两者区别。
-
-召回的业务语义通过 `MemoryProfile.recall_hints` 声明，Core 只提供有界类型信号，
-不认识投研类型名。自动关系除 Profile 端点校验外，还拒绝明确否定关系的来源表达；
-关系 prompt 禁止为适配合法策略而交换端点。两项规则都不得依赖评测 case ID。
-
-安全结果只包含数据集 hash、模型/prompt/schema 标识、耗时、聚合/分类指标和失败
-case ID。结果不包含案例正文、owner、Token、DSN 或 API Key，也不连接 PostgreSQL。
-一次真实结果只能作为版本快照，不能解释为事实核验、投资建议、统计显著性或 SLA。
-详细基准和当前结果见[投研记忆评测](evaluation.md)。
-
-完整命令、当前结果和故障矩阵见[测试文档](testing.md)。
-
-## 20. 扩展策略
-
-### 20.1 新 Agent Host
+### 17.1 新 Agent Host
 
 优先复用：
 
@@ -1681,7 +1489,7 @@ case ID。结果不包含案例正文、owner、Token、DSN 或 API Key，也不
 如果 Host 没有生命周期 API，使用外层 Runner。不得为某个平台改变 MCP 工具、
 owner 或 lifecycle 语义。
 
-### 20.2 新记忆配置
+### 17.2 新记忆配置
 
 新增 MemoryProfile：
 
@@ -1696,12 +1504,12 @@ owner 或 lifecycle 语义。
 
 不复制一套 Core 或 Repository。
 
-### 20.3 新模型 provider
+### 17.3 新模型 provider
 
 在 `extraction/chat_models.py` 增加 provider factory 分支，继续返回
 `BaseChatModel`，复用 CandidateBatch/RelationBatch 和后续安全校验。Provider 参数不进入 Core。
 
-### 20.4 新检索索引
+### 17.4 新检索索引
 
 索引只能作为可重建的候选生成器。必须保留：
 
@@ -1711,7 +1519,7 @@ index candidates
 → final recall result
 ```
 
-### 20.5 队列
+### 17.5 队列
 
 只有满足明确触发条件才加入：
 
@@ -1725,7 +1533,7 @@ Agent/Server
 
 不能让 queue worker 直接写表或绕过身份与事务。
 
-## 21. 关键不变量
+## 18. 关键不变量
 
 后续任何改动都必须保持：
 
@@ -1760,49 +1568,16 @@ Agent/Server
 29. 到期必须先由读取谓词立即隔离，再由有界维护批次物化 expired review/revision 和 endpoint_expired 关系。
 30. Recall 候选必须在 owner/Profile/active/effective 边界内组合 indexed lexical 与 recent，模型不可成为正确性依赖。
 
-## 22. 当前结构 Review 结论
-
-当前代码结构总体合理：
-
-- `tools` 的拆分粒度合适；
-- `extraction` 命名和职责已统一；
-- 生产模型配置不携带测试 backend/fixture，测试替身只存在于测试目录；
-- 静态身份只配置 tenant/subject/scopes，owner 与审计 client 均由服务端派生；
-- `runtime_logging` 已收敛为直观的 `logging.py`；
-- Hook 已拆为独立 `memory-mcp-agent`，远程 Agent 不安装 Server；
-- Agent 包的最小 HTTP/MCP Client 只保留主动记忆需要的协议面，发行依赖边界有
-  自动化和隔离 wheel 测试；
-- PostgreSQL mapping/validation/schema 以及独立 recall/maintenance SQL 协作者已分离，
-  Repository 保持唯一 facade 和连接/事务入口；
-- Capture 候选处理、自动关系规划和 Review 协调已从 facade 分离；
-- 到期维护由独立 application service 承担，runner 只位于 Server lifespan；
-- Recall 候选由 Repository 的混合 query 收窄，Application 保持数据库无关的最终排序；
-- 关系能力复用现有 domain/port/Repository/tool 分层，没有增加图数据库、队列或新
-  顶层模块；
-- `evals/` 是不进入发行包的开发边界，默认模式不读取模型配置、网络或生产数据库；
-- 不需要增加 `integrations`、`observability`、`agent-lab`、`api` 或
-  `transport/mcp` 等泛化目录；
-- 当前不需要 Nginx 和外部队列。
-
-源码模块、类、函数 docstring 和解释业务约束的注释以中文为主；MCP/OAuth 字段、
-错误码、日志事件名、模型 prompt、SQL 和第三方参数属于稳定契约，继续保留英文。
-注释只说明职责和非显然约束，不逐行复述代码。
-
-PostgreSQL Repository 仍承载核心写事务，因此文件不会刻意按每个方法继续拆分；
-只有形成独立一致性边界时才增加协作者。当前 recall query 与 system maintenance 已
-达到独立职责阈值并拆出，capture/review/replacement 继续留在 facade，避免把一个
-原子事务拆成多个不协调 Repository。
-
-## 23. 文档与 OpenSpec 关系
+## 19. 文档与 OpenSpec 关系
 
 读者文档：
 
 ```text
-docs/design.md          当前系统完整设计
 docs/config.md          所有配置
 docs/agents.md          Agent 安装、Hook 合同和宿主配置
 docs/usage.md           Server 启动、真实模型和端到端使用
 docs/testing.md         测试与证据
+docs/evaluation.md      投研记忆评测
 docs/logging.md         日志专项
 docs/deploy.md          部署操作
 ```

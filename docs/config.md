@@ -138,17 +138,6 @@ Token 配置 `team_ids` 后，该用户召回时同时匹配个人记忆和团�
 }
 ```
 
-```json
-{
-  "<random-token>": {
-    "tenant_id": "tenant-001",
-    "subject_id": "subject-001",
-    "default_profile_id": "investment-research",
-    "scopes": ["memory:read", "memory:write", "memory:review"]
-  }
-}
-```
-
 服务端固定派生 `owner_key = tenant_id:subject_id`。同一用户的多枚 Token 可映射到
 同一 owner，不同 subject 自然隔离；调用方不能通过 MCP 参数覆盖 owner。Profile
 缺省时由当前 Token 的 `default_profile_id` 选择，显式 `profile_id` 只作为高级覆盖，

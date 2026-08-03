@@ -70,8 +70,17 @@ def load_migrations() -> tuple[Migration, ...]:
     return tuple(migrations)
 
 
-def apply_migrations(database_url: str) -> tuple[str, ...]:
-    """串行执行待处理 migration，并拒绝被修改的历史。"""
+def apply_migrations(
+    database_url: str,
+    *,
+    rebuild_on_checksum_change: bool = False,
+) -> tuple[str, ...]:
+    """串行执行待处理 migration。
+
+    生产环境（默认）：已执行 migration 的 checksum 不可变，篡改则启动失败。
+    开发环境（``rebuild_on_checksum_change=True``）：checksum 变更时 drop 重建，
+    允许直接修改单个 schema 文件而不用每次新建增量 migration。
+    """
 
     applied_now: list[str] = []
     with psycopg.connect(database_url, row_factory=dict_row) as connection:
@@ -100,6 +109,30 @@ def apply_migrations(database_url: str) -> tuple[str, ...]:
                     """
                 ).fetchall()
             }
+            # 开发阶段：checksum 变了就 drop 重建。
+            if rebuild_on_checksum_change:
+                changed = [
+                    migration.version
+                    for migration in load_migrations()
+                    if existing.get(migration.version) is not None
+                    and existing[migration.version] != migration.checksum
+                ]
+                if changed:
+                    log_event(
+                        _LOGGER,
+                        logging.WARNING,
+                        "memory.postgresql.migration.rebuild",
+                        changed_versions=changed,
+                    )
+                    connection.execute("DROP SCHEMA public CASCADE")
+                    connection.execute("CREATE SCHEMA public")
+                    connection.execute(
+                        """
+                        TRUNCATE memory_schema_migrations
+                        """
+                    )
+                    connection.commit()
+                    existing = {}
             for migration in load_migrations():
                 previous_checksum = existing.get(migration.version)
                 if previous_checksum is not None:

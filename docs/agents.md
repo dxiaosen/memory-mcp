@@ -352,83 +352,21 @@ claude --version
 
 ## 7. 手工端到端验证
 
-先启动 Memory MCP Server，并从启动 Agent 的同一环境确认：
+完整的端到端验证步骤（启动 Server、产生记忆、验证召回、跨 Agent 隔离）见
+[端到端使用](usage.md#4-真实模型闭环)。这里只说明 Agent Hook 特有的验证要点：
 
-```bash
-test -n "$MEMORY_MCP_URL"
-test -n "$MEMORY_MCP_TOKEN"
-```
-
-### 7.1 第一轮：产生长期记忆
-
-输入：
-
-```text
-以后这个项目的架构决策记录统一使用中文，这是长期约定。
-```
-
-预期：
-
-1. Before 先召回，首次通常为 0；
-2. Agent 正常形成最终回复；
-3. After 自动提交 user + assistant 完成轮次；
-4. 服务端模型完成候选抽取和 auto-save/pending/discard/blocked 准入。
-
-查看 Agent Host 日志：
-
-```bash
-tail -n 50 .memory-mcp/logs/agent-hook.log
-```
-
-应出现：
-
-```text
-event="agent_hook.recall.completed"
-event="agent_hook.capture.completed"
-```
-
-### 7.2 第二轮：验证主动召回
-
-开启新轮次：
-
-```text
-这个项目的架构决策记录应该使用什么语言？
-```
-
-预期 `recalled_count` 大于 0，且 Agent 在没有手工调用 `recall_memory` 的情况下
-使用已保存约定。召回内容属于历史数据，当前用户指令和系统策略始终优先。
-
-### 7.3 跨 Agent 与 owner 隔离
-
-用映射到同一 tenant/subject 的另一枚 Token 启动另一个宿主，预期仍能召回。换成
-不同 subject 的 Token 执行相同查询，预期 `recalled_count=0`。
-
-### 7.4 投研集成
-
-验证内置投研 Profile 时，推荐先在 Server 的 Token 映射中配置：
-
-```json
-{
-  "<agent-token>": {
-    "tenant_id": "tenant-001",
-    "subject_id": "subject-001",
-    "default_profile_id": "investment-research"
-  }
-}
-```
-
-重启 Server 后 Agent 仍只使用 URL 和 Token。若不能修改服务端配置，可在启动宿主的
-环境中临时增加高级覆盖：
-
-```bash
-export MEMORY_HOOK_PROFILE_ID=investment-research
-```
-
-先输入一条明确、长期且不含交易指令的研究偏好，再在新轮次询问该偏好。服务端可能
-保存为 `research_preference`，也可能因模型置信度进入 pending。`thesis`、
-`evidence_claim`、`risk`、`catalyst` 等是服务端抽取语义，不需要用户在正文里说出
-类型名。删除覆盖后会恢复该 Token 的服务端默认 Profile，而不是固定恢复
-`general-work`。
+1. 启动 Agent 前确认环境：`test -n "$MEMORY_MCP_URL" && test -n "$MEMORY_MCP_TOKEN"`
+2. 第一轮产生长期记忆后，查看 Agent Host 日志确认 `agent_hook.recall.completed` 和
+   `agent_hook.capture.completed` 事件：
+   ```bash
+   tail -n 50 .memory-mcp/logs/agent-hook.log
+   ```
+3. 第二轮用新轮次询问同一主题，预期 `recalled_count > 0`，且 Agent 无需手工调用
+   `recall_memory`。
+4. 用映射到同一 tenant/subject 的另一枚 Token 启动另一个宿主，预期仍能召回；
+   换不同 subject 的 Token 预期 `recalled_count=0`。
+5. 验证投研 Profile 时，在 Token 映射中设置 `default_profile_id` 为
+   `investment-research`；若不能改服务端配置，可临时 `export MEMORY_HOOK_PROFILE_ID=investment-research`。
 
 ## 8. 本地状态与日志
 

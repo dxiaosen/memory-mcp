@@ -35,7 +35,7 @@ VPC/VPN 内 Agent ── HTTP + Authorization ───────┐
 - 项目文件部署到 `/opt/memory-mcp`；
 - 服务器时间同步正常。
 
-本期不使用 PostgreSQL 向量扩展，但 `0009` migration 要求 PostgreSQL 提供标准
+本期不使用 PostgreSQL 向量扩展，但 `0001_memory_schema.sql` 要求 PostgreSQL 提供标准
 `pg_trgm` 扩展，并要求 migration 账号拥有 `CREATE EXTENSION pg_trgm` 权限。阿里云
 RDS 上线前应在目标版本的扩展列表中确认支持。
 
@@ -98,7 +98,7 @@ MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS=300
 
 MEMORY_MCP_AUTH_ISSUER_URL=https://memory.example.com/auth
 MEMORY_MCP_RESOURCE_SERVER_URL=https://memory.example.com/mcp
-MEMORY_MCP_AUTH_TOKENS='{"REPLACE_WITH_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS":{"tenant_id":"tenant-001","subject_id":"subject-001","default_profile_id":"investment-research","scopes":["memory:read","memory:write","memory:review"]}}'
+MEMORY_MCP_AUTH_TOKENS='{"REPLACE_WITH_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS":{"tenant_id":"tenant-001","subject_id":"subject-001","default_profile_id":"investment-research","team_ids":["research-dept"],"scopes":["memory:read","memory:write","memory:review"]}}'
 
 MEMORY_MCP_MODEL_PROVIDER=openai
 MEMORY_MCP_MODEL_NAME=REPLACE_WITH_MODEL_ID
@@ -281,31 +281,14 @@ tenant/subject/owner；不同用户不得共享 owner。`owner_id` 永远不作�
 6. 从目标 Agent 网络使用真实 MCP Client 执行 `tools/list`；
 7. 执行一次跨 Agent 捕获、召回和跨用户负向测试。
 
-`0003_profile_naming.sql` 是保留数据的命名迁移：把旧 profile 相关表和
-`scenario/policy_version` 列原地重命名为 `profile_id/profile_version`。
-`0004_memory_metadata.sql` 在保留旧 revision/Evidence 的基础上增加 confidence、
-verification、sensitivity、validity 和 citation 字段；
-`0005_metadata_rollback_compat.sql` 保证旧版 Server 短期回滚仍可写入。
-`0006_memory_relations.sql` 只增加向前兼容的关系目录/数据表和 MemoryItem 复合身份
-约束；旧 Server 会忽略这些新表，回滚时不删除它们。`0007_relation_provenance.sql`
-继续向前增加 origin/scope、revision 快照、自动 provenance 和 stale 生命周期；旧边
-保守标记为 `legacy/item`，不回填无法证明的模型证据。理解 `0007` 的 Server 与
-migration 必须同一发布窗口上线；出现 stale 数据后不能回滚到只认识
-`active/revoked` 的旧二进制。不要修改任何已执行 migration，否则已部署数据库会因
-checksum 不一致拒绝启动。`0008_policy_routing_recall.sql` 新增捕获
-`profile_fingerprint`，并把显式 event 唯一性改为 `(owner_id, event_id)`、兼容来源
-唯一性改为 owner/Profile/conversation/turn，二者都不再包含 Profile 版本。历史行
-明确标记为 `legacy-unknown`；若历史库已经存在跨版本重复 event，migration 会失败，
-必须先审计处理，不能自动删数据。Server 应先迁移再发布；新 Agent 默认省略
-`profile_id`，旧 Agent 显式发送 `general-work` 的行为在滚动窗口内仍兼容。
-`0009_memory_maintenance_recall.sql` 安装 `pg_trgm`、新增 subject/content trigram
-索引、维护索引和 review `expired` 状态。必须先迁移再启动新 Server；maintenance
-runner 首次运行后可能写入旧版二进制不认识的 expired review，因此此版本开始不把
-应用降级作为常规回滚方案，应关闭流量后前向修复。migration 与历史数据仍保留。
+migration 只有一个文件 `0001_memory_schema.sql`（完整 schema）。开发阶段改 schema 直接
+修改该文件，用 `memory-mcp-db migrate --rebuild` 重建。生产环境不用 `--rebuild`——
+checksum 变更会启动失败，应通过正式发布流程管理 schema 变更。`0001` 要求 PostgreSQL
+提供 `pg_trgm` 扩展，migration 账号需要 `CREATE EXTENSION` 权限。
 
 Server 应用回滚时恢复上一个代码版本并重新同步锁定依赖。Agent Client 独立按
 wheel 版本升级或回滚，不要求与 Server 同机操作；发布前必须通过兼容性测试。
-已经成功提交的向前兼容数据库 migration 不做破坏性降级；如果 migration 失败，
+已经成功提交的数据库 migration 不做破坏性降级；如果 migration 失败，
 新应用版本不得启动。
 
 ## 11. 当前边界
