@@ -6,6 +6,7 @@ from uuid import UUID
 
 from memory_mcp.core.domain.models import (
     AssertionKind,
+    EvidenceDocument,
     EvidenceSourceType,
     MemoryItem,
     MemoryRevision,
@@ -75,19 +76,13 @@ class RecallQuery:
 class RecallSourceSummary:
     """最小可追溯来源摘要。"""
 
-    conversation_id: str
+    conversation_id: str | None
     source_turn_id: str
     source_expression: str
     observed_at: datetime
     source_role: MessageRole | None
     source_type: EvidenceSourceType
-    source_uri: str | None
-    source_title: str | None
-    source_publisher: str | None
-    published_at: datetime | None
-    retrieved_at: datetime | None
-    content_hash: str | None
-    citation_locator: str | None
+    document: EvidenceDocument | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +91,7 @@ class RecalledMemory:
 
     memory_id: UUID
     revision_id: UUID
+    owner_id: str
     profile_id: str
     subject: str
     memory_type: str

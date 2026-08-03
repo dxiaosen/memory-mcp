@@ -376,7 +376,7 @@ class PostgreSQLMemoryRepository:
                   AND is_current
                   AND lifecycle_status = 'active'
                 """,
-                (principal.owner_id, memory_id, row["revision_id"]),
+                (row["owner_id"], memory_id, row["revision_id"]),
             )
             row["lifecycle_status"] = "revoked"
             return to_record(connection, row, row["owner_id"])
@@ -388,8 +388,8 @@ class PostgreSQLMemoryRepository:
         *,
         effective_at: datetime,
     ) -> MemoryRelation:
-        if relation.owner_id != principal.owner_id:
-            raise ValueError("relation owner must match trusted principal")
+        if relation.owner_id not in principal.visible_owner_ids:
+            raise ValueError("relation owner must match trusted principal or team")
         if relation.status is not RelationStatus.ACTIVE:
             raise ValueError("new relation must be active")
         if relation.origin is not RelationOrigin.MANUAL:
@@ -425,8 +425,8 @@ class PostgreSQLMemoryRepository:
         with self._pool.connection() as connection:
             row = connection.execute(
                 f"{_SELECT_RELATION} "
-                "WHERE owner_id = %s AND relation_id = %s FOR UPDATE",
-                (principal.owner_id, relation_id),
+                "WHERE owner_id = ANY(%s) AND relation_id = %s FOR UPDATE",
+                (list(principal.visible_owner_ids), relation_id),
             ).fetchone()
             if row is None:
                 return None
@@ -439,13 +439,13 @@ class PostgreSQLMemoryRepository:
                 SET status = 'revoked', revoked_at = %s
                 WHERE owner_id = %s AND relation_id = %s
                 """,
-                (revoked_at, principal.owner_id, relation_id),
+                (revoked_at, row["owner_id"], relation_id),
             )
             if cursor.rowcount != 1:
                 return None
             updated = connection.execute(
                 f"{_SELECT_RELATION} WHERE owner_id = %s AND relation_id = %s",
-                (principal.owner_id, relation_id),
+                (row["owner_id"], relation_id),
             ).fetchone()
             return _load_relation(updated)
 
@@ -852,8 +852,8 @@ class PostgreSQLMemoryRepository:
         with self._pool.connection() as connection:
             rows = connection.execute(
                 f"{_SELECT_REVIEW} "
-                "WHERE owner_id = ANY(%s) AND status = %s "
-                "ORDER BY created_at, review_id",
+                "WHERE ri.owner_id = ANY(%s) AND ri.status = %s "
+                "ORDER BY ri.created_at, ri.review_id",
                 (list(principal.visible_owner_ids), status.value),
             ).fetchall()
         return tuple(to_review(row) for row in rows)
@@ -865,7 +865,7 @@ class PostgreSQLMemoryRepository:
     ) -> ReviewItem | None:
         with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_REVIEW} WHERE owner_id = ANY(%s) AND review_id = %s",
+                f"{_SELECT_REVIEW} WHERE ri.owner_id = ANY(%s) AND ri.review_id = %s",
                 (list(principal.visible_owner_ids), review_id),
             ).fetchone()
         if row is None:
@@ -887,8 +887,9 @@ class PostgreSQLMemoryRepository:
             raise ValueError("review resolution must be confirmed or rejected")
         with self._pool.connection() as connection:
             row = connection.execute(
-                f"{_SELECT_REVIEW} WHERE owner_id = %s AND review_id = %s FOR UPDATE",
-                (principal.owner_id, review_id),
+                f"{_SELECT_REVIEW_FOR_UPDATE} "
+                "WHERE owner_id = ANY(%s) AND review_id = %s FOR UPDATE",
+                (list(principal.visible_owner_ids), review_id),
             ).fetchone()
             if row is None:
                 return None
@@ -1128,14 +1129,11 @@ class PostgreSQLMemoryRepository:
                 evidence_id, memory_id, revision_id, owner_id,
                 conversation_id, source_turn_id, source_expression,
                 observed_at, created_at, source_role, source_message_id,
-                source_tool_name, source_type, source_uri, source_title,
-                source_publisher, published_at, retrieved_at, content_hash,
-                citation_locator
+                source_tool_name, source_type
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s
             )
             """,
             [
@@ -1157,17 +1155,37 @@ class PostgreSQLMemoryRepository:
                     source.source_message_id,
                     source.source_tool_name,
                     source.source_type.value,
-                    source.source_uri,
-                    source.source_title,
-                    source.source_publisher,
-                    source.published_at,
-                    source.retrieved_at,
-                    source.content_hash,
-                    source.citation_locator,
                 )
                 for source in evidence
             ],
         )
+        # 文档来源的元数据写入子表（仅 document/web 来源有行）。
+        document_rows = [
+            (
+                source.evidence_id,
+                source.document.source_uri,
+                source.document.source_title,
+                source.document.source_publisher,
+                source.document.published_at,
+                source.document.retrieved_at,
+                source.document.content_hash,
+                source.document.citation_locator,
+            )
+            for source in evidence
+            if source.document is not None
+        ]
+        if document_rows:
+            _executemany(
+                connection,
+                """
+                INSERT INTO memory_evidence_documents (
+                    evidence_id, source_uri, source_title, source_publisher,
+                    published_at, retrieved_at, content_hash, citation_locator
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                document_rows,
+            )
 
     @staticmethod
     def _insert_review(
@@ -1187,16 +1205,13 @@ class PostgreSQLMemoryRepository:
                 original_time_expression, normalized_time, status,
                 created_at, decided_at, source_role, source_message_id,
                 source_tool_name, verification_status, sensitivity_level,
-                valid_from, valid_until, source_type,
-                source_uri, source_title, source_publisher, published_at,
-                retrieved_at, content_hash, citation_locator
+                valid_from, valid_until, source_type
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s
+                %s, %s, %s, %s, %s
             )
             """,
             (
@@ -1236,15 +1251,41 @@ class PostgreSQLMemoryRepository:
                 candidate.valid_from,
                 candidate.valid_until,
                 candidate.source_type.value,
-                candidate.source_uri,
-                candidate.source_title,
-                candidate.source_publisher,
-                candidate.published_at,
-                candidate.retrieved_at,
-                candidate.content_hash,
-                candidate.citation_locator,
             ),
         )
+        # 文档来源的元数据写入子表（仅 document/web 来源有行）。
+        has_document = any(
+            getattr(candidate, field) is not None
+            for field in (
+                "source_uri",
+                "source_title",
+                "source_publisher",
+                "published_at",
+                "retrieved_at",
+                "content_hash",
+                "citation_locator",
+            )
+        )
+        if has_document:
+            connection.execute(
+                """
+                INSERT INTO memory_review_item_documents (
+                    review_id, source_uri, source_title, source_publisher,
+                    published_at, retrieved_at, content_hash, citation_locator
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    review.review_id,
+                    candidate.source_uri,
+                    candidate.source_title,
+                    candidate.source_publisher,
+                    candidate.published_at,
+                    candidate.retrieved_at,
+                    candidate.content_hash,
+                    candidate.citation_locator,
+                ),
+            )
 
 
 def _stale_revision_relations(
@@ -1294,8 +1335,8 @@ def _insert_relation(
 ) -> MemoryRelation:
     """在调用方事务内重新校验端点并幂等写入关系。"""
 
-    if relation.owner_id != principal.owner_id:
-        raise ValueError("relation owner must match trusted principal")
+    if relation.owner_id not in principal.visible_owner_ids:
+        raise ValueError("relation owner must match trusted principal or team")
     if relation.status is not RelationStatus.ACTIVE:
         raise ValueError("new relation must be active")
     if relation.origin is RelationOrigin.LEGACY:
@@ -1309,12 +1350,12 @@ def _insert_relation(
           ON r.memory_id = i.memory_id
          AND r.owner_id = i.owner_id
          AND r.is_current
-        WHERE i.owner_id = %s
+        WHERE i.owner_id = ANY(%s)
           AND i.memory_id = ANY(%s)
         FOR UPDATE OF i, r
         """,
         (
-            principal.owner_id,
+            list(principal.visible_owner_ids),
             [relation.source_memory_id, relation.target_memory_id],
         ),
     ).fetchall()
@@ -1470,6 +1511,29 @@ JOIN memory_revisions AS r
 """
 
 _SELECT_REVIEW = """
+SELECT ri.review_id, ri.candidate_id, ri.owner_id, ri.profile_id,
+       ri.subject, ri.memory_type, ri.content, ri.assertion_kind,
+       ri.business_progress, ri.conversation_id, ri.source_turn_id,
+       ri.source_expression, ri.save_rationale, ri.confidence,
+       ri.durability, ri.expression_basis, ri.observed_at,
+       ri.candidate_created_at, ri.original_time_expression,
+       ri.normalized_time, ri.status, ri.created_at, ri.decided_at,
+       ri.resolved_memory_id, ri.source_role, ri.source_message_id,
+       ri.source_tool_name, ri.verification_status, ri.sensitivity_level,
+       ri.valid_from, ri.valid_until, ri.source_type,
+       rd.source_uri AS doc_source_uri, rd.source_title AS doc_source_title,
+       rd.source_publisher AS doc_source_publisher,
+       rd.published_at AS doc_published_at,
+       rd.retrieved_at AS doc_retrieved_at,
+       rd.content_hash AS doc_content_hash,
+       rd.citation_locator AS doc_citation_locator
+FROM memory_review_items AS ri
+LEFT JOIN memory_review_item_documents AS rd
+  ON rd.review_id = ri.review_id
+"""
+
+# 不含 JOIN 的 review 查询，用于 FOR UPDATE（FOR UPDATE 不能用于 outer join 的可空侧）。
+_SELECT_REVIEW_FOR_UPDATE = """
 SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        content, assertion_kind, business_progress, conversation_id,
        source_turn_id, source_expression, save_rationale, confidence,
@@ -1477,9 +1541,7 @@ SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        original_time_expression, normalized_time, status, created_at,
        decided_at, resolved_memory_id, source_role, source_message_id,
        source_tool_name, verification_status, sensitivity_level,
-       valid_from, valid_until, source_type, source_uri,
-       source_title, source_publisher, published_at, retrieved_at,
-       content_hash, citation_locator
+       valid_from, valid_until, source_type
 FROM memory_review_items
 """
 

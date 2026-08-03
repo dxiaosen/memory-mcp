@@ -17,6 +17,7 @@ from memory_mcp.core.domain import (
     CandidateProposal,
     CaptureOutcome,
     Evidence,
+    EvidenceDocument,
     EvidenceSourceType,
     ExpressionBasis,
     LifecycleStatus,
@@ -217,13 +218,7 @@ class CandidateMaterializer:
             source_message_id=candidate.source_message_id,
             source_tool_name=candidate.source_tool_name,
             source_type=candidate.source_type,
-            source_uri=candidate.source_uri,
-            source_title=candidate.source_title,
-            source_publisher=candidate.source_publisher,
-            published_at=candidate.published_at,
-            retrieved_at=candidate.retrieved_at,
-            content_hash=candidate.content_hash,
-            citation_locator=candidate.citation_locator,
+            document=_candidate_document(candidate),
         )
 
 
@@ -551,4 +546,32 @@ def _is_explicit_replacement(candidate: Candidate) -> bool:
         and candidate.assertion_kind
         in {AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT}
         and _EXPLICIT_REPLACEMENT.search(candidate.source_expression) is not None
+    )
+
+
+def _candidate_document(candidate: Candidate) -> EvidenceDocument | None:
+    """从 candidate 的内联文档字段构造 EvidenceDocument；无文档字段时返回 None。"""
+
+    has_document = any(
+        getattr(candidate, field) is not None
+        for field in (
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "published_at",
+            "retrieved_at",
+            "content_hash",
+            "citation_locator",
+        )
+    )
+    if not has_document:
+        return None
+    return EvidenceDocument(
+        source_uri=candidate.source_uri,
+        source_title=candidate.source_title,
+        source_publisher=candidate.source_publisher,
+        published_at=candidate.published_at,
+        retrieved_at=candidate.retrieved_at,
+        content_hash=candidate.content_hash,
+        citation_locator=candidate.citation_locator,
     )

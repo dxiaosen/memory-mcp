@@ -149,19 +149,22 @@ def load_recall_evidence(
     rows = connection.execute(
         """
         WITH ranked AS (
-            SELECT evidence_id, memory_id, revision_id, owner_id,
-                   conversation_id, source_turn_id, source_expression,
-                   observed_at, created_at, source_role,
-                   source_message_id, source_tool_name, source_type,
-                   source_uri, source_title, source_publisher, published_at,
-                   retrieved_at, content_hash, citation_locator,
+            SELECT e.evidence_id, e.memory_id, e.revision_id, e.owner_id,
+                   e.conversation_id, e.source_turn_id, e.source_expression,
+                   e.observed_at, e.created_at, e.source_role,
+                   e.source_message_id, e.source_tool_name, e.source_type,
+                   d.source_uri, d.source_title, d.source_publisher,
+                   d.published_at, d.retrieved_at, d.content_hash,
+                   d.citation_locator,
                    row_number() OVER (
-                       PARTITION BY revision_id
-                       ORDER BY created_at DESC, evidence_id DESC
+                       PARTITION BY e.revision_id
+                       ORDER BY e.created_at DESC, e.evidence_id DESC
                    ) AS source_rank
-            FROM memory_evidence
-            WHERE owner_id = ANY(%s)
-              AND revision_id = ANY(%s)
+            FROM memory_evidence AS e
+            LEFT JOIN memory_evidence_documents AS d
+              ON d.evidence_id = e.evidence_id
+            WHERE e.owner_id = ANY(%s)
+              AND e.revision_id = ANY(%s)
         )
         SELECT evidence_id, memory_id, revision_id, owner_id,
                conversation_id, source_turn_id, source_expression,

@@ -58,10 +58,11 @@ class PostgreSQLTestDatabase:
 def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     migrations = load_migrations()
 
-    # 合并后的 schema 有两个 migration 文件。
+    # 合并后的 schema 有三个 migration 文件。
     assert [migration.version for migration in migrations] == [
         "0001_memory_schema.sql",
         "0002_drop_last_verified_at.sql",
+        "0003_split_evidence_documents.sql",
     ]
     assert all(len(migration.checksum) == 64 for migration in migrations)
 
@@ -773,8 +774,9 @@ def _truncate_memory_tables(database_url: str) -> None:
             """
             TRUNCATE TABLE memory_capture_outcomes,
                             memory_relations,
+                            memory_review_item_documents,
                             memory_review_items,
-                            memory_capture_runs,
+                            memory_evidence_documents,
                             memory_evidence,
                             memory_revisions,
                             memory_items,
@@ -919,3 +921,40 @@ def _candidate_proposal(
     if durability is not None:
         kwargs["durability"] = durability
     return candidate_proposal(text, **kwargs)
+
+
+def test_real_postgresql_team_member_can_revoke_team_memory(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """真实 DB：团队成员能 revoke 团队公共记忆，非成员不能。"""
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=2)
+    repository = PostgreSQLMemoryRepository(pool)
+    service = create_memory_service(repository, [TestMemoryProfile()])
+    try:
+        team_owner = "tenant-001:team:research-dept"
+        created = service.create_memory(
+            PrincipalContext(team_owner),
+            project_preference_command(),
+        )
+        member = PrincipalContext(
+            "tenant-001:member-a",
+            (team_owner,),
+        )
+        # 团队成员能 revoke。
+        revoked = service.revoke_memory(member, created.item.memory_id)
+        assert revoked.current_revision.lifecycle_status.value == "revoked"
+        # revoke 后召回不到。
+        result = service.recall_memory(
+            member,
+            RecallQuery(
+                profile_id="project-work",
+                query="项目周报默认使用什么格式",
+                subject="weekly-report",
+                max_items=5,
+                token_budget=600,
+            ),
+        )
+        assert result.items == ()
+    finally:
+        repository.close()

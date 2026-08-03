@@ -14,6 +14,7 @@ from memory_mcp.core.domain import (
     CaptureResult,
     CaptureStatus,
     Evidence,
+    EvidenceDocument,
     EvidenceSourceType,
     ExpressionBasis,
     ExtractionMetadata,
@@ -104,13 +105,13 @@ def to_review(row: Mapping[str, Any]) -> ReviewItem:
         source_message_id=row["source_message_id"],
         source_tool_name=row["source_tool_name"],
         source_type=EvidenceSourceType(row["source_type"]),
-        source_uri=row["source_uri"],
-        source_title=row["source_title"],
-        source_publisher=row["source_publisher"],
-        published_at=optional_datetime(row["published_at"]),
-        retrieved_at=optional_datetime(row["retrieved_at"]),
-        content_hash=row["content_hash"],
-        citation_locator=row["citation_locator"],
+        source_uri=row.get("doc_source_uri"),
+        source_title=row.get("doc_source_title"),
+        source_publisher=row.get("doc_source_publisher"),
+        published_at=optional_datetime(row.get("doc_published_at")),
+        retrieved_at=optional_datetime(row.get("doc_retrieved_at")),
+        content_hash=row.get("doc_content_hash"),
+        citation_locator=row.get("doc_citation_locator"),
     )
     return ReviewItem(
         review_id=as_uuid(row["review_id"]),
@@ -194,15 +195,18 @@ def load_evidence(
         to_evidence(source)
         for source in connection.execute(
             """
-            SELECT evidence_id, memory_id, revision_id, owner_id,
-                   conversation_id, source_turn_id, source_expression,
-                   observed_at, created_at, source_role,
-                   source_message_id, source_tool_name, source_type,
-                   source_uri, source_title, source_publisher, published_at,
-                   retrieved_at, content_hash, citation_locator
-            FROM memory_evidence
-            WHERE owner_id = %s AND revision_id = %s
-            ORDER BY created_at, evidence_id
+            SELECT e.evidence_id, e.memory_id, e.revision_id, e.owner_id,
+                   e.conversation_id, e.source_turn_id, e.source_expression,
+                   e.observed_at, e.created_at, e.source_role,
+                   e.source_message_id, e.source_tool_name, e.source_type,
+                   d.source_uri, d.source_title, d.source_publisher,
+                   d.published_at, d.retrieved_at, d.content_hash,
+                   d.citation_locator
+            FROM memory_evidence AS e
+            LEFT JOIN memory_evidence_documents AS d
+              ON d.evidence_id = e.evidence_id
+            WHERE e.owner_id = %s AND e.revision_id = %s
+            ORDER BY e.created_at, e.evidence_id
             """,
             (owner_id, revision_id),
         ).fetchall()
@@ -212,6 +216,7 @@ def load_evidence(
 def to_evidence(source: Mapping[str, Any]) -> Evidence:
     """映射一条已经过 owner 条件过滤的 Evidence。"""
 
+    document = _to_evidence_document(source)
     return Evidence(
         evidence_id=as_uuid(source["evidence_id"]),
         memory_id=as_uuid(source["memory_id"]),
@@ -230,13 +235,35 @@ def to_evidence(source: Mapping[str, Any]) -> Evidence:
         source_message_id=source["source_message_id"],
         source_tool_name=source["source_tool_name"],
         source_type=EvidenceSourceType(source["source_type"]),
-        source_uri=source["source_uri"],
-        source_title=source["source_title"],
-        source_publisher=source["source_publisher"],
-        published_at=optional_datetime(source["published_at"]),
-        retrieved_at=optional_datetime(source["retrieved_at"]),
-        content_hash=source["content_hash"],
-        citation_locator=source["citation_locator"],
+        document=document,
+    )
+
+
+def _to_evidence_document(source: Mapping[str, Any]) -> EvidenceDocument | None:
+    """从 JOIN 结果构造文档元数据；无文档字段时返回 None。"""
+
+    has_document = any(
+        source.get(key) is not None
+        for key in (
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "published_at",
+            "retrieved_at",
+            "content_hash",
+            "citation_locator",
+        )
+    )
+    if not has_document:
+        return None
+    return EvidenceDocument(
+        source_uri=source.get("source_uri"),
+        source_title=source.get("source_title"),
+        source_publisher=source.get("source_publisher"),
+        published_at=optional_datetime(source.get("published_at")),
+        retrieved_at=optional_datetime(source.get("retrieved_at")),
+        content_hash=source.get("content_hash"),
+        citation_locator=source.get("citation_locator"),
     )
 
 

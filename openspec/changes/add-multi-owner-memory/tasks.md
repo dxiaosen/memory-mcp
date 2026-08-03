@@ -60,5 +60,9 @@
 
 - [x] 9.1 ruff format + check 通过。
 - [x] 9.2 pytest + evals + openspec validate 通过。
-- [x] 9.3 PostgreSQL 契约测试通过（13 个，含 2 个新增多层记忆真实 DB 测试）。
+- [x] 9.3 PostgreSQL 契约测试通过（14 个，含 3 个新增多层记忆真实 DB 测试）。
 - [x] 9.4 修复 `to_record` 用 `principal.owner_id` 查团队记忆 evidence 的 bug，改为 `row["owner_id"]`。
+- [x] 9.5 修复 revoke/revoke_relation/link_relation 写入路径用 `principal.owner_id` 导致团队记忆撤销失败的 bug，改为 `row["owner_id"]`。
+- [x] 9.6 修复 `_insert_relation` 端点查询用 `principal.owner_id` 导致团队记忆建关系失败，改为 `ANY(visible_owner_ids)`。
+- [x] 9.7 RecalledMemory 和 RecalledMemoryView 暴露 owner_id，Agent 能区分个人 vs 团队记忆。
+- [x] 9.8 link_memories 的 relation owner 跟随端点 owner，端点必须共享 owner。

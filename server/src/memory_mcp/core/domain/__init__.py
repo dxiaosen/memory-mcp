@@ -26,6 +26,7 @@ from memory_mcp.core.domain.maintenance import MaintenanceResult
 from memory_mcp.core.domain.models import (
     AssertionKind,
     Evidence,
+    EvidenceDocument,
     EvidenceSourceType,
     LifecycleStatus,
     MemoryItem,
@@ -65,6 +66,7 @@ __all__ = [
     "CaptureResult",
     "CaptureStatus",
     "Evidence",
+    "EvidenceDocument",
     "EvidenceSourceType",
     "ExpressionBasis",
     "ExtractionMetadata",

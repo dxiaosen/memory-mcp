@@ -196,22 +196,9 @@ class MemoryRevision:
 
 
 @dataclass(frozen=True, slots=True)
-class Evidence:
-    """允许保存的来源表达。"""
+class EvidenceDocument:
+    """文档/网页来源的引用元数据，仅 document/web source_type 有值。"""
 
-    evidence_id: UUID
-    memory_id: UUID
-    revision_id: UUID
-    owner_id: str
-    conversation_id: str
-    source_turn_id: str
-    source_expression: str
-    observed_at: datetime
-    created_at: datetime
-    source_role: MessageRole | None = None
-    source_message_id: str | None = None
-    source_tool_name: str | None = None
-    source_type: EvidenceSourceType = EvidenceSourceType.CONVERSATION
     source_uri: str | None = None
     source_title: str | None = None
     source_publisher: str | None = None
@@ -221,12 +208,53 @@ class Evidence:
     citation_locator: str | None = None
 
     def __post_init__(self) -> None:
+        for field_name in (
+            "source_uri",
+            "source_title",
+            "source_publisher",
+            "content_hash",
+            "citation_locator",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _require_text(value, field_name),
+                )
+        for field_name in ("published_at", "retrieved_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_aware_datetime(value, field_name)
+
+
+@dataclass(frozen=True, slots=True)
+class Evidence:
+    """允许保存的来源表达。"""
+
+    evidence_id: UUID
+    memory_id: UUID
+    revision_id: UUID
+    owner_id: str
+    source_turn_id: str
+    source_expression: str
+    observed_at: datetime
+    created_at: datetime
+    conversation_id: str | None = None
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
+    source_type: EvidenceSourceType = EvidenceSourceType.CONVERSATION
+    document: EvidenceDocument | None = None
+
+    def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))
-        object.__setattr__(
-            self,
-            "conversation_id",
-            _require_text(self.conversation_id, "conversation_id"),
-        )
+        if self.conversation_id is not None:
+            object.__setattr__(
+                self,
+                "conversation_id",
+                _require_text(self.conversation_id, "conversation_id"),
+            )
         object.__setattr__(
             self,
             "source_turn_id",
@@ -246,15 +274,7 @@ class Evidence:
             raise ValueError("source_role must be a MessageRole")
         if not isinstance(self.source_type, EvidenceSourceType):
             raise ValueError("source_type must be an EvidenceSourceType")
-        for field_name in (
-            "source_message_id",
-            "source_tool_name",
-            "source_uri",
-            "source_title",
-            "source_publisher",
-            "content_hash",
-            "citation_locator",
-        ):
+        for field_name in ("source_message_id", "source_tool_name"):
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(
@@ -267,10 +287,6 @@ class Evidence:
             and self.source_role is not MessageRole.TOOL
         ):
             raise ValueError("source_tool_name is only valid for tool sources")
-        for field_name in ("published_at", "retrieved_at"):
-            value = getattr(self, field_name)
-            if value is not None:
-                _require_aware_datetime(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)

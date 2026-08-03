@@ -398,6 +398,7 @@ def _to_recalled_memory(
     return RecalledMemory(
         memory_id=record.item.memory_id,
         revision_id=revision.revision_id,
+        owner_id=record.item.owner_id,
         profile_id=record.item.profile_id,
         subject=record.item.subject,
         memory_type=record.item.memory_type,
@@ -424,13 +425,7 @@ def _source_summaries(sources: Sequence[Evidence]) -> tuple[RecallSourceSummary,
             observed_at=source.observed_at,
             source_role=source.source_role,
             source_type=source.source_type,
-            source_uri=source.source_uri,
-            source_title=source.source_title,
-            source_publisher=source.source_publisher,
-            published_at=source.published_at,
-            retrieved_at=source.retrieved_at,
-            content_hash=source.content_hash,
-            citation_locator=source.citation_locator,
+            document=source.document,
         )
         for source in sources
     )

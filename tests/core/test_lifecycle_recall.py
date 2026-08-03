@@ -325,8 +325,12 @@ def test_investment_research_capture_separates_thesis_evidence_and_conflict() ->
         is VerificationStatus.USER_CONFIRMED
     )
     assert evidence.evidence[0].source_type is EvidenceSourceType.DOCUMENT
-    assert evidence.evidence[0].source_uri == "https://research.example/annual-2025"
-    assert evidence.evidence[0].citation_locator == "p.42"
+    assert evidence.evidence[0].document is not None
+    assert (
+        evidence.evidence[0].document.source_uri
+        == "https://research.example/annual-2025"
+    )
+    assert evidence.evidence[0].document.citation_locator == "p.42"
     assert {record.item.memory_type for record in service.list_memories(principal)} == {
         "thesis",
         "evidence_claim",
@@ -1379,3 +1383,136 @@ def test_confirm_review_rejects_unauthorized_team_promotion() -> None:
             team_id="research-dept",
             team_owner_ids=frozenset(),  # 不含 research-dept
         )
+
+
+def test_team_member_can_revoke_team_memory() -> None:
+    """团队成员能 revoke 团队公共记忆。"""
+
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    team_owner = "tenant-001:team:research-dept"
+    created = service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="团队周报用 markdown",
+            source_expression="团队周报用 markdown",
+        ),
+    )
+    member = PrincipalContext("tenant-001:member-a", (team_owner,))
+    revoked = service.revoke_memory(member, created.item.memory_id)
+    assert revoked.current_revision.lifecycle_status is LifecycleStatus.REVOKED
+    # revoke 后召回不到。
+    result = service.recall_memory(
+        member,
+        RecallQuery(
+            profile_id="general-work",
+            query="团队周报 markdown",
+        ),
+    )
+    assert result.items == ()
+
+
+def test_outsider_cannot_revoke_team_memory() -> None:
+    """非成员不能 revoke 团队记忆（owner 不在 visible_owner_ids 里，抛 NotFound）。"""
+
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    team_owner = "tenant-001:team:research-dept"
+    created = service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="团队周报用 markdown",
+            source_expression="团队周报用 markdown",
+        ),
+    )
+    outsider = PrincipalContext("tenant-001:outsider")
+    with pytest.raises(MemoryNotFoundError):
+        service.revoke_memory(outsider, created.item.memory_id)
+
+
+def test_link_relation_on_team_memories_uses_team_owner() -> None:
+    """给两条团队记忆建关系，relation owner 跟随端点 owner。"""
+
+    from memory_mcp.core import RelationStatus
+
+    profile = replace(
+        TestMemoryProfile(),
+        relation_policies={
+            "supports": MemoryRelationPolicy(
+                source_memory_types=frozenset({"preference"}),
+                target_memory_types=frozenset({"ongoing_item"}),
+                description="A preference supports an ongoing item.",
+            )
+        },
+    )
+    service = create_memory_service(InMemoryMemoryRepository(), [profile])
+    team_owner = "tenant-001:team:research-dept"
+    source = service.create_memory(
+        PrincipalContext(team_owner),
+        project_preference_command(),
+    )
+    target = service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            subject="model-update",
+            memory_type="ongoing_item",
+            source_turn_id="session-1-turn-2",
+            source_expression="持续更新模型",
+            content="持续更新模型",
+        ),
+    )
+    member = PrincipalContext("tenant-001:member-a", (team_owner,))
+    relation = service.link_memories(
+        member,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+    # relation 的 owner 是团队 owner，不是个人 owner。
+    assert relation.owner_id == team_owner
+    assert relation.status is RelationStatus.ACTIVE
+
+
+def test_recall_result_exposes_owner_id_to_distinguish_personal_and_team() -> None:
+    """召回结果暴露 owner_id，Agent 能区分个人 vs 团队记忆。"""
+
+    repository = InMemoryMemoryRepository()
+    service = create_memory_service(repository, [GeneralWorkProfile()])
+    team_owner = "tenant-001:team:research-dept"
+    service.create_memory(
+        PrincipalContext(team_owner),
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="团队周报用表格",
+            subject="weekly-report",
+            source_expression="团队周报用表格",
+        ),
+    )
+    member = PrincipalContext("tenant-001:member-a", (team_owner,))
+    service.create_memory(
+        member,
+        replace(
+            project_preference_command(),
+            profile_id="general-work",
+            content="个人周报用 markdown",
+            subject="weekly-report",
+            source_expression="个人周报用 markdown",
+        ),
+    )
+    result = service.recall_memory(
+        member,
+        RecallQuery(
+            profile_id="general-work",
+            query="周报",
+        ),
+    )
+    # 两条记忆都召回，且 owner_id 不同，能区分。
+    owner_ids = {item.owner_id for item in result.items}
+    assert "tenant-001:member-a" in owner_ids
+    assert team_owner in owner_ids

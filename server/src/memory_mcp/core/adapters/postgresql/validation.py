@@ -1,7 +1,9 @@
 """PostgreSQL 持久化边界的领域写入校验。"""
 
 from memory_mcp.core.domain import (
+    Candidate,
     CaptureStatus,
+    EvidenceDocument,
     LifecycleStatus,
     MemoryRecord,
     PrincipalContext,
@@ -12,6 +14,36 @@ from memory_mcp.core.domain import (
     ReviewStatus,
 )
 from memory_mcp.core.ports import CaptureWrite
+
+
+def _evidence_document_mismatch(
+    document: EvidenceDocument | None,
+    candidate: Candidate,
+) -> bool:
+    """比较 evidence 的 document 子对象与 candidate 的内联文档字段。"""
+
+    if document is None:
+        return any(
+            getattr(candidate, field) is not None
+            for field in (
+                "source_uri",
+                "source_title",
+                "source_publisher",
+                "published_at",
+                "retrieved_at",
+                "content_hash",
+                "citation_locator",
+            )
+        )
+    return (
+        document.source_uri != candidate.source_uri
+        or document.source_title != candidate.source_title
+        or document.source_publisher != candidate.source_publisher
+        or document.published_at != candidate.published_at
+        or document.retrieved_at != candidate.retrieved_at
+        or document.content_hash != candidate.content_hash
+        or document.citation_locator != candidate.citation_locator
+    )
 
 
 def validate_capture_write(
@@ -145,12 +177,6 @@ def validate_review_memory(
         or source.source_message_id != candidate.source_message_id
         or source.source_tool_name != candidate.source_tool_name
         or source.source_type is not candidate.source_type
-        or source.source_uri != candidate.source_uri
-        or source.source_title != candidate.source_title
-        or source.source_publisher != candidate.source_publisher
-        or source.published_at != candidate.published_at
-        or source.retrieved_at != candidate.retrieved_at
-        or source.content_hash != candidate.content_hash
-        or source.citation_locator != candidate.citation_locator
+        or _evidence_document_mismatch(source.document, candidate)
     ):
         raise ValueError("confirmed memory source must match pending candidate")

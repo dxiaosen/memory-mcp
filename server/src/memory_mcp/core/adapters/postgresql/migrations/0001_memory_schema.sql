@@ -159,7 +159,7 @@ CREATE TABLE memory_evidence (
     memory_id UUID NOT NULL,
     revision_id UUID NOT NULL,
     owner_id TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
+    conversation_id TEXT,
     source_turn_id TEXT NOT NULL,
     source_expression TEXT NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
@@ -168,15 +168,8 @@ CREATE TABLE memory_evidence (
     source_message_id TEXT,
     source_tool_name TEXT,
     source_type TEXT NOT NULL DEFAULT 'conversation',
-    source_uri TEXT,
-    source_title TEXT,
-    source_publisher TEXT,
-    published_at TIMESTAMPTZ,
-    retrieved_at TIMESTAMPTZ,
-    content_hash TEXT,
-    citation_locator TEXT,
     CONSTRAINT memory_evidence_conversation_non_empty
-        CHECK (length(btrim(conversation_id)) > 0),
+        CHECK (conversation_id IS NULL OR length(btrim(conversation_id)) > 0),
     CONSTRAINT memory_evidence_turn_non_empty
         CHECK (length(btrim(source_turn_id)) > 0),
     CONSTRAINT memory_evidence_expression_non_empty
@@ -200,22 +193,33 @@ CREATE TABLE memory_evidence (
         CHECK (source_tool_name IS NULL OR source_role = 'tool'),
     CONSTRAINT memory_evidence_source_type
         CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
-    CONSTRAINT memory_evidence_source_uri_non_empty
-        CHECK (source_uri IS NULL OR length(btrim(source_uri)) > 0),
-    CONSTRAINT memory_evidence_source_title_non_empty
-        CHECK (source_title IS NULL OR length(btrim(source_title)) > 0),
-    CONSTRAINT memory_evidence_source_publisher_non_empty
-        CHECK (source_publisher IS NULL OR length(btrim(source_publisher)) > 0),
-    CONSTRAINT memory_evidence_content_hash_non_empty
-        CHECK (content_hash IS NULL OR length(btrim(content_hash)) > 0),
-    CONSTRAINT memory_evidence_citation_locator_non_empty
-        CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0),
     CONSTRAINT memory_evidence_revision_identity
         UNIQUE (evidence_id, revision_id, memory_id, owner_id)
 );
 
 CREATE INDEX memory_evidence_owner_revision_idx
     ON memory_evidence (owner_id, revision_id);
+
+CREATE TABLE memory_evidence_documents (
+    evidence_id UUID PRIMARY KEY,
+    source_uri TEXT,
+    source_title TEXT,
+    source_publisher TEXT,
+    published_at TIMESTAMPTZ,
+    retrieved_at TIMESTAMPTZ,
+    content_hash TEXT,
+    citation_locator TEXT,
+    CONSTRAINT memory_evidence_documents_uri_non_empty
+        CHECK (source_uri IS NULL OR length(btrim(source_uri)) > 0),
+    CONSTRAINT memory_evidence_documents_title_non_empty
+        CHECK (source_title IS NULL OR length(btrim(source_title)) > 0),
+    CONSTRAINT memory_evidence_documents_publisher_non_empty
+        CHECK (source_publisher IS NULL OR length(btrim(source_publisher)) > 0),
+    CONSTRAINT memory_evidence_documents_hash_non_empty
+        CHECK (content_hash IS NULL OR length(btrim(content_hash)) > 0),
+    CONSTRAINT memory_evidence_documents_locator_non_empty
+        CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0)
+);
 
 CREATE TABLE memory_capture_runs (
     capture_id UUID PRIMARY KEY,
@@ -332,13 +336,6 @@ CREATE TABLE memory_review_items (
     valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     valid_until TIMESTAMPTZ,
     source_type TEXT NOT NULL DEFAULT 'conversation',
-    source_uri TEXT,
-    source_title TEXT,
-    source_publisher TEXT,
-    published_at TIMESTAMPTZ,
-    retrieved_at TIMESTAMPTZ,
-    content_hash TEXT,
-    citation_locator TEXT,
     CONSTRAINT memory_review_items_content_non_empty
         CHECK (length(btrim(content)) > 0),
     CONSTRAINT memory_review_items_source_non_empty
@@ -421,16 +418,6 @@ CREATE TABLE memory_review_items (
         CHECK (valid_until IS NULL OR valid_until > valid_from),
     CONSTRAINT memory_review_items_source_type
         CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
-    CONSTRAINT memory_review_items_source_uri_non_empty
-        CHECK (source_uri IS NULL OR length(btrim(source_uri)) > 0),
-    CONSTRAINT memory_review_items_source_title_non_empty
-        CHECK (source_title IS NULL OR length(btrim(source_title)) > 0),
-    CONSTRAINT memory_review_items_source_publisher_non_empty
-        CHECK (source_publisher IS NULL OR length(btrim(source_publisher)) > 0),
-    CONSTRAINT memory_review_items_content_hash_non_empty
-        CHECK (content_hash IS NULL OR length(btrim(content_hash)) > 0),
-    CONSTRAINT memory_review_items_citation_locator_non_empty
-        CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0),
     CONSTRAINT memory_review_items_capture_candidate_unique
         UNIQUE (capture_id, candidate_id),
     CONSTRAINT memory_review_items_owner_identity
@@ -447,6 +434,27 @@ CREATE INDEX memory_review_items_resolved_memory_idx
 CREATE INDEX memory_review_items_maintenance_idx
     ON memory_review_items (valid_until, created_at, owner_id, review_id)
     WHERE status = 'pending';
+
+CREATE TABLE memory_review_item_documents (
+    review_id UUID PRIMARY KEY,
+    source_uri TEXT,
+    source_title TEXT,
+    source_publisher TEXT,
+    published_at TIMESTAMPTZ,
+    retrieved_at TIMESTAMPTZ,
+    content_hash TEXT,
+    citation_locator TEXT,
+    CONSTRAINT memory_review_item_documents_uri_non_empty
+        CHECK (source_uri IS NULL OR length(btrim(source_uri)) > 0),
+    CONSTRAINT memory_review_item_documents_title_non_empty
+        CHECK (source_title IS NULL OR length(btrim(source_title)) > 0),
+    CONSTRAINT memory_review_item_documents_publisher_non_empty
+        CHECK (source_publisher IS NULL OR length(btrim(source_publisher)) > 0),
+    CONSTRAINT memory_review_item_documents_hash_non_empty
+        CHECK (content_hash IS NULL OR length(btrim(content_hash)) > 0),
+    CONSTRAINT memory_review_item_documents_locator_non_empty
+        CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0)
+);
 
 CREATE TABLE memory_relations (
     relation_id UUID PRIMARY KEY,

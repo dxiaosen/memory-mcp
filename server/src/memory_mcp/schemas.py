@@ -191,15 +191,7 @@ class CaptureReceipt(StrictDto):
         )
 
 
-class EvidenceView(StrictDto):
-    conversation_id: str
-    source_turn_id: str
-    source_expression: str
-    observed_at: datetime
-    source_role: MessageRole | None = None
-    source_message_id: str | None = None
-    source_tool_name: str | None = None
-    source_type: EvidenceSourceType
+class EvidenceDocumentView(StrictDto):
     source_uri: str | None = None
     source_title: str | None = None
     source_publisher: str | None = None
@@ -207,6 +199,18 @@ class EvidenceView(StrictDto):
     retrieved_at: datetime | None = None
     content_hash: str | None = None
     citation_locator: str | None = None
+
+
+class EvidenceView(StrictDto):
+    conversation_id: str | None = None
+    source_turn_id: str
+    source_expression: str
+    observed_at: datetime
+    source_role: MessageRole | None = None
+    source_message_id: str | None = None
+    source_tool_name: str | None = None
+    source_type: EvidenceSourceType
+    document: EvidenceDocumentView | None = None
 
 
 class MemorySummaryView(StrictDto):
@@ -255,13 +259,19 @@ class MemoryView(MemorySummaryView):
                     source_message_id=evidence.source_message_id,
                     source_tool_name=evidence.source_tool_name,
                     source_type=evidence.source_type,
-                    source_uri=evidence.source_uri,
-                    source_title=evidence.source_title,
-                    source_publisher=evidence.source_publisher,
-                    published_at=evidence.published_at,
-                    retrieved_at=evidence.retrieved_at,
-                    content_hash=evidence.content_hash,
-                    citation_locator=evidence.citation_locator,
+                    document=(
+                        EvidenceDocumentView(
+                            source_uri=evidence.document.source_uri,
+                            source_title=evidence.document.source_title,
+                            source_publisher=evidence.document.source_publisher,
+                            published_at=evidence.document.published_at,
+                            retrieved_at=evidence.document.retrieved_at,
+                            content_hash=evidence.document.content_hash,
+                            citation_locator=evidence.document.citation_locator,
+                        )
+                        if evidence.document is not None
+                        else None
+                    ),
                 )
                 for evidence in record.evidence
             ),
@@ -448,13 +458,19 @@ class MemoryRevisionView(StrictDto):
                     source_message_id=source.source_message_id,
                     source_tool_name=source.source_tool_name,
                     source_type=source.source_type,
-                    source_uri=source.source_uri,
-                    source_title=source.source_title,
-                    source_publisher=source.source_publisher,
-                    published_at=source.published_at,
-                    retrieved_at=source.retrieved_at,
-                    content_hash=source.content_hash,
-                    citation_locator=source.citation_locator,
+                    document=(
+                        EvidenceDocumentView(
+                            source_uri=source.document.source_uri,
+                            source_title=source.document.source_title,
+                            source_publisher=source.document.source_publisher,
+                            published_at=source.document.published_at,
+                            retrieved_at=source.document.retrieved_at,
+                            content_hash=source.document.content_hash,
+                            citation_locator=source.document.citation_locator,
+                        )
+                        if source.document is not None
+                        else None
+                    ),
                 )
                 for source in entry.evidence
             ),
@@ -462,24 +478,19 @@ class MemoryRevisionView(StrictDto):
 
 
 class RecallSourceView(StrictDto):
-    conversation_id: str
+    conversation_id: str | None
     source_turn_id: str
     source_expression: str
     observed_at: datetime
     source_role: MessageRole | None
     source_type: EvidenceSourceType
-    source_uri: str | None
-    source_title: str | None
-    source_publisher: str | None
-    published_at: datetime | None
-    retrieved_at: datetime | None
-    content_hash: str | None
-    citation_locator: str | None
+    document: EvidenceDocumentView | None = None
 
 
 class RecalledMemoryView(StrictDto):
     memory_id: UUID
     revision_id: UUID
+    owner_id: str
     profile_id: str
     subject: str
     memory_type: str
@@ -513,6 +524,7 @@ class RecallReceipt(StrictDto):
                 RecalledMemoryView(
                     memory_id=item.memory_id,
                     revision_id=item.revision_id,
+                    owner_id=item.owner_id,
                     profile_id=item.profile_id,
                     subject=item.subject,
                     memory_type=item.memory_type,
@@ -532,13 +544,19 @@ class RecallReceipt(StrictDto):
                             observed_at=source.observed_at,
                             source_role=source.source_role,
                             source_type=source.source_type,
-                            source_uri=source.source_uri,
-                            source_title=source.source_title,
-                            source_publisher=source.source_publisher,
-                            published_at=source.published_at,
-                            retrieved_at=source.retrieved_at,
-                            content_hash=source.content_hash,
-                            citation_locator=source.citation_locator,
+                            document=(
+                                EvidenceDocumentView(
+                                    source_uri=source.document.source_uri,
+                                    source_title=source.document.source_title,
+                                    source_publisher=source.document.source_publisher,
+                                    published_at=source.document.published_at,
+                                    retrieved_at=source.document.retrieved_at,
+                                    content_hash=source.document.content_hash,
+                                    citation_locator=source.document.citation_locator,
+                                )
+                                if source.document is not None
+                                else None
+                            ),
                         )
                         for source in item.sources
                     ),

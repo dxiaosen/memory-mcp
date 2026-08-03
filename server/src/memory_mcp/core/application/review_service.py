@@ -100,16 +100,15 @@ class ReviewService:
             review.candidate.business_progress,
         )
         # 团队提升：校验该 principal 有权写入指定团队，并确定写入用的 owner。
+        # 不反推 tenant_id 也不依赖 server.settings，直接从 principal 已携带的
+        # team_owner_ids 里匹配 ``:team:team_id`` 后缀的 owner key。
         target_owner_id = principal.owner_id
         if team_id is not None:
-            from memory_mcp.settings import derive_team_owner_key
-
-            expected = derive_team_owner_key(
-                principal.owner_id.split(":", 1)[0], team_id
-            )
-            if expected not in team_owner_ids:
+            suffix = f":team:{team_id}"
+            matched = tuple(owner for owner in team_owner_ids if owner.endswith(suffix))
+            if not matched:
                 raise ValueError("principal is not a member of the requested team")
-            target_owner_id = expected
+            target_owner_id = matched[0]
         current_scope = self._repository.find_current(
             principal,
             profile_id=review.candidate.profile_id,

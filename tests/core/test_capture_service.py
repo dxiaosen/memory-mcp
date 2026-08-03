@@ -451,13 +451,14 @@ def test_tool_document_source_is_preserved_after_user_confirmation() -> None:
         memory.current_revision.verification_status is VerificationStatus.USER_CONFIRMED
     )
     assert source.source_type is EvidenceSourceType.DOCUMENT
-    assert source.source_uri == "https://research.example/reports/annual-2025"
-    assert source.source_title == "示例公司 2025 年报"
-    assert source.source_publisher == "示例交易所"
-    assert source.published_at == published_at
-    assert source.retrieved_at == retrieved_at
-    assert source.content_hash == "sha256:example-report"
-    assert source.citation_locator == "p.42"
+    assert source.document is not None
+    assert source.document.source_uri == "https://research.example/reports/annual-2025"
+    assert source.document.source_title == "示例公司 2025 年报"
+    assert source.document.source_publisher == "示例交易所"
+    assert source.document.published_at == published_at
+    assert source.document.retrieved_at == retrieved_at
+    assert source.document.content_hash == "sha256:example-report"
+    assert source.document.citation_locator == "p.42"
 
 
 def test_backend_exception_message_is_not_logged(

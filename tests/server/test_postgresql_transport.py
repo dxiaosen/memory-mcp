@@ -366,8 +366,9 @@ def _truncate(database_url: SecretStr) -> None:
             """
             TRUNCATE TABLE memory_capture_outcomes,
                             memory_relations,
+                            memory_review_item_documents,
                             memory_review_items,
-                            memory_capture_runs,
+                            memory_evidence_documents,
                             memory_evidence,
                             memory_revisions,
                             memory_items,

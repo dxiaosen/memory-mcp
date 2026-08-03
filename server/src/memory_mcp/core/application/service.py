@@ -355,6 +355,10 @@ class MemoryService:
             raise InvalidMemoryRelationError(
                 "memory relation endpoints must share a profile"
             )
+        if source.item.owner_id != target.item.owner_id:
+            raise InvalidMemoryRelationError(
+                "memory relation endpoints must share an owner"
+            )
         self._profile_registry.validate_relation(
             source.item.profile_id,
             relation_type,
@@ -362,9 +366,12 @@ class MemoryService:
             target.item.memory_type,
         )
         now = self._clock()
+        # relation 的 owner 跟随端点记忆的 owner：个人记忆建关系 owner 是个人，
+        # 团队记忆建关系 owner 是团队。
+        relation_owner = source.item.owner_id
         relation = MemoryRelation(
             relation_id=self._id_factory(),
-            owner_id=principal.owner_id,
+            owner_id=relation_owner,
             profile_id=source.item.profile_id,
             source_memory_id=source_memory_id,
             target_memory_id=target_memory_id,

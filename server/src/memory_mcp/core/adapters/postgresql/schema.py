@@ -23,8 +23,10 @@ _REQUIRED_TABLES = frozenset(
         "memory_items",
         "memory_revisions",
         "memory_evidence",
+        "memory_evidence_documents",
         "memory_capture_runs",
         "memory_review_items",
+        "memory_review_item_documents",
         "memory_relations",
         "memory_capture_outcomes",
     }

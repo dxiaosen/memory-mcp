@@ -378,21 +378,25 @@ MemoryRevision
         │
         ▼
 Evidence[]
-├── conversation_id
+├── conversation_id?          # 对话来源必填，文档来源可空
 ├── source_turn_id
 ├── source_expression
 ├── source_role
 ├── message_id?
 ├── tool_name?
-├── source_type
-├── source_uri? / source_title? / source_publisher?
-├── published_at? / retrieved_at?
-├── content_hash? / citation_locator?
+├── source_type               # conversation | tool | document | web
+├── document?                 # 仅 document/web 来源有值
+│   ├── source_uri? / source_title? / source_publisher?
+│   ├── published_at? / retrieved_at?
+│   └── content_hash? / citation_locator?
 └── observed_at
 ```
 
 `MemoryItem` 表示稳定逻辑对象，`MemoryRevision` 表示可变化的内容版本，
-`Evidence` 表示该版本为什么可信和从哪里来。
+`Evidence` 表示该版本为什么可信和从哪里来。文档/网页来源的引用元数据
+（uri、标题、发布者、发布时间、内容指纹、引文定位）拆到 `EvidenceDocument`
+子对象，对话和工具来源不携带这些字段。数据库侧 `memory_evidence_documents`
+子表与 `memory_evidence` 1:1 关联，仅 document/web 来源有行。
 
 两个稳定 Item 还可以形成一条 `MemoryRelation`：
 
@@ -1029,6 +1033,12 @@ owner review ID 不泄露内容或存在性。
 拥有 `memory:review` scope 的 owner 可以调用 `revoke_memory`。Repository 在同一
 owner/current revision 上把 lifecycle 改为 `revoked`，不创建新 revision，也不
 删除 Evidence；重复调用返回同一状态。另一 owner 猜中 ID 时与不存在完全一致。
+
+多层记忆下，revoke 的写入路径用记录的实际 owner（个人或团队），而非调用者的个人
+owner：团队成员能 revoke 团队公共记忆，操作目标由 `visible_owner_ids` 控制可见性，
+UPDATE 用 `row["owner_id"]` 精确更新。非成员因 owner 不在可见集合内，等同于不存在。
+`link_memories` 的 relation owner 跟随端点记忆的 owner——两个团队记忆建关系时
+relation 写入团队 owner，保证端点与关系 owner 一致；`revoke_memory_relation` 同理。
 
 到期不是 revoke。`valid_until` 到达后，普通 list/recall 立即在读取时排除该
 revision；Server lifespan 内部 runner 随后按批次把仍为 current/active 的 revision
