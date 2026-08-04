@@ -226,6 +226,7 @@ class EvidenceView(StrictDto):
 class MemorySummaryView(StrictDto):
     memory_id: UUID
     revision_id: UUID
+    owner_id: str
     profile_id: str
     subject: str
     memory_type: str
@@ -293,6 +294,7 @@ def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
     return {
         "memory_id": record.item.memory_id,
         "revision_id": revision.revision_id,
+        "owner_id": record.item.owner_id,
         "profile_id": record.item.profile_id,
         "subject": record.item.subject,
         "memory_type": record.item.memory_type,
