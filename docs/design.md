@@ -11,9 +11,9 @@ OpenSpec 负责规范与变更管理（proposal/specs/design/tasks），本文�
 ### 1.1 要解决的问题
 
 不同 Agent Runtime 只保存自己的会话历史，用户切换 Agent 后稳定偏好、项目背景、未完成
-事项和既有决策无法继续使用。即使每个 Agent 自行实现记忆，也会产生多份互不一致的
-数据、不同的保存召回标准、owner 隔离规则散落客户端、敏感内容重复处理、生命周期/来源/
-历史无法统一治理、每增一种 Agent 都要重写存储。
+事项和既有决策无法继续使用。即使每个 Agent 自行实现记忆，也会产生多份互不一致的数据、
+不同的保存召回标准、owner 隔离规则散落客户端、敏感内容重复处理、生命周期/来源/历史
+无法统一治理、每增一种 Agent 都要重写存储。
 
 Memory MCP 将长期记忆做成独立服务，Agent 只通过标准 MCP 请求访问，服务端统一处理身份、
 候选抽取、准入、版本、召回、幂等、审核和持久化。
@@ -30,8 +30,8 @@ Memory MCP Server
 ```
 
 正式产品入口是带认证的 Streamable HTTP MCP 服务。Core 的 Python 方法只是服务端内部
-实现和测试入口，不是外部产品 API。“支持多个 Agent”指多个 Agent Client 访问同一份
-owner-scoped 记忆，不负责 Agent 编排、协商、任务分发或共享消息总线。
+实现和测试入口。“支持多个 Agent”指多个 Agent Client 访问同一份 owner-scoped 记忆，
+不负责 Agent 编排、协商、任务分发或共享消息总线。
 
 ### 1.3 当前完成状态
 
@@ -121,7 +121,7 @@ sequenceDiagram
     M-->>H: capture receipt
 ```
 
-业务 Agent 可以使用与记忆抽取不同的模型。示例 Runner 的业务 callable 只提供接线参考。
+业务 Agent 可以使用与记忆抽取不同的模型；示例 Runner 的业务 callable 只提供接线参考。
 
 ### 2.3 两条主要数据流
 
@@ -180,7 +180,7 @@ memory_mcp_agent ── 最小 JSON-RPC/HTTP ──> memory_mcp
 | Secret 只在组合和基础设施边界解封 | 不泄漏到 Domain |
 | 包 `__init__` 不加载完整 app/模型/数据库驱动 | 惰性加载 |
 
-依赖守卫由自动化测试执行，避免后续重构逐渐破坏边界。
+依赖守卫由自动化测试执行。
 
 ### 3.3 项目结构
 
@@ -207,10 +207,10 @@ memory-mcp/
 ├── evals/ / examples/ / tests/ / deploy/systemd/ / docs/ / openspec/
 ```
 
-结构判断：`tools` 已合理功能子目录；`extraction` provider/schema/settings 分离避免
-大杂烩；PostgreSQL Repository 维持单一事务 facade；CaptureService 保留公共用例入口；
-`memory_mcp_agent` 是单独 distribution（远程消费者，不是服务端插件）；`db.py` 是
-migration/health 运维命令入口；`logging.py` 横切基础设施放在包根。
+结构判断：`tools` 已合理功能子目录；`extraction` provider/schema/settings 分离避免大杂烩；
+PostgreSQL Repository 维持单一事务 facade；CaptureService 保留公共用例入口；`memory_mcp_agent`
+是单独 distribution（远程消费者，不是服务端插件）；`db.py` 是 migration/health 运维入口；
+`logging.py` 横切基础设施放在包根。
 
 ## 4. 领域模型
 
@@ -241,8 +241,8 @@ Evidence[]
     └── content_hash? / citation_locator?
 ```
 
-`MemoryItem` 是稳定逻辑对象，`MemoryRevision` 是可变化内容版本，`Evidence` 是版本为什么
-可信和从哪里来。文档/网页引用元数据拆到 `EvidenceDocument` 子对象（数据库侧
+`MemoryItem` 是稳定逻辑对象，`MemoryRevision` 是可变化内容版本，`Evidence` 是版本可信度和
+来源。文档/网页引用元数据拆到 `EvidenceDocument` 子对象（数据库侧
 `memory_evidence_documents` 子表与 `memory_evidence` 1:1，仅 document/web 来源有行）。
 
 ### 4.2 MemoryRelation
@@ -262,15 +262,15 @@ MemoryRelation
 ```
 
 关系稳定端点指向 Item。人工 `manual/item` 边保存创建时 revision 快照用于审计，endpoint
-内容 replacement 后继续指向同一逻辑记忆；自动 `automatic/revision` 边只对创建时两端
-revision 成立，任一端 replacement 会在同一事务将旧边转为 `stale`。端点 revoked/到期
-也会让活动查询和 recall 排除这条边，历史都不被物理删除。
+replacement 后继续指向同一逻辑记忆；自动 `automatic/revision` 边只对创建时两端 revision
+成立，任一端 replacement 会在同一事务将旧边转为 `stale`。端点 revoked/到期也会让活动
+查询和 recall 排除这条边，历史都不被物理删除。
 
 ### 4.3 Item 与 Revision 分离的原因
 
-直接覆盖一条记忆文本会失去：替代前的历史、哪个版本当前生效、旧证据与新证据关系、重放/
-解释/审计能力。因此 replacement 在同一 Item 下追加 Revision，旧 Revision 保留但不参与
-普通召回。Duplicate 不产生 Revision，只为当前 Revision 增加 Evidence。
+直接覆盖一条记忆文本会失去：替代前的历史、哪个版本当前生效、旧证据与新证据关系、重放/解释/
+审计能力。因此 replacement 在同一 Item 下追加 Revision，旧 Revision 保留但不参与普通召回。
+Duplicate 不产生 Revision，只为当前 Revision 增加 Evidence。
 
 ### 4.4 认识论标签
 
@@ -283,7 +283,7 @@ revision 成立，任一端 replacement 会在同一事务将旧边转为 `stale
 | `external_fact` | 外部来源信息 |
 | `system_inference` | 系统或模型推断 |
 
-召回和渲染必须保留这些标签。系统不能把“用户曾这样说”渲染为“已经验证为真”。
+召回和渲染必须保留这些标签，不能把“用户曾这样说”渲染为“已经验证为真”。
 
 `verification_status` 与 `extraction_confidence` 是两条独立维度：
 
@@ -309,10 +309,10 @@ MemoryProfile 提供：`profile_id`、合法 memory types、capture guidance、`
 稳定说明）、recall type priorities、每种 memory type 的 sensitivity 和可选有效期策略。
 
 Core 对全部有效声明式字段规范化后计算 `profile_fingerprint`（SHA-256），不由 Profile
-实现手工填写。当前内置版本为 `general-work-v2` 和 `investment-research-v2`，绑定
-预期策略指纹；策略内容改变但版本/指纹清单未同步时，生产组合根会在服务启动前失败。
-自定义 Profile 同样计算并写入指纹，但不受内置清单约束。未显式提供 Profile 的工具请求
-使用认证主体的 `default_profile_id`；兼容缺省值仍是 `general-work`。
+实现手工填写。当前内置版本为 `general-work-v2` 和 `investment-research-v2`，绑定预期
+策略指纹；策略内容改变但版本/指纹清单未同步时，生产组合根会在服务启动前失败。自定义
+Profile 同样计算并写入指纹，但不受内置清单约束。未显式提供 Profile 的工具请求使用
+认证主体的 `default_profile_id`；兼容缺省值仍是 `general-work`。
 
 #### general-work memory types
 
@@ -337,7 +337,7 @@ Core 对全部有效声明式字段规范化后计算 `profile_fingerprint`（SH
 | `research_decision` | 研究范围、口径或结论选择；不是交易指令 | 无 |
 
 投研 subject 必须细化到“实体/主题 + 指标、期间、事件、问题或论点焦点”，避免同一公司
-的不同证据因 subject 过粗被误判为冲突。`thesis` 保持 `user_view`，`evidence_claim`
+不同证据因 subject 过粗被误判为冲突。`thesis` 保持 `user_view`，`evidence_claim`
 使用 `external_fact` 和独立 Evidence；高抽取置信度或存在 citation 都不会自动变成
 `source_verified`。
 
@@ -357,13 +357,13 @@ Core 不硬编码任一正式 Profile 的词义。新增配置只实现 `MemoryP
 | `resolves` | `research_decision` | `research_question` |
 
 ProfileRegistry 要求 relation policy 两个端点集合都是当前 Profile memory types 的
-非空子集，并要求 recall priorities 精确覆盖所有 memory types。方向属于合同；
+非空子集，并要求 recall priorities 精确覆盖所有 memory types。方向属于合同——
 `thesis supports evidence_claim` 不会被 Core 自动反转，而是明确拒绝。
 
 AfterRun 在服务端自动识别关系，但不是从任意自由文本直接写图。CandidateProcessor 先
 确定本轮真正 auto-save 的 MemoryItem，Core 再把这些新 Item 与同 owner/Profile、
-current/active/effective 的既有 Item 组成最多 40 个可信端点。第二次严格结构化调用只能
-引用目录中的 memory ID 和当前 Profile 关系类型；Core 重新检查方向、原文连续表达、
+current/active/effective 的既有 Item 组成最多 40 个可信端点。第二次严格结构化调用
+只能引用目录中的 memory ID 和当前 Profile 关系类型；Core 重新检查方向、原文连续表达、
 `expression_basis=explicit` 和 confidence 不低于 `0.90`。存在消息块时，关系原文还必须
 命中用户消息，不能只来自 Assistant/Tool，避免 Agent 固化自己的分析。低置信、推断、
 歧义、pending 或 blocked 端点不建边。`link_memories` 保留为历史补链和人工治理工具。
@@ -546,11 +546,9 @@ flowchart TD
 
 CandidateExtractor 接收：`profile_id`、conversation/source turn、脱敏后的内容、
 observed time、allowed memory types、capture guidance、`profile_version`、可选
-subject hint。
-
-每个原子候选包括：subject、memory type、content、assertion kind、source expression、
-save rationale、confidence、durability、expression basis、可选 progress 和时间表达。
-一轮可以产生零到多个候选。没有长期信息时返回空列表是正常结果。
+subject hint。每个原子候选包括：subject、memory type、content、assertion kind、
+source expression、save rationale、confidence、durability、expression basis、可选
+progress 和时间表达。一轮可以产生零到多个候选；没有长期信息时返回空列表是正常结果。
 
 ### 7.4 候选可信化
 
@@ -558,8 +556,7 @@ save rationale、confidence、durability、expression basis、可选 progress �
 
 | 字段 | 校验规则 |
 | --- | --- |
-| owner | 永远使用 Principal |
-| conversation/turn/time | 永远使用验证后的 event |
+| owner / conversation/turn/time | 永远使用 Principal / 验证后的 event |
 | source expression | 必须出现在对应脱敏来源 |
 | source role | 来自消息块 |
 | source type/URI/标题/发布者/时间/hash/locator | 只来自精确命中的消息块 |
@@ -573,8 +570,7 @@ save rationale、confidence、durability、expression basis、可选 progress �
 
 只有 Profile 的 `relation_policies` 非空且端点中存在合法有向组合时，Capture 才执行
 关系抽取。本轮 auto-save 端点优先；既有端点由 Repository 先限定 owner/Profile/
-current/active/effective，再按轮次相关度补足。关系请求不含 owner、Token、Evidence
-URI 或跨 Profile 内容。
+current/active/effective 补足。关系请求不含 owner、Token、Evidence URI 或跨 Profile 内容。
 
 `RelationBatch` 最多 20 条，每条只能包含 source/target memory ID、relation type、
 原文 `source_expression`、confidence 和 expression basis。未知 ID、自环、非法类型/
@@ -582,7 +578,7 @@ URI 或跨 Profile 内容。
 但低于准入阈值或只命中 Assistant/Tool 消息的建议只跳过。相同 source/target/type
 在批内和 Repository 中都收敛为一条活动关系。
 
-准入后的自动边保存可信 capture/conversation/turn、精确脱敏来源表达、confidence、
+准入后的自动边保存可信 capture/conversation/turn、脱敏来源表达、confidence、
 expression basis、模型/prompt/schema 版本和两端 revision 快照。模型输出不能提供这些
 身份字段。普通 recall 关系摘要不复制 provenance 正文；`get_memory(include_history=true)`
 才返回完整关系证据。
@@ -595,14 +591,13 @@ expression basis、模型/prompt/schema 版本和两端 revision 快照。模型
 | 测试依赖注入 | Fake Candidate/Relation extractor | 自动化、无网络确定性验证 |
 
 生产配置不提供 backend 选择器或固定候选 JSON，只创建一次 ChatModel，再分别绑定候选
-和关系严格 schema/prompt。测试通过组合根的 `candidate_extractor` 和可选
-`relation_extractor` 注入替身，只替换模型发现，不改变身份、准入、生命周期、Repository
-和 MCP 契约。PostgreSQL MCP E2E 仍是真实远程链路，不是整个系统 mock。自定义组装只
-注入旧 CandidateExtractor 时，关系阶段安全跳过。
+和关系严格 schema/prompt。测试通过组合根注入替身，只替换模型发现，不改变身份、准入、
+生命周期、Repository 和 MCP 契约。PostgreSQL MCP E2E 仍是真实远程链路，不是整个系统
+mock。自定义组装只注入旧 CandidateExtractor 时，关系阶段安全跳过。
 
-**Provider 工厂**：`extraction/chat_models.py` 根据配置创建 `ChatOpenAI` 或 `ChatDeepSeek`。
-公共参数包括 model、API key、base URL、temperature、timeout 和 max retries。Provider
-差异停留在工厂，不进入 Core。
+**Provider 工厂**：`extraction/chat_models.py` 根据配置创建 `ChatOpenAI` 或
+`ChatDeepSeek`。公共参数：model、API key、base URL、temperature、timeout、max retries。
+Provider 差异停留在工厂，不进入 Core。
 
 **DeepSeek 兼容策略**：DeepSeek V4 默认 thinking 模式会拒绝 LangChain 强制 schema tool
 使用的 named `tool_choice`。候选和关系 extraction 都不需要 chain-of-thought，因此
@@ -624,14 +619,14 @@ DeepSeek provider 固定通过 `extra_body` 关闭 thinking，然后使用同一
 
 ### 7.7 准入决策
 
-默认 auto-save 置信阈值为 `0.8`。决策顺序：
+默认 auto-save 置信阈值为 `0.9`。决策顺序：
 
 ```text
 temporary           → discard
 uncertain durability → pending
 system inference    → pending
 non-explicit        → pending
-confidence < 0.8    → pending
+confidence < 0.9    → pending
 otherwise           → auto_save
 ```
 
@@ -654,19 +649,19 @@ replacement 和冲突。任何候选最终只能有一个互斥结果。
 | 模型前 | 完成轮次 | 命中禁止内容替换为安全占位，不把原文发送给 provider |
 | 持久化前 | subject/content/source expression/rationale/business progress/original time expression/source message ID/source tool name/source URI/title/publisher/hash/citation locator | 任一字段包含禁止内容，整条候选 blocked |
 
-普通日志只记录类别和数量；即使开启内容日志，也不记录敏感原文或 backend exception
-message。当前敏感守卫是研究原型的持久化边界，不等同于企业 DLP 或合规审计。
+普通日志只记录类别和数量；即使开启内容日志，也不记录敏感原文或 backend exception。
+当前敏感守卫是研究原型的持久化边界，不等同于企业 DLP 或合规审计。
 
 ### 7.10 幂等与失败恢复
 
 **客户端 run 幂等**：Hook run key = `(profile_id 或 <server-default>, conversation_id, turn_id)`。
 Bridge 分别保存 BeforeRun 和 AfterRun task：首次创建异步 task；并发相同请求 await 同一
-task；相同 key 不同 fingerprint 抛冲突；已完成 receipt 按配置上限保留；in-flight task
-不因 cache trim 被取消。
+task；相同 key 不同 fingerprint 抛冲突；已完成 receipt 按配置上限保留；in-flight task 不因
+cache trim 被取消。
 
 **服务端 event 幂等**：显式事件使用 `(owner_id, event_id)`；没有 `event_id` 的兼容路径
-使用 `(owner_id, profile_id, conversation_id, source_turn_id)`。`profile_version` 不参与
-唯一性，payload fingerprint 用于识别同一身份是否被不同内容复用：
+使用 `(owner_id, profile_id, conversation_id, source_turn_id)`。`profile_version` 不
+参与唯一性，payload fingerprint 用于识别同一身份是否被不同内容复用：
 
 | 情况 | 行为 |
 | --- | --- |
@@ -684,7 +679,7 @@ event 记录保证。两个不同 Server 实例若在首个事务提交前同时
 保持打开。
 
 **observed time 与重放**：完整 payload 包含 `observed_at`。真正 replay 必须复用相同
-canonical payload，包括时间。手工重新运行示例命令会生成新时间，因此不应复用旧
+canonical payload（包括时间）。手工重新运行示例命令会生成新时间，因此不应复用旧
 event/turn ID；普通新任务应始终使用新的 `turn_id`。
 
 **故障语义**：
@@ -748,6 +743,8 @@ ReviewItem 与 active memory 分离。拥有 `memory:review` scope 的当前 own
 
 ### 8.4 Revoke 与到期
 
+### 8.4 Revoke 与到期
+
 拥有 `memory:review` scope 的 owner 可以调用 `revoke_memory`。Repository 在同一
 owner/current revision 上把 lifecycle 改为 `revoked`，不创建新 revision，也不删除
 Evidence；重复调用返回同一状态。另一 owner 猜中 ID 时与不存在完全一致。
@@ -759,13 +756,12 @@ UPDATE 用 `row["owner_id"]` 精确更新。非成员因 owner 不在可见集�
 relation 写入团队 owner，保证端点与关系 owner 一致；`revoke_memory_relation` 同理。
 
 到期不是 revoke。`valid_until` 到达后，普通 list/recall 立即在读取时排除该 revision；
-Server lifespan 内部 runner 随后按批次把仍为 current/active 的 revision 物化为 `expired`。
-它还会把已到期或 pending 超过 30 天的 ReviewItem 终止为 `expired`，不创建 Memory。
-维护每 300 秒运行一次、每批总计最多 500 个目标，多个 worker 依靠 PostgreSQL
-`FOR UPDATE SKIP LOCKED` 和条件 UPDATE 幂等协作；不需要队列或 Agent 配置。
-
-维护保留 Item、Revision、Evidence 和 Review 历史。若未来需要合规删除或 suppression，
-应建立独立规范，不能复用 revoke/expired 偷做物理删除。
+Server lifespan 内部 runner 随后按批次把仍为 current/active 的 revision 物化为
+`expired`，还会把已到期或 pending 超过 30 天的 ReviewItem 终止为 `expired`。维护每
+300 秒运行一次、每批总计最多 500 个目标，多个 worker 依靠 PostgreSQL
+`FOR UPDATE SKIP LOCKED` 和条件 UPDATE 幂等协作。维护保留 Item、Revision、Evidence
+和 Review 历史；未来需要合规删除或 suppression 应建立独立规范，不能复用
+revoke/expired 偷做物理删除。
 
 ### 8.5 Relation 生命周期
 
@@ -781,7 +777,7 @@ Server lifespan 内部 runner 随后按批次把仍为 current/active 的 revisi
 `automatic/revision` 边。replacement 会先把连接旧 revision 的活动边物化为
 `stale/endpoint_revision_changed`，再写针对新 revision 的新边；任何一步失败都共同
 回滚。端点到期时，维护事务会把连接该 Item 的活动边物化为 `stale/endpoint_expired`；
-端点 revoked/到期在物化前也会先被读取谓词排除。系统仍不从任意自然语言自动撤销端点
+端点 revoked/到期在物化前也会先被读取谓词排除。系统不从任意自然语言自动撤销端点
 内容未变化的错误关系。
 
 ## 9. 召回
@@ -798,13 +794,12 @@ owner 集合（个人 + 团队）
 → 去重并限制为 MEMORY_MCP_RECALL_CANDIDATE_LIMIT
 ```
 
-候选查询用 `owner_id = ANY(%s)` 同时匹配个人 owner 和该用户所属团队的 owner
-（`visible_owner_ids`），使团队成员能召回团队公共记忆。非成员的 owner 不在集合内，
-无法访问团队记忆。候选上限由 Application 通过 Repository 端口下推，PostgreSQL 在
-owner/Profile/current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择
-词法候选，再用近期候选补齐，默认总计 500、必须为正数。它能找回超过近期窗口的较早
-相关记忆，但不是 Embedding 语义索引。相关性逻辑永远看不到其他 owner 的记录。
-pending、superseded、expired、revoked、deleted 和 blocked 内容不进入候选集。
+候选查询用 `owner_id = ANY(%s)` 同时匹配个人 owner 和团队 owner（`visible_owner_ids`），
+使团队成员能召回团队公共记忆。非成员无法访问。候选上限由 Application 下推，PostgreSQL
+在 owner/Profile/current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引
+选择词法候选，再用近期候选补齐，默认总计 500。它能找回超过近期窗口的较早相关记忆，
+但不是 Embedding 语义索引。pending、superseded、expired、revoked、deleted 和 blocked
+内容不进入候选集。
 
 候选 DTO 只包含 Item 与 current Revision，不携带 Evidence。Application 完成关系加权、
 相关性、数量和 token 选择后，Repository 才用一次 owner-scoped 查询为最终 revision
@@ -826,8 +821,7 @@ Application 对候选计算：
 | observed time | 稳定排序补充 |
 
 `core.domain` 定义 `MemoryTokenizer` 协议和 `SimpleTokenizer` 兜底实现，`core.adapters`
-提供基于 jieba 的生产实现；组合根注入分词器，召回用例不直接依赖 jieba。word overlap
-信号此前因 Python `\w` 把无空格 CJK 当作单 token 而对中文失效，分词注入后该信号真正生效。
+提供基于 jieba 的生产实现；组合根注入分词器，召回用例不直接依赖 jieba。
 
 打分常量（relevance threshold `0.18`、relation boost `0.12`、profile hint boost
 `0.16`、subject exact-match boost `0.2`）均为命名模块级常量，经离线评测校准且不回退
@@ -847,20 +841,16 @@ lexical score 只负责候选生成，不替代应用分数。关系不能独自
 | 省略后 | 仍按 owner + profile_id + query/task intent 搜索 |
 | 召回为 0 | 排查第一步是移除 subject |
 
-未来若引入 canonical subject registry，应由记忆配置或服务端统一规范化，不能让每个
-Agent 自行定义。
+未来若引入 canonical subject registry，应由记忆配置或服务端统一规范化。
 
 ### 9.4 数量与预算
 
 Server 同时控制：relevance threshold、`max_items`、`token_budget`、Server 硬上限、
-rendered context header 成本。
+rendered context header 成本。token 估算按字符类别区分：CJK 约 1 token/字，ASCII 约
+1 token/4 字符（此前单一 `len/3` 对中文严重低估，导致 `token_budget` 塞入远超预算
+的中文内容）。估算仍不绑定具体 provider tokenizer，只保证不再严重低估。
 
-token 估算按字符类别区分：CJK 字符约 1 token/字，ASCII 约 1 token/4 字符，混合文本
-按类别累加。此前单一 `len/3` 对中文严重低估（30 字中文估算 10 token，实际约 30 token），
-导致 `token_budget` 实际塞入远超预算的中文内容；按类别估算后渲染预算反映真实占用。
-估算仍不绑定具体 provider tokenizer，只保证不再严重低估。
-
-选中条目按预算逐个加入；关系只在两个 endpoint 都已选中时渲染，并同样计入预算。
+选中条目按预算逐个加入；关系只在两个 endpoint 都已选中时渲染并同样计入预算。
 关系元数据放不下时先省略关系，再决定是否省略整个 item；任一截断都标记 truncated。
 无相关内容返回空 items，Hook 将 `memory_context=None`，不会注入“没有记忆”占位。
 
@@ -881,10 +871,9 @@ observed time、validity 和内容，使业务 Agent 能正确理解来源、确
 
 当前 v4 投研基准的零命中、同义改写、报告期/同名实体强干扰、长期旧记忆和 101 条
 大候选窗口均通过，因此不在召回热路径增加模型调用。如果后续真实失败案例证明文本
-召回不足，可以增加 PostgreSQL 内部或外部可重建索引或受控 query expansion。
-
-索引只能提出候选；返回前必须回 PostgreSQL 复核：owner、current revision、lifecycle、
-`profile_id`、可见性。索引永远不能成为身份或生命周期事实源。
+召回不足，可以增加可重建索引或受控 query expansion。索引只能提出候选；返回前必须
+回 PostgreSQL 复核 owner/current revision/lifecycle/`profile_id`/可见性。索引永远
+不能成为身份或生命周期事实源。
 
 ## 10. Agent Client 与 Hook
 
@@ -899,7 +888,7 @@ profile_id / conversation_id / turn_id / subject? / task_intent?
 run key 是前三项。通用 Framework 可以显式构造全部字段；command 输入边界把
 `conversation_id/run_id` 或首批宿主的 `session_id + turn_id/prompt_id` 归一化为
 同一个 `AgentTurnEvent`，默认不发送 Profile，由服务端 Token 的 `default_profile_id`
-决定。它不根据字段推断宿主，也不在 Bridge/Core 中保留宿主分支。Server URL 和 Token
+决定。不根据字段推断宿主，也不在 Bridge/Core 中保留宿主分支。Server URL 和 Token
 来自 Agent 进程的 `MEMORY_MCP_URL/TOKEN`，不进入模型上下文。
 
 ### 10.2 BeforeRun / AfterRun 流程
@@ -928,7 +917,7 @@ BeforeRun 必须 await，因为业务 Agent 要使用返回上下文。相同顶
 attempts、replayed、summary、created IDs、pending IDs、failure/warning。
 
 command Hook 在发起 HTTP 前把 prompt、final output、固定 observed time 和可选 Profile
-写入本地原子 payload。`completed` 或明确的 `failed` 是终态；`reprocess_required` 和
+写入本地原子 payload。`completed` 或明确 `failed` 是终态；`reprocess_required` 和
 客户端 warning 保留文件。后续任意一次顶层 Stop 在处理当前轮次前最多补送一条旧
 payload，沿用原 event ID 与 observed time，避免重试变成新事件。
 
@@ -938,17 +927,12 @@ payload，沿用原 event ID 与 observed time，避免重试变成新事件。
 
 ### 10.3 Agent callable
 
-统一 callable：
-
 ```python
-async def agent(
-    user_input: str,
-    memory_context: str | None,
-) -> str: ...
+async def agent(user_input: str, memory_context: str | None) -> str: ...
 ```
 
-Host 决定如何把 memory context 放入自己的 prompt/runtime。它必须作为不可信历史
-数据注入，不能覆盖 system policy 或当前请求。
+Host 决定如何把 memory context 放入自己的 prompt/runtime，必须作为不可信历史数据
+注入，不能覆盖 system policy 或当前请求。
 
 ### 10.4 Fail-open 与 fail-closed
 
@@ -972,16 +956,11 @@ Host 决定如何把 memory context 放入自己的 prompt/runtime。它必须�
 | command Hook 已有 24 小时、本机磁盘范围的轻量 best-effort outbox | 短时故障足够 |
 | 无跨主机削峰或独立 worker 需求 | 当前规模不需要 |
 
-引入队列的明确触发条件：Agent Host 永久下线或本地磁盘损坏后仍必须保证投递；没有
-后续 Stop 时也必须主动持续重投；多进程需要统一削峰；模型限流导致大量积压；需要离线
-重放和死信治理。正确形态是 durable outbox + queue worker：
-
-```text
-Agent/Server → durable outbox → queue → worker → existing idempotent capture
-```
-
-不能让 queue worker 直接写表或绕过身份与事务。当前本地 outbox 解决短时进程/网络故障，
-不等同于跨主机消息队列；单纯 `asyncio.create_task` 也不是可靠队列。
+引入队列的触发条件：Agent Host 永久下线或本地磁盘损坏后仍必须保证投递；没有后续
+Stop 时也必须主动持续重投；多进程需要统一削峰；模型限流导致大量积压；需要离线
+重放和死信治理。正确形态是 `Agent/Server → durable outbox → queue → worker →
+existing idempotent capture`，不能让 queue worker 直接写表或绕过身份与事务。当前
+本地 outbox 解决短时进程/网络故障，不等同于跨主机消息队列。
 
 ### 10.6 通用 Agent 主动记忆
 
@@ -996,22 +975,21 @@ Host JSON
   → command Hook JSON renderer
 ```
 
-标准输入使用 `BeforeRun/AfterRun + conversation_id + run_id`。Codex 的 `turn_id` 和
-Claude Code 的 `prompt_id` 只在输入边界归一化；多个别名同时出现时必须相等。Before
-保存 prompt；After 在网络调用前补齐 final output、固定 observed time 和 Profile。
+标准输入使用 `BeforeRun/AfterRun + conversation_id + run_id`。Codex 的 `turn_id`
+和 Claude Code 的 `prompt_id` 只在输入边界归一化；多个别名同时出现时必须相等。
 状态文件名是标识摘要，权限为目录 `0700`、文件 `0600`，原子写入并按 24 小时清理。
 新文件使用 schema v2，旧版只含 prompt 的 schema v1 文件仍可读取，首次补齐 capture
 payload 时原子升级。状态目录取事件的可信 `cwd`，stdout 只输出 Hook JSON，阶段日志
 写入进程当前目录的 `.memory-mcp/logs/agent-hook.log`，不含 prompt、回复或 Token。
 
 Codex/Claude Code 当前共享一个 command renderer；输出协议不同的新宿主只增加薄
-输入/输出映射。单进程 Framework 则直接使用 `HookedAgentRunner`，无需 command
-状态文件。默认不监听工具或 `SubagentStop`，这是“一个顶层轮次一组 Before/After”，
+输入/输出映射。单进程 Framework 直接使用 `HookedAgentRunner`，无需 command
+状态文件。默认不监听工具或 `SubagentStop`——这是“一个顶层轮次一组 Before/After”，
 不是每次内部模型调用都形成记忆。完整合同和配置见[Agent 主动记忆](agents.md)。
 
 Agent Client 是独立 `memory-mcp-agent` 发行包，只依赖 `httpx`、Pydantic 和
-Pydantic Settings。它没有引入完整 MCP SDK，因为后者会把 ASGI Server、OAuth/JWT
-等 Agent 不使用的能力带到客户端。当前最小 Client 只实现主动记忆所需的 `initialize`、
+Pydantic Settings。它没有引入完整 MCP SDK（后者会把 ASGI Server、OAuth/JWT 等
+Agent 不使用的能力带到客户端）。当前最小 Client 只实现主动记忆所需的 `initialize`、
 `notifications/initialized` 和 `tools/call`，支持可选 session header，并要求 Memory MCP
 Server 固定的 JSON response 模式。这个边界通过真实 HTTP 集成测试和隔离 wheel 安装
 测试共同保护；它不是任意 MCP Server 的通用 SDK。
@@ -1052,17 +1030,17 @@ SQLite 原型已经删除，不是 fallback。InMemory 只用于快速单元测�
 | 每个 owner/source/target/type 最多一条 active relation | 部分唯一索引 |
 
 引用完整性（owner 一致、profile_id/type 已注册、relation 两端存在且同 owner/同 Profile）由
-应用层事务和 advisory lock 保证，不依赖数据库外键。`commit_capture` 在事务内用 advisory lock
-串行化，`_insert_relation` 显式 `SELECT ... FOR UPDATE OF i, r` 检查端点存在性和有效性，
-`replace`/`revoke`/`review` 操作都锁定目标行后再更新。CHECK/UNIQUE 约束仍防止非法状态。
-Application 校验提供友好错误；数据库 CHECK/UNIQUE 约束提供最终防线。
+应用层事务和 advisory lock 保证，不依赖数据库外键。`commit_capture` 在事务内用 advisory
+lock 串行化，`_insert_relation` 显式 `SELECT ... FOR UPDATE OF i, r` 检查端点存在性和
+有效性，`replace`/`revoke`/`review` 操作都锁定目标行后再更新。Application 校验提供
+友好错误；数据库 CHECK/UNIQUE 约束提供最终防线。
 
 ### 11.3 Repository 事务与 Migration
 
 主要事务：capture commit；review confirm/reject；replacement current 切换；profile
 registration；relation link/revoke。capture commit 同时可以包含自动关系，不在事务
-提交后再补写边。Repository facade 负责完整事务：`mapping.py` 负责 row → domain，
-`validation.py` 负责捕获写入前的不变量校验，`schema.py` 负责 migration/health。
+提交后再补写边。Repository facade 负责完整事务（`mapping.py` row → domain，
+`validation.py` 写入前不变量校验，`schema.py` migration/health）。
 
 | Migration 项 | 说明 |
 | --- | --- |
@@ -1075,28 +1053,24 @@ registration；relation link/revoke。capture commit 同时可以包含自动关
 
 ### 11.4 连接池与生命周期
 
-Server 启动时创建 psycopg pool；ASGI lifespan 关闭时释放。Pool min/max 和
-connect timeout 可配置。Core/Repository 是同步接口，MCP handler 通过 worker
-thread 调用，避免直接阻塞事件循环。
-
-同一 lifespan 托管 maintenance asyncio task；同步批次通过 `asyncio.to_thread`
-执行。关闭时先通知 runner、等待当前批次结束，再释放连接池。维护失败只记录异常
-类型并等待下一轮，不把模型或维护短暂失败升级为 MCP 全局不可用。
+Server 启动时创建 psycopg pool；ASGI lifespan 关闭时释放。Pool min/max 和 connect
+timeout 可配置。Core/Repository 是同步接口，MCP handler 通过 worker thread 调用，
+避免直接阻塞事件循环。同一 lifespan 托管 maintenance asyncio task；同步批次通过
+`asyncio.to_thread` 执行。关闭时先通知 runner、等待当前批次结束，再释放连接池。
+维护失败只记录异常类型并等待下一轮，不把模型或维护短暂失败升级为 MCP 全局不可用。
 
 ### 11.5 Health
 
 `memory-mcp-db health` 和 `/health` 验证：数据库可连接、必需表存在、migration 版本
-完整、checksum 匹配、schema current。
-
-HTTP health 还返回无正文的 `maintenance`：`state` 为 `disabled/starting/ok/degraded`，
-并包含连续失败次数、最近成功/失败时间和最近异常类型。数据库健康时，维护单独
-`degraded` 仍返回 HTTP 200；数据库或 schema 不健康才返回 503。健康响应不包含 DSN、
-Token、owner、memory/review 标识或正文。
+完整、checksum 匹配、schema current。HTTP health 还返回无正文的 `maintenance`：
+`state` 为 `disabled/starting/ok/degraded`，并包含连续失败次数、最近成功/失败时间
+和最近异常类型。数据库健康时，维护单独 `degraded` 仍返回 HTTP 200；数据库或 schema
+不健康才返回 503。健康响应不包含 DSN、Token、owner、memory/review 标识或正文。
 
 ### 11.6 配置、部署、日志与测试的设计决策
 
-这四个维度有独立的操作文档（[配置](config.md)、[部署](deploy.md)、
-[日志](logging.md)、[测试](testing.md)）。本节只记录设计决策。
+这四个维度有独立的操作文档（[配置](config.md)、[部署](deploy.md)、[日志](logging.md)、
+[测试](testing.md)）。本节只记录设计决策。
 
 | 维度 | 核心设计约束 |
 | --- | --- |
@@ -1106,8 +1080,8 @@ Token、owner、memory/review 标识或正文。
 | 部署 | PostgreSQL 不开放公网，ECS 应用端口只允许可信网段或负载均衡器。私网直连不需要 Nginx；公网由 ALB/CLB 终止 HTTPS 后转发。进程管理用 systemd：oneshot unit 运行 migration，service unit 运行 `memory-mcp`。发布顺序：先 migration、后 restart、最后 health 和 MCP smoke；回滚应用版本但不破坏性回滚已成功的兼容 migration |
 | 测试 | 测试替身只存在于 `tests/support`，不进入生产源码或发行包。分层：Core 单元用 InMemory + Fake Extractor（无网络）；MCP transport 用本机真实 HTTP + InMemory；PostgreSQL 契约用真实测试库 + Fake Extractor；Agent wheel 隔离测试用独立 venv。测试数据库必须数据库名含 `test`，fixture 前后 truncate，不自动读取生产 `.env`。投研评测（`evals/`）默认离线，只评估 recall/safety |
 
-必须真实验证的项：migration/checksum/transaction、MCP 鉴权、进程重启幂等、owner
-隔离、真实 provider 抽取、日志无正文、Ctrl+C 优雅关闭、Agent wheel 不含 Server 依赖。
+必须真实验证的项：migration/checksum/transaction、MCP 鉴权、进程重启幂等、owner 隔离、
+真实 provider 抽取、日志无正文、Ctrl+C 优雅关闭、Agent wheel 不含 Server 依赖。
 
 ## 12. 不变量与扩展
 
@@ -1153,36 +1127,16 @@ Token、owner、memory/review 标识或正文。
 | 新 Agent Host | 安装 `memory-mcp-agent`，复用 `MemoryMcpClient`/`MemoryHookBridge`，只实现薄 Host adapter；无生命周期 API 用外层 Runner；不得改变 MCP 工具、owner 或 lifecycle 语义 |
 | 新记忆配置 | 定义 `profile_id`/memory types/capture guidance/`profile_version`/recall priorities/每种 type 的 metadata policy/可选 progress/可选 `relation_policies`；不复制 Core 或 Repository |
 | 新模型 provider | 在 `extraction/chat_models.py` 增加 provider factory 分支，返回 `BaseChatModel`，复用 CandidateBatch/RelationBatch 和后续安全校验；Provider 参数不进入 Core |
-| 新检索索引 | 索引只能作为可重建的候选生成器；返回前必须回 PostgreSQL 复核 owner/current/lifecycle/`profile_id`/可见性 |
-
-新检索索引的复核流程：
-
-```text
-index candidates → PostgreSQL owner/current/lifecycle revalidation → final recall result
-```
+| 新检索索引 | 索引只能作为可重建的候选生成器；返回前必须回 PostgreSQL 复核 owner/current/lifecycle/`profile_id`/可见性。流程：`index candidates → PostgreSQL revalidation → final recall` |
 
 ### 12.3 文档与 OpenSpec 关系
 
-读者文档：
+读者文档：`config.md`（所有配置）、`agents.md`（Agent 安装/Hook 合同/宿主配置）、
+`usage.md`（Server 启动/真实模型/端到端使用）、`testing.md`（测试与证据）、
+`evaluation.md`（投研记忆评测）、`logging.md`（日志专项）、`deploy.md`（部署操作）。
 
-| 文档 | 内容 |
-| --- | --- |
-| `docs/config.md` | 所有配置 |
-| `docs/agents.md` | Agent 安装、Hook 合同和宿主配置 |
-| `docs/usage.md` | Server 启动、真实模型和端到端使用 |
-| `docs/testing.md` | 测试与证据 |
-| `docs/evaluation.md` | 投研记忆评测 |
-| `docs/logging.md` | 日志专项 |
-| `docs/deploy.md` | 部署操作 |
+OpenSpec：`proposal.md`（动机和范围）、`specs/`（规范性需求）、`design.md`（决策与权衡）、
+`tasks.md`（唯一进度）。
 
-OpenSpec：
-
-| 路径 | 内容 |
-| --- | --- |
-| `proposal.md` | 动机和范围 |
-| `specs/` | 规范性需求 |
-| `design.md` | 决策与权衡 |
-| `tasks.md` | 唯一进度 |
-
-需求的最终 MUST/SHALL 以 OpenSpec capability specs 为准；实现进度只看 tasks。
-本文解释当前系统“是什么、如何工作”，不再维护阶段计划或重复验收清单。
+需求的最终 MUST/SHALL 以 OpenSpec capability specs 为准；实现进度只看 tasks。本文解释
+当前系统“是什么、如何工作”，不再维护阶段计划或重复验收清单。

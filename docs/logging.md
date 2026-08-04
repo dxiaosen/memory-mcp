@@ -26,12 +26,8 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 
 ## 2. 格式与字段
 
-每条事件是一行可检索的 `event + key=value`，字段按名称排序：
-
-```text
-2026-07-30T14:20:31+0800 INFO memory_mcp.tools: event="memory.mcp.tool.completed"
-duration_ms=7.413 owner_ref="..." request_id="..." result_count=1 status="completed" tool_name="list_memories"
-```
+每条事件是一行可检索的 `event + key=value`，字段按名称排序。示例：
+`event="memory.mcp.tool.completed" duration_ms=7.413 owner_ref="..." request_id="..." result_count=1 status="completed" tool_name="list_memories"`
 
 | 字段 | 含义 | 字段 | 含义 |
 | --- | --- | --- | --- |
@@ -47,20 +43,20 @@ duration_ms=7.413 owner_ref="..." request_id="..." result_count=1 status="comple
 
 ## 3. 两种日志模式
 
-| 记录项 | 默认 `false` | 内容 `true` | 记录项 | 默认 `false` | 内容 `true` |
-| --- | --- | --- | --- | --- | --- |
-| 运行元数据（阶段、引用、数量、状态、错误码、耗时） | ✅ | ✅ | Bearer Token / DSN / 密码 / API Key | ❌ | ❌ |
-| SensitiveGuard 脱敏后的本轮输入和 subject hint | ❌ | ✅ | backend 异常消息 | ❌ | ❌ |
-| 通过敏感检查的候选及 source expression | ❌ | ✅ | 敏感规则命中的原文 | ❌ | ❌ |
-| 准入结果、持久化 memory/review/evidence 结构 | ❌ | ✅ | | | |
-| 当前 owner 范围内的召回查询、排序记录和输出内容 | ❌ | ✅ | | | |
+| | 默认 `false` | 内容 `true` |
+| --- | --- | --- |
+| 运行元数据（阶段、引用、数量、状态、错误码、耗时） | ✅ | ✅ |
+| SensitiveGuard 脱敏后的本轮输入和 subject hint | ❌ | ✅ |
+| 通过敏感检查的候选及 source expression | ❌ | ✅ |
+| 准入结果、持久化 memory/review/evidence 结构 | ❌ | ✅ |
+| 当前 owner 范围内的召回查询、排序记录和输出内容 | ❌ | ✅ |
+| Bearer Token / DSN / 密码 / API Key / backend 异常消息 / 敏感规则命中的原文 | ❌ | ❌ |
 
 `log_event()` 自动遮盖 `query`/`prompt`/`answer`/`content`/`source_expression`/
 `api_key`/`password`/`secret` 及常见 secret 后缀（最后防线；调用方不能把完整对象塞进
 `payload`/`details` 等未受保护字段）。捕获流程处理未知 backend 异常时只记录
 `type(exc).__name__`，不能调用附带异常正文的 `logger.exception()`。内容模式由独立的
-`log_content_event()` 输出，调用方只能传入已通过敏感边界的对象，不替代 SensitiveGuard，
-也不解除 Secret 禁止项。
+`log_content_event()` 输出，只接受已通过敏感边界的对象，不替代 SensitiveGuard。
 
 ## 4. 事件表
 
@@ -105,6 +101,8 @@ conversation/turn/source expression；`recall.candidates` 不记录 query 或候
 | `memory.review.list` / `.get` / `.confirmed` / `.rejected` | 评审记录 |
 | `memory.recall.input` / `.ranked` / `.output` | 召回查询、排序和输出 |
 
+`log_content_event()` 只接受已通过敏感边界的对象，不替代 SensitiveGuard。
+
 ### 持久化与运维
 
 | 事件名 | 级别 | 字段 |
@@ -116,73 +114,45 @@ conversation/turn/source expression；`recall.candidates` 不记录 query 或候
 | `memory.postgresql.migration.started` / `.applied` | INFO | — |
 | `memory.postgresql.health_check.completed` | INFO | `status` |
 
-`stale_relation_count` 只表示本次 replacement 物化失效的边数。`/health` 的 maintenance
-快照只包含状态、连续失败次数、时间和异常类型，不包含异常消息。
+`stale_relation_count` 表示本次 replacement 物化失效的边数。`/health` 的 maintenance 快照
+只包含状态、连续失败次数、时间和异常类型，不包含异常消息。
 
 ### Agent Host
 
-| 事件名 | 级别 | 字段 |
-| --- | --- | --- |
-| `agent_hook.started` | INFO | `run_ref` |
-| `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
-| `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
-| `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts` |
-| `agent_hook.pending_retry.failed` / `agent_hook.failed` | ERROR | `run_ref`, `attempts`, `warning_code`/`error_type` |
-
-Agent Hook 事件不记录 prompt、最终回复、Token 或本地状态内容。已删除的 Knowledge、
-Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
+`agent_hook.started`（`run_ref`）、`recall.completed`（`run_ref`,`recalled_count`,`status`）、
+`capture.completed`/`.skipped`（`run_ref`,`status`/`reason`）、`pending_retry.completed`
+（`run_ref`,`attempts`）、`pending_retry.failed`/`agent_hook.failed`（ERROR：
+`run_ref`,`attempts`,`warning_code`/`error_type`）。Agent Hook 事件不记录 prompt、
+最终回复、Token 或本地状态内容。已删除的 Knowledge、Agent、旧 CLI 和 bootstrap
+事件不再属于本项目。
 
 ## 5. 新增日志
 
 ```python
-import logging
 from time import perf_counter
 from memory_mcp.logging import log_event
-
-_LOGGER = logging.getLogger(__name__)
-started_at = perf_counter()
-try:
-    ...  # 业务逻辑
-except Exception as exc:
-    log_event(
-        _LOGGER,
-        logging.ERROR,
-        "component.execute.failed",
-        error_type=type(exc).__name__,
-    )
-    raise
-log_event(
-    _LOGGER,
-    logging.INFO,
-    "component.execute.completed",
-    duration_ms=round((perf_counter() - started_at) * 1000, 3),
-)
+# started → try 业务逻辑 → except: log_event(..., error_type=type(exc).__name__) raise
+# → log_event(..., duration_ms=round((perf_counter()-started_at)*1000, 3))
 ```
 
 事件名使用 `领域.对象.动作`，已发布事件名和字段名保持稳定。新增业务内容日志必须用
-`log_content_event()` 并确保数据已通过身份限定和敏感检查。不要把 settings、HTTP
+`log_content_event()` 并确保数据已通过身份限定和敏感检查，不要把 settings、HTTP
 headers、异常对象、数据库连接参数或未经 SensitiveGuard 检查的原始 payload 传给该
-函数。Agent 包从 `memory_mcp_agent.logging` 导入 `log_event`，永远不接受 `content=True`，
-也不得反向依赖 `memory_mcp.logging`。
+函数。Agent 包从 `memory_mcp_agent.logging` 导入 `log_event`，永远不接受
+`content=True`，不得反向依赖 `memory_mcp.logging`。
 
-## 6. 查看日志
+## 6. 查看日志、限制与联调收尾
 
 ```bash
-tail -n 50 .memory-mcp/logs/memory-mcp.log
-tail -f .memory-mcp/logs/memory-mcp.log
+tail -n 50 .memory-mcp/logs/memory-mcp.log      # 或 tail -f 持续跟踪
 tail -f .memory-mcp/logs/agent-hook.log
 journalctl -u memory-mcp.service -f
 # PowerShell: Get-Content .memory-mcp/logs/memory-mcp.log -Tail 50 / -Wait
 ```
 
-当前实现是单进程文本日志，不包含集中式日志平台、trace/span、metrics、远程上传或
-自动告警。未来增加这些能力时，内容模式也必须保持显式、独立和默认关闭。
-
-## 7. 手工联调收尾
-
-1. 将 `MEMORY_MCP_LOG_CONTENT` 恢复为 `false`；
-2. 重启服务并确认 `logging.configured` 的 `content_logging=false`；
-3. 按数据管理要求删除或归档内容日志；
-4. 若日志意外包含 Secret，停止服务并轮换对应凭据，不能只删除文件。
-
-内容日志是诊断能力，不是记忆存储、审计账本或长期业务数据出口。
+当前实现是单进程文本日志，不含集中式日志平台、trace/span、metrics、远程上传或自动告警。
+未来增加这些能力时，内容模式也必须保持显式、独立和默认关闭。联调收尾：1. 将
+`MEMORY_MCP_LOG_CONTENT` 恢复为 `false`；2. 重启服务并确认 `logging.configured`
+的 `content_logging=false`；3. 按数据管理要求删除或归档内容日志；4. 若日志意外包含
+Secret，停止服务并轮换对应凭据，不能只删除文件。内容日志是诊断能力，不是记忆存储、
+审计账本或长期业务数据出口。

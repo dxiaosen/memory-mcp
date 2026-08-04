@@ -147,11 +147,18 @@ printf '%s' '{"session_id":"check","turn_id":"check","cwd":"/tmp","hook_event_na
 或跨进程状态文件：
 
 ```python
-from memory_mcp_agent import (HookContext, HookedAgentRunner,
-    MemoryHookBridge, MemoryHookSettings, MemoryMcpClient)
+from memory_mcp_agent import (
+    HookContext,
+    HookedAgentRunner,
+    MemoryHookBridge,
+    MemoryHookSettings,
+    MemoryMcpClient,
+)
+
 settings = MemoryHookSettings()
-context = HookContext(profile_id=settings.profile_id,
-    conversation_id=conversation_id, turn_id=turn_id)  # 通用 general-work；投研 investment-research
+context = HookContext(
+    profile_id=settings.profile_id, conversation_id=conversation_id, turn_id=turn_id
+)  # 通用 general-work；投研 investment-research
 async with MemoryMcpClient(settings) as client:
     bridge = MemoryHookBridge(client, settings)
     result = await HookedAgentRunner(bridge, call_agent).run(context, user_input)
@@ -171,9 +178,9 @@ After 事件；3. 两个事件共享稳定会话和轮次标识；4. Before 能�
 ## 5. Codex 配置
 
 Codex 原生支持 `UserPromptSubmit` 和 `Stop` command Hook（官方参考
-[Codex Hooks](https://learn.chatgpt.com/docs/hooks)）。Codex 当前只执行 `type: "command"`
-的 Hook，无原生 HTTP Hook，跨机接入仍需本地 `memory-mcp-agent` 命令向远端 MCP URL
-发起 HTTP 请求。
+[Codex Hooks](https://learn.chatgpt.com/docs/hooks)）。Codex 当前只执行
+`type: "command"` 的 Hook，无原生 HTTP Hook，跨机接入仍需本地 `memory-mcp-agent`
+命令向远端 MCP URL 发起 HTTP 请求。
 
 | 位置 | 范围 |
 | --- | --- |
