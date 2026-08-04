@@ -117,8 +117,16 @@ class ReviewService:
             if not matched:
                 raise ValueError("principal is not a member of the requested team")
             target_owner_id = matched[0]
+        # 如果 review 的 candidate owner 是团队 owner（来自自动提取），
+        # 用该 owner 做 find_current，避免误命中个人同主题记忆。
+        if review.candidate.owner_id != principal.owner_id:
+            target_owner_id = review.candidate.owner_id
+        lookup_principal = PrincipalContext(
+            target_owner_id,
+            tuple(oid for oid in principal.visible_owner_ids if oid != target_owner_id),
+        )
         current_scope = self._repository.find_current(
-            principal,
+            lookup_principal,
             profile_id=review.candidate.profile_id,
             subject=review.candidate.subject,
             memory_type=review.candidate.memory_type,
