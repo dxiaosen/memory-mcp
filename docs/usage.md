@@ -9,7 +9,8 @@ Agent Host ── BeforeRun/AfterRun ──▶ Memory MCP Server
   (URL + Token)                      PostgreSQL + 真实模型 + 认证
 ```
 
-Agent 与 Server 可不同机器。Agent Host 只安装轻量 Client；模型提取、身份派生和持久化都在 Server。
+- Agent 与 Server 可不同机器。
+- Agent Host 只安装轻量 Client；模型提取、身份派生和持久化都在 Server。
 
 ## 2. 安装与配置
 
@@ -42,7 +43,8 @@ curl --fail http://127.0.0.1:8765/health
 .venv/bin/python examples/client.py --env-file examples/agent.env tools
 ```
 
-`PostgreSQL schema is up to date` 表示 migration 与 checksum 已同步。源码移动后重新运行 `uv sync --all-packages --frozen`。
+- `PostgreSQL schema is up to date` 表示 migration 与 checksum 已同步。
+- 源码移动后重新运行 `uv sync --all-packages --frozen`。
 
 ## 4. 真实模型闭环
 
@@ -66,7 +68,8 @@ curl --fail http://127.0.0.1:8765/health
   --input 'Atlas 架构决策记录使用什么语言？'
 ```
 
-- 验证先省略 `--subject`（精确预过滤器，仅宿主和抽取器共享规范枚举时传入）。召回为 0 时检查 capture 结果、pending 状态、Profile、Token 映射和查询文本。
+- 验证先省略 `--subject`（精确预过滤器，仅宿主和抽取器共享规范枚举时传入）。
+- 召回为 0 时检查 capture 结果、pending 状态、Profile、Token 映射和查询文本。
 
 ## 5. 投研 Profile 与关系
 
@@ -90,7 +93,8 @@ Agent A / Agent B  → tenant-001 / subject-001  ── 共享 owner
 User B Agent B     → tenant-001 / subject-002    独立 owner
 ```
 
-同一用户不同 Agent 发放不同 Token，映射到相同 `tenant_id/subject_id`，共享 owner。不同用户用不同 subject，自然隔离。
+- 同一用户不同 Agent 发放不同 Token，映射到相同 `tenant_id/subject_id`，共享 owner。
+- 不同用户用不同 subject，自然隔离。
 
 ## 7. 只读检查与治理
 
@@ -102,8 +106,10 @@ User B Agent B     → tenant-001 / subject-002    独立 owner
   --profile-id general-work --query '项目文档偏好'
 ```
 
-- Client 还可调用 confirm/reject、`revoke_memory`、`link_memories` 和 `revoke_memory_relation`，全部 owner-scoped。撤销保留 revision、Evidence 和关系历史，不物理删除。
-- 到期记忆在读取时先过滤；Server runner 随后物化为 `expired`，终止超 30 天的 pending review，标记相关关系为 `stale/endpoint_expired`。无公共工具，不要求主动触发。
+- Client 还可调用 confirm/reject、`revoke_memory`、`link_memories` 和 `revoke_memory_relation`，全部 owner-scoped。
+- 撤销保留 revision、Evidence 和关系历史，不物理删除。
+- 到期记忆在读取时先过滤；Server runner 随后物化为 `expired`，终止超 30 天的 pending review，标记相关关系为 `stale/endpoint_expired`。
+- 无公共工具，不要求主动触发。
 
 ## 8. 自动化与评测
 

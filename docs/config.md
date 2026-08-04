@@ -9,8 +9,12 @@
 | Memory MCP Server | `memory-mcp` | `server/.env.example` | 数据库、HTTP、认证、模型、日志 |
 | Agent Host | `memory-mcp-agent` | `agent/.env.example` | MCP URL 和该 Host 的 Token |
 
-- Server 与 Agent 是独立进程。Agent 不需要数据库、LangChain、模型 Provider 或 migration。`MemoryServerSettings`/`ExtractionSettings` 默认读取项目根目录 `.env`，进程环境变量优先；`MemoryHookSettings` 不隐式读取根目录 `.env`，凭据须来自进程环境或显式 env 文件。
-- 优先级：显式构造参数 > 进程环境变量 > env 文件 > 代码默认值。生产通过 Secret Manager 或 systemd `EnvironmentFile` 注入。**禁止**提交或打印 PostgreSQL DSN、Bearer Token 和模型 API Key。URI 保留字符须 percent-encode：`@`→`%40`、`:`→`%3A`、`/`→`%2F`、`?`→`%3F`、`#`→`%23`。
+- Server 与 Agent 是独立进程。Agent 不需要数据库、LangChain、模型 Provider 或 migration。
+- `MemoryServerSettings`/`ExtractionSettings` 默认读取项目根目录 `.env`，进程环境变量优先。
+- `MemoryHookSettings` 不隐式读取根目录 `.env`，凭据须来自进程环境或显式 env 文件。
+- 优先级：显式构造参数 > 进程环境变量 > env 文件 > 代码默认值。生产通过 Secret Manager 或 systemd `EnvironmentFile` 注入。
+- **禁止**提交或打印 PostgreSQL DSN、Bearer Token 和模型 API Key。
+- URI 保留字符须 percent-encode：`@`→`%40`、`:`→`%3A`、`/`→`%2F`、`?`→`%3F`、`#`→`%23`。
 
 ## 2. 固定合同与可配置项
 
@@ -41,7 +45,9 @@
 | `MEMORY_MCP_DATABASE_CONNECT_TIMEOUT_SECONDS` | `10` | 否 | 建连/取连接超时，最大 300 秒 |
 | `MEMORY_MCP_DATABASE_MIGRATE_ON_STARTUP` | `false` | 否 | 本地可开启；生产推荐独立 migration |
 
-生产连接按基础设施要求启用 TLS。破坏性测试只允许名称含 `test` 的专用可清空数据库。VPC/VPN 内可直接访问 `http://host:port/mcp`，不要求 Nginx；公网由 LB 终止 HTTPS 转发到受限私网端口。
+- 生产连接按基础设施要求启用 TLS。
+- 破坏性测试只允许名称含 `test` 的专用可清空数据库。
+- VPC/VPN 内可直接访问 `http://host:port/mcp`，不要求 Nginx；公网由 LB 终止 HTTPS 转发到受限私网端口。
 
 ### 3.2 HTTP 与资源预算
 
@@ -58,7 +64,9 @@
 | `MEMORY_MCP_RECALL_CANDIDATE_LIMIT` | `500` | Recall 读取候选硬上限，1–10,000 |
 | `MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS` | `300` | 服务端维护周期，0–86,400 秒；`0` 禁用 |
 
-- 维护 runner 与 Server 共用进程和连接池，同步 DB 调用在线程中执行，不阻塞事件循环。每批最多 500 revision/review；连续 `has_more` 超 8 次后插入 1 秒退避。`maintenance.state`：`disabled/starting/ok/degraded`。普通部署保持默认，Agent 不读取该变量。
+- 维护 runner 与 Server 共用进程和连接池，同步 DB 调用在线程中执行，不阻塞事件循环。
+- 每批最多 500 revision/review；连续 `has_more` 超 8 次后插入 1 秒退避。
+- `maintenance.state`：`disabled/starting/ok/degraded`。普通部署保持默认，Agent 不读取该变量。
 
 ### 敏感拦截规则
 
@@ -69,7 +77,8 @@
  {"category": "internal_contact", "pattern": "(?:手机|电话)\\s*[:：]?\\s*\\d{11}"}]
 ```
 
-- 配置后**完全替换**默认规则集，不合并；空数组视为未配置。非法正则启动阶段安全失败。
+- 配置后**完全替换**默认规则集，不合并；空数组视为未配置。
+- 非法正则启动阶段安全失败。
 - 投研场景 `transaction_instruction` 可能误伤研究偏好文本，部署可按需调整。语义见[日志规范](logging.md)。
 
 ### 3.3 静态认证
@@ -97,11 +106,16 @@
   "scopes": ["memory:read", "memory:write", "memory:review"]}}
 ```
 
-- 服务端固定派生 `owner_key = tenant_id:subject_id`，不可通过 MCP 参数覆盖。Token SHA-256 摘要仅作日志 reference，不参与授权。当前适配器不负责动态签发、过期、轮换或 OAuth federation。Profile 缺省时由 Token 的 `default_profile_id` 选择。
+- 服务端固定派生 `owner_key = tenant_id:subject_id`，不可通过 MCP 参数覆盖。
+- Token SHA-256 摘要仅作日志 reference，不参与授权。
+- 当前适配器不负责动态签发、过期、轮换或 OAuth federation。
+- Profile 缺省时由 Token 的 `default_profile_id` 选择。
 
 ### 多层记忆
 
-Token 配置 `team_ids` 后，召回时同时匹配个人记忆和团队公共记忆。团队 owner key 由 `tenant_id:team:team_id` 派生，与个人 owner key 不冲突。个人记忆写个人 owner；团队公共记忆通过 review 确认时显式提升（`promote_to_team`）写入团队 owner，capture 热路径不改变。
+- Token 配置 `team_ids` 后，召回时同时匹配个人记忆和团队公共记忆。
+- 团队 owner key 由 `tenant_id:team:team_id` 派生，与个人 owner key 不冲突。
+- 个人记忆写个人 owner；团队公共记忆通过 review 确认时显式提升（`promote_to_team`）写入团队 owner，capture 热路径不改变。
 
 ### 3.4 模型与候选生成
 
@@ -115,7 +129,10 @@ Token 配置 `team_ids` 后，召回时同时匹配个人记忆和团队公共�
 | `MEMORY_MCP_MODEL_TIMEOUT_SECONDS` | `60` | 否 | 单次调用超时，最大 300 秒 |
 | `MEMORY_MCP_MODEL_MAX_RETRIES` | `2` | 否 | Provider 重试，0–10 |
 
-候选和关系抽取共享一个 ChatModel，使用独立 prompt 和严格 schema。配置缺失时启动失败，不降级为测试替身。模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_trgm` 候选及确定性应用层排序。模型不可用不影响已有记忆的维护或召回。
+- 候选和关系抽取共享一个 ChatModel，使用独立 prompt 和严格 schema。
+- 配置缺失时启动失败，不降级为测试替身。
+- 模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_trgm` 候选及确定性应用层排序。
+- 模型不可用不影响已有记忆的维护或召回。
 
 ### 3.5 日志
 
@@ -127,7 +144,8 @@ Token 配置 `team_ids` 后，召回时同时匹配个人记忆和团队公共�
 | `MEMORY_MCP_LOG_MAX_BYTES` | `10485760` | 单文件轮转阈值 |
 | `MEMORY_MCP_LOG_BACKUP_COUNT` | `5` | 轮转文件数 |
 
-Bearer Token、DSN、API Key、Provider 异常正文和敏感规则拦截原文始终禁止记录。完整合同见[日志规范](logging.md)。
+- Bearer Token、DSN、API Key、Provider 异常正文和敏感规则拦截原文始终禁止记录。
+- 完整合同见[日志规范](logging.md)。
 
 ## 4. Agent Host 配置
 
@@ -136,8 +154,13 @@ Bearer Token、DSN、API Key、Provider 异常正文和敏感规则拦截原文�
 | `MEMORY_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
 | `MEMORY_MCP_TOKEN` | 无 | 是 | Server 已映射的 Bearer Token；Secret |
 
-- Agent 默认不发送 `profile_id`，由 Token 的 `default_profile_id` 决定策略。HTTP 超时 15 秒，fail-open 默认开启，召回最多 5 条/600 token，capture 最多尝试 3 次。`MEMORY_HOOK_PROFILE_ID` 可作进程级高级覆盖，不进入普通 Agent 模板。
-- Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或日志。同一用户跨 Agent 发放不同 Token，映射到相同 tenant/subject。command Hook 本地 outbox（`cwd/.memory-mcp/hooks`，`0700/0600`）：网络 warning 或 `reprocess_required` 时保留 payload，后续 Stop 最多补送一条，24 小时后清理。不需要 Redis、消息队列或常驻 Agent daemon。
+- Agent 默认不发送 `profile_id`，由 Token 的 `default_profile_id` 决定策略。
+- HTTP 超时 15 秒，fail-open 默认开启，召回最多 5 条/600 token，capture 最多尝试 3 次。
+- `MEMORY_HOOK_PROFILE_ID` 可作进程级高级覆盖，不进入普通 Agent 模板。
+- Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或日志。
+- 同一用户跨 Agent 发放不同 Token，映射到相同 tenant/subject。
+- command Hook 本地 outbox（`cwd/.memory-mcp/hooks`，`0700/0600`）：网络 warning 或 `reprocess_required` 时保留 payload，后续 Stop 最多补送一条，24 小时后清理。
+- 不需要 Redis、消息队列或常驻 Agent daemon。
 
 ## 5. 最小模板
 
@@ -146,4 +169,5 @@ cp server/.env.example .env && chmod 600 .env
 cp agent/.env.example examples/agent.env && chmod 600 examples/agent.env
 ```
 
-`server/.env.example` 只含生产 Server 配置，`agent/.env.example` 只含 URL 和 Token。测试数据库、候选 fixture 和多身份矩阵由测试代码显式提供，不进入生产模板。
+- `server/.env.example` 只含生产 Server 配置，`agent/.env.example` 只含 URL 和 Token。
+- 测试数据库、候选 fixture 和多身份矩阵由测试代码显式提供，不进入生产模板。

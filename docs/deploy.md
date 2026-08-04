@@ -16,7 +16,7 @@ VPC/VPN Agent ── HTTP + Authorization ───────┐
                                       RDS PostgreSQL
 ```
 
-`deploy/` 目录只存放运维制品（两个 systemd unit），不是应用代码包或数据目录。
+- `deploy/` 目录只存放运维制品（两个 systemd unit），不是应用代码包或数据目录。
 
 ## 2. 前置条件
 
@@ -34,6 +34,7 @@ VPC/VPN Agent ── HTTP + Authorization ───────┐
 
 - ALB/CLB 公网 `443` 配置在负载均衡器安全组，不配置在 ECS 安全组。
 - ECS `8765` 不得开放给 `0.0.0.0/0`。PostgreSQL 只允许 ECS 安全组或私网地址访问。
+- 公网入口必须在负载均衡器终止 HTTPS；不得在公网使用带 Bearer Token 的明文 HTTP。
 
 ## 4. 安装应用
 
@@ -43,7 +44,8 @@ VPC/VPN Agent ── HTTP + Authorization ───────┐
 | 同步代码 | （将代码同步到 `/opt/memory-mcp`） | `ls /opt/memory-mcp/pyproject.toml` |
 | 安装依赖 | `cd /opt/memory-mcp && sudo -u memory-mcp uv sync --frozen --no-dev --package memory-mcp` | `.venv/bin/memory-mcp --help` |
 
-- Python 3.14，`uv` 按项目声明准备隔离环境。必须指定 `--package memory-mcp`，Server 不应安装 Agent 发行包。
+- Python 3.14，`uv` 按项目声明准备隔离环境。
+- 必须指定 `--package memory-mcp`，Server 不应安装 Agent 发行包。
 
 ## 5. 运行配置
 
@@ -107,7 +109,8 @@ MEMORY_MCP_LOG_FILE=/var/log/memory-mcp/memory-mcp.log
 | 健康检查 | `curl --fail http://127.0.0.1:8765/health` | `storage: postgresql`，`maintenance.state: ok` |
 | 查看日志 | `sudo journalctl -u memory-mcp.service -f` | 无 ERROR |
 
-- `maintenance.state` 应从 `starting` 进入 `ok`；`degraded` 表示维护循环失败，但数据库健康时 HTTP 仍为 200。`MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS=0` 时状态为 `disabled`。
+- `maintenance.state` 应从 `starting` 进入 `ok`；`degraded` 表示维护循环失败，但数据库健康时 HTTP 仍为 200。
+- `MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS=0` 时状态为 `disabled`。
 
 ## 8. 直接访问与公网入口
 
@@ -115,8 +118,6 @@ MEMORY_MCP_LOG_FILE=/var/log/memory-mcp/memory-mcp.log
 | --- | --- | --- |
 | VPC/VPN 直连 | `http://<ECS_PRIVATE_IP>:8765/mcp` | `MEMORY_MCP_HOST=0.0.0.0`，安全组限制来源 |
 | 公网 ALB/CLB | `https://memory.example.com/mcp` | 443 + 有效证书；后端 `http://<ECS_PRIVATE_IP>:8765`；转发 GET/POST/`Authorization`；关闭代理缓冲；ECS 安全组只允许 LB 安全组访问 8765 |
-
-不得在公网使用带 Bearer Token 的明文 HTTP。
 
 ## 9. Agent 接入
 
@@ -131,9 +132,12 @@ MEMORY_MCP_URL=https://memory.example.com/mcp
 MEMORY_MCP_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
 ```
 
-- Agent 包只要求 Python 3.11+，不安装 Server、数据库 driver、LangChain、模型 Provider、ASGI Server 或 migration 命令。不要把整个 Server 仓库部署到 Agent Host。
+- Agent 包只要求 Python 3.11+，不安装 Server、数据库 driver、LangChain、模型 Provider、ASGI Server 或 migration 命令。
+- 不要把整个 Server 仓库部署到 Agent Host。
 - `MEMORY_MCP_TOKEN` 必须匹配 Server Principal 映射中的一枚 key。
-- 不同 MCP Host 的概念配置：
+- 同一用户跨 Agent 配置不同 Token，但映射到相同 tenant/subject/owner；不同用户不得共享 owner。
+
+不同 MCP Host 的概念配置：
 
 ```json
 {
@@ -156,7 +160,6 @@ AfterRun  → capture_completed_turn（仅成功完成的轮次）
 
 - 投研 Profile 启用 `relation_policies` 时，Server 在同一 Capture 事务完成候选准入、关系抽取和保存。Agent 不主动调用 `link_memories`。
 - `memory-mcp-hook` 内置 Codex/Claude Code 字段兼容。单进程 Agent Framework 直接使用 `MemoryHookBridge`/`HookedAgentRunner`。详见 [Agent 主动记忆接入](agents.md)。
-- 同一用户跨 Agent 配置不同 Token，但映射到相同 tenant/subject/owner；不同用户不得共享 owner。
 
 ## 10. 发布与回滚
 
@@ -171,7 +174,8 @@ AfterRun  → capture_completed_turn（仅成功完成的轮次）
 | 7 功能验证 | 执行跨 Agent 捕获、召回和跨用户负向测试 | 符合预期 |
 
 - migration 只有一个文件 `0001_memory_schema.sql`。开发改 schema 直接修改该文件并用 `memory-mcp-db migrate --rebuild` 重建；生产不用 `--rebuild`。
-- 回滚：恢复上一个代码版本并重新同步依赖。Agent Client 独立按 wheel 版本升级或回滚。已成功提交的 migration 不做破坏性降级；migration 失败时新应用版本不得启动。
+- 回滚：恢复上一个代码版本并重新同步依赖。Agent Client 独立按 wheel 版本升级或回滚。
+- 已成功提交的 migration 不做破坏性降级；migration 失败时新应用版本不得启动。
 
 ## 11. 故障排查
 
