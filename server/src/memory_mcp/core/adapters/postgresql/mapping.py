@@ -165,6 +165,7 @@ def to_recall_candidate(row: Mapping[str, Any]) -> MemoryRecallCandidate:
             created_at=as_datetime(row["item_created_at"]),
         ),
         current_revision=to_revision(row),
+        retrieval_score=float(row.get("retrieval_score", 0.0) or 0.0),
     )
 
 

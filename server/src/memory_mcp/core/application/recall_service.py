@@ -45,6 +45,9 @@ _PROFILE_HINT_BOOST = 0.16
 # subject 精确命中加成。原值 0.45 会把仅 subject 命中但正文无关的记忆拉到
 # 1.0，压过正文高度相关的记忆；下调到 0.2，让正文相关度仍有话语权。
 _SUBJECT_EXACT_MATCH_BOOST = 0.2
+# 向量语义相似度加成。DB 侧 retrieval_score 是 0-1 的余弦相似度，
+# 乘以系数后叠加到基础分数，让字面不重叠但语义相关的候选不被阈值过滤。
+_VECTOR_BOOST = 0.15
 # CJK 字符范围（含兼容表意文字），用于 token 估算时按字符类别区分。
 _CJK_RANGES = (
     (0x3400, 0x4DBF),  # CJK 扩展 A
@@ -362,6 +365,9 @@ def _score_record(
         == normalize_memory_text(record.item.subject)
     ):
         score += _SUBJECT_EXACT_MATCH_BOOST
+    # 向量语义相似度加成：让字面不重叠但语义相关的候选不被阈值过滤。
+    if record.retrieval_score > 0.0:
+        score += record.retrieval_score * _VECTOR_BOOST
     return round(min(score, 1.0), 6)
 
 

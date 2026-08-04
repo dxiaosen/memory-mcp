@@ -30,6 +30,7 @@ class MemoryRecallCandidate:
 
     item: MemoryItem
     current_revision: MemoryRevision
+    retrieval_score: float = 0.0
 
     def __post_init__(self) -> None:
         if self.item.memory_id != self.current_revision.memory_id:
