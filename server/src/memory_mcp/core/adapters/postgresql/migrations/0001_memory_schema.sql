@@ -312,7 +312,7 @@ CREATE INDEX memory_capture_runs_owner_status_idx
 CREATE TABLE memory_review_items (
     review_id UUID PRIMARY KEY,
     candidate_id UUID NOT NULL,
-    capture_id UUID NOT NULL,
+    capture_id UUID,
     owner_id TEXT NOT NULL,
     profile_id TEXT NOT NULL,
     subject TEXT NOT NULL,
@@ -425,8 +425,8 @@ CREATE TABLE memory_review_items (
         CHECK (valid_until IS NULL OR valid_until > valid_from),
     CONSTRAINT memory_review_items_source_type
         CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
-    CONSTRAINT memory_review_items_capture_candidate_unique
-        UNIQUE (capture_id, candidate_id),
+    CONSTRAINT memory_review_items_candidate_unique
+        UNIQUE (candidate_id),
     CONSTRAINT memory_review_items_owner_identity
         UNIQUE (review_id, owner_id)
 );

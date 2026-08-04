@@ -1082,7 +1082,7 @@ class PostgreSQLMemoryRepository:
                 """
                 UPDATE memory_review_items
                 SET status = %s, decided_at = %s, resolved_memory_id = %s
-                WHERE owner_id = %s
+                WHERE owner_id = ANY(%s)
                   AND review_id = %s
                   AND status = 'pending'
                 """,
@@ -1090,7 +1090,7 @@ class PostgreSQLMemoryRepository:
                     status.value,
                     decided_at,
                     (resolved_memory_id if status is ReviewStatus.CONFIRMED else None),
-                    principal.owner_id,
+                    list(principal.visible_owner_ids),
                     review_id,
                 ),
             )
@@ -1776,6 +1776,7 @@ def _extract_team_common(
     for row in rows:
         groups.setdefault(row["memory_type"], []).append(
             {
+                "memory_type": row["memory_type"],
                 "memory_id": row["memory_id"],
                 "owner_id": row["owner_id"],
                 "subject": row["subject"],

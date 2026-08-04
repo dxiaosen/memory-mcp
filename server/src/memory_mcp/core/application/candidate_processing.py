@@ -208,8 +208,14 @@ class CandidateMaterializer:
             vectors = self._embedding_provider.embed((content,))
             if vectors and len(vectors) == 1:
                 return vectors[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "embedding computation failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
         return None
 
     def _evidence(
