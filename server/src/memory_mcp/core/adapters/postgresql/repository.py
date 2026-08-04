@@ -935,11 +935,19 @@ class PostgreSQLMemoryRepository:
         if status not in {ReviewStatus.CONFIRMED, ReviewStatus.REJECTED}:
             raise ValueError("review resolution must be confirmed or rejected")
         with self._pool.connection() as connection:
+            # 用含 JOIN 的查询获取完整 review（含文档字段），
+            # 再用主表 FOR UPDATE 锁行。不能用 JOIN 的 FOR UPDATE（PostgreSQL 限制）。
             row = connection.execute(
-                f"{_SELECT_REVIEW_FOR_UPDATE} "
-                "WHERE owner_id = ANY(%s) AND review_id = %s FOR UPDATE",
+                f"{_SELECT_REVIEW} WHERE ri.owner_id = ANY(%s) AND ri.review_id = %s",
                 (list(principal.visible_owner_ids), review_id),
             ).fetchone()
+            if row is not None:
+                # 锁主表行
+                connection.execute(
+                    "SELECT 1 FROM memory_review_items "
+                    "WHERE owner_id = ANY(%s) AND review_id = %s FOR UPDATE",
+                    (list(principal.visible_owner_ids), review_id),
+                ).fetchone()
             if row is None:
                 return None
             review = to_review(row)

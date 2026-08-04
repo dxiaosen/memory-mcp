@@ -411,11 +411,16 @@ ProfileRegistry 要求 relation policy 两个端点集合都是当前 Profile me
 
 AfterRun 在服务端自动识别关系，但不是从任意自由文本直接写图。CandidateProcessor 先
 确定本轮真正 auto-save 的 MemoryItem，Core 再把这些新 Item 与同 owner/Profile、
-current/active/effective 的既有 Item 组成最多 40 个可信端点。第二次严格结构化调用
-只能引用目录中的 memory ID 和当前 Profile 关系类型；Core 重新检查方向、原文连续表达、
-`expression_basis=explicit` 和 confidence 不低于 `0.90`。存在消息块时，关系原文还必须
-命中用户消息，不能只来自 Assistant/Tool，避免 Agent 固化自己的分析。低置信、推断、
-歧义、pending 或 blocked 端点不建边。`link_memories` 保留为历史补链和人工治理工具。
+current/active/effective 的既有 Item 组成最多 40 个可信端点。
+
+第二次严格结构化调用只能引用目录中的 memory ID 和当前 Profile 关系类型；Core 重新
+检查方向、原文连续表达、`expression_basis=explicit` 和 confidence 不低于 `0.90`。
+
+| 关系校验 | 规则 |
+| --- | --- |
+| 消息块命中 | 关系原文还必须命中用户消息，不能只来自 Assistant/Tool |
+| 不建边条件 | 低置信、推断、歧义、pending 或 blocked 端点 |
+| `link_memories` | 保留为历史补链和人工治理工具 |
 
 ## 5. 身份与隔离
 
