@@ -25,7 +25,7 @@ class ConservativeAdmissionPolicy:
     临时或不确定内容直接丢弃；非显式、系统推断或低置信内容降级为待确认。
     """
 
-    def __init__(self, *, auto_save_confidence: float = 0.8) -> None:
+    def __init__(self, *, auto_save_confidence: float = 0.9) -> None:
         if not 0.0 <= auto_save_confidence <= 1.0:
             raise ValueError("auto_save_confidence must be between 0 and 1")
         self._auto_save_confidence = auto_save_confidence
