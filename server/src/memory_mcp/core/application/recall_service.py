@@ -24,6 +24,7 @@ from memory_mcp.core.domain import (
     tokenize_memory_text,
 )
 from memory_mcp.core.ports import (
+    EmbeddingProvider,
     MemoryRepository,
     ProfileRegistry,
     SensitiveContentGuard,
@@ -65,6 +66,7 @@ class RecallService:
         clock: Callable[[], datetime],
         candidate_limit: int,
         tokenizer: MemoryTokenizer | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         if candidate_limit < 1:
             raise ValueError("candidate_limit must be positive")
@@ -74,6 +76,7 @@ class RecallService:
         self._clock = clock
         self._candidate_limit = candidate_limit
         self._tokenizer = tokenizer or SimpleTokenizer()
+        self._embedding_provider = embedding_provider
 
     def recall(
         self,
@@ -95,6 +98,7 @@ class RecallService:
         search_text = " ".join(
             value for value in (query.query, query.task_intent) if value is not None
         )
+        query_embedding = self._compute_query_embedding(search_text)
         candidate_set = self._repository.find_recall_candidates(
             principal,
             profile_id=query.profile_id,
@@ -102,6 +106,7 @@ class RecallService:
             subject=query.subject,
             effective_at=effective_at,
             limit=self._candidate_limit,
+            query_embedding=query_embedding,
         )
         candidates = candidate_set.candidates
         log_event(
@@ -268,6 +273,24 @@ class RecallService:
                 truncated=truncated or len(selected) < len(relevant),
             )
         )
+
+    def _compute_query_embedding(self, search_text: str) -> tuple[float, ...] | None:
+        """计算查询向量；embedding provider 不可用时返回 None（降级为两路）。"""
+
+        if self._embedding_provider is None:
+            return None
+        try:
+            vectors = self._embedding_provider.embed((search_text,))
+            if vectors and len(vectors) == 1:
+                return vectors[0]
+        except Exception as exc:
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.recall.embedding_failed",
+                error_type=type(exc).__name__,
+            )
+        return None
 
     def _redact_for_logging(self, value: str | None) -> str | None:
         if value is None:

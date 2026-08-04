@@ -1,5 +1,6 @@
-"""PostgreSQL owner-first 混合召回查询。"""
+"""PostgreSQL owner-first 混合召回查询：词法、向量和近期三路。"""
 
+from collections.abc import Sequence
 from datetime import datetime
 from math import ceil
 from uuid import UUID
@@ -41,12 +42,17 @@ def find_recall_candidates(
     subject: str | None,
     effective_at: datetime,
     limit: int,
+    query_embedding: Sequence[float] | None = None,
 ) -> RecallCandidateSet:
-    """用 trigram 词法候选优先，再从近期记录补满剩余配额。
+    """三路混合召回：词法（40%）、向量（30%）、近期（30%）。
 
-    先以 ``pg_trgm`` 相似度选取 lexical 候选（上限 ``lexical_limit``），
-    再用 NOT EXISTS 排除已命中的记录，按 observed_at 补齐到 ``limit``。
+    - 词法路：``pg_trgm`` 相似度，抓字面匹配。
+    - 向量路：embedding 余弦相似度，抓语义匹配；需要 ``query_embedding``
+      非空且记忆有 embedding 列。
+    - 近期路：按 ``observed_at`` 补齐剩余配额。
+
     owner 范围用 ``visible_owner_ids`` 集合过滤，支持团队可见记忆。
+    向量路不可用（无 query_embedding 或无 embedding 列）时降级为两路。
     """
 
     if limit < 1:
@@ -54,26 +60,154 @@ def find_recall_candidates(
     normalized_search = search_text.strip()
     if not normalized_search:
         raise ValueError("search_text must not be empty")
-    lexical_limit = 1 if limit == 1 else min(limit - 1, max(1, ceil(limit * 0.7)))
-    base_conditions = [
-        "i.owner_id = ANY(%s)",
-        "i.profile_id = %s",
-        "r.lifecycle_status = 'active'",
-        "r.valid_from <= %s",
-        "(r.valid_until IS NULL OR r.valid_until > %s)",
-    ]
-    base_parameters: list[object] = [
-        list(principal.visible_owner_ids),
-        profile_id,
-        effective_at,
-        effective_at,
-    ]
-    if subject is not None:
-        base_conditions.append(
-            "lower(regexp_replace(btrim(i.subject), '\\s+', ' ', 'g')) = "
-            "lower(regexp_replace(btrim(%s), '\\s+', ' ', 'g'))"
+
+    has_vector = query_embedding is not None and len(query_embedding) > 0
+
+    if has_vector:
+        return _three_way_query(
+            connection,
+            principal,
+            profile_id=profile_id,
+            search_text=normalized_search,
+            subject=subject,
+            effective_at=effective_at,
+            limit=limit,
+            query_embedding=query_embedding,
         )
-        base_parameters.append(subject)
+    return _two_way_query(
+        connection,
+        principal,
+        profile_id=profile_id,
+        search_text=normalized_search,
+        subject=subject,
+        effective_at=effective_at,
+        limit=limit,
+    )
+
+
+def _three_way_query(
+    connection,
+    principal: PrincipalContext,
+    *,
+    profile_id: str,
+    search_text: str,
+    subject: str | None,
+    effective_at: datetime,
+    limit: int,
+    query_embedding: Sequence[float],
+) -> RecallCandidateSet:
+    """词法 40% + 向量 30% + 近期 30% 三路查询。"""
+
+    lexical_limit = max(1, ceil(limit * 0.4))
+    vector_limit = max(1, ceil(limit * 0.3))
+    base_conditions, base_parameters = _base_conditions(
+        principal, profile_id, effective_at, subject
+    )
+    conditions = " AND ".join(base_conditions)
+
+    query = f"""
+        WITH lexical AS (
+            SELECT {_RECORD_FIELDS},
+                   GREATEST(
+                       similarity(lower(i.subject), lower(%s)),
+                       similarity(lower(r.content), lower(%s))
+                   ) AS retrieval_score,
+                   'lexical'::text AS retrieval_source
+            {_CURRENT_JOIN}
+            WHERE {conditions}
+              AND (
+                  lower(i.subject) %% lower(%s)
+                  OR lower(r.content) %% lower(%s)
+              )
+            ORDER BY retrieval_score DESC,
+                     r.observed_at DESC,
+                     i.memory_id DESC
+            LIMIT %s
+        ),
+        vector AS (
+            SELECT {_RECORD_FIELDS},
+                   (1 - (r.embedding <=> %s::vector)) AS retrieval_score,
+                   'vector'::text AS retrieval_source
+            {_CURRENT_JOIN}
+            WHERE {conditions}
+              AND r.embedding IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM lexical WHERE lexical.memory_id = i.memory_id
+              )
+            ORDER BY r.embedding <=> %s::vector
+            LIMIT %s
+        ),
+        recent AS (
+            SELECT {_RECORD_FIELDS},
+                   0.0::real AS retrieval_score,
+                   'recent'::text AS retrieval_source
+            {_CURRENT_JOIN}
+            WHERE {conditions}
+              AND NOT EXISTS (
+                  SELECT 1 FROM lexical WHERE lexical.memory_id = i.memory_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM vector WHERE vector.memory_id = i.memory_id
+              )
+            ORDER BY r.observed_at DESC, i.memory_id DESC
+            LIMIT GREATEST(%s - (SELECT count(*) FROM lexical) - (SELECT count(*) FROM vector), 0)
+        )
+        SELECT * FROM lexical
+        UNION ALL
+        SELECT * FROM vector
+        UNION ALL
+        SELECT * FROM recent
+        ORDER BY retrieval_source ASC,
+                 retrieval_score DESC,
+                 revision_observed_at DESC,
+                 memory_id DESC
+    """
+    embedding_param = list(query_embedding)
+    parameters = [
+        search_text,
+        search_text,
+        *base_parameters,
+        search_text,
+        search_text,
+        lexical_limit,
+        # vector 路参数
+        embedding_param,
+        *base_parameters,
+        embedding_param,
+        vector_limit,
+        # recent 路参数
+        *base_parameters,
+        limit,
+    ]
+    connection.execute("SET LOCAL pg_trgm.similarity_threshold = 0.08")
+    rows = connection.execute(query, parameters).fetchall()
+    candidates = tuple(to_recall_candidate(row) for row in rows)
+    lexical_count = sum(1 for r in rows if r["retrieval_source"] == "lexical")
+    vector_count = sum(1 for r in rows if r["retrieval_source"] == "vector")
+    return RecallCandidateSet(
+        candidates=candidates,
+        lexical_count=lexical_count,
+        vector_count=vector_count,
+        recent_count=len(candidates) - lexical_count - vector_count,
+    )
+
+
+def _two_way_query(
+    connection,
+    principal: PrincipalContext,
+    *,
+    profile_id: str,
+    search_text: str,
+    subject: str | None,
+    effective_at: datetime,
+    limit: int,
+) -> RecallCandidateSet:
+    """降级两路查询：词法 + 近期（向量路不可用时使用）。"""
+
+    lexical_limit = 1 if limit == 1 else min(limit - 1, max(1, ceil(limit * 0.7)))
+    base_conditions, base_parameters = _base_conditions(
+        principal, profile_id, effective_at, subject
+    )
     conditions = " AND ".join(base_conditions)
     query = f"""
         WITH lexical AS (
@@ -117,11 +251,11 @@ def find_recall_candidates(
                  memory_id DESC
     """
     parameters = [
-        normalized_search,
-        normalized_search,
+        search_text,
+        search_text,
         *base_parameters,
-        normalized_search,
-        normalized_search,
+        search_text,
+        search_text,
         lexical_limit,
         *base_parameters,
         limit,
@@ -129,12 +263,43 @@ def find_recall_candidates(
     connection.execute("SET LOCAL pg_trgm.similarity_threshold = 0.08")
     rows = connection.execute(query, parameters).fetchall()
     candidates = tuple(to_recall_candidate(row) for row in rows)
-    lexical_count = sum(1 for row in rows if row["retrieval_source"] == "lexical")
+    lexical_count = sum(1 for r in rows if r["retrieval_source"] == "lexical")
     return RecallCandidateSet(
         candidates=candidates,
         lexical_count=lexical_count,
+        vector_count=0,
         recent_count=len(candidates) - lexical_count,
     )
+
+
+def _base_conditions(
+    principal: PrincipalContext,
+    profile_id: str,
+    effective_at: datetime,
+    subject: str | None,
+) -> tuple[list[str], list[object]]:
+    """构造 owner/profile/active/effective 基础过滤条件。"""
+
+    conditions = [
+        "i.owner_id = ANY(%s)",
+        "i.profile_id = %s",
+        "r.lifecycle_status = 'active'",
+        "r.valid_from <= %s",
+        "(r.valid_until IS NULL OR r.valid_until > %s)",
+    ]
+    parameters: list[object] = [
+        list(principal.visible_owner_ids),
+        profile_id,
+        effective_at,
+        effective_at,
+    ]
+    if subject is not None:
+        conditions.append(
+            "lower(regexp_replace(btrim(i.subject), '\\s+', ' ', 'g')) = "
+            "lower(regexp_replace(btrim(%s), '\\s+', ' ', 'g'))"
+        )
+        parameters.append(subject)
+    return conditions, parameters
 
 
 def load_recall_evidence(

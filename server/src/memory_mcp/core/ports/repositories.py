@@ -60,14 +60,16 @@ class RecallCandidateSet:
 
     candidates: tuple[MemoryRecallCandidate, ...]
     lexical_count: int
-    recent_count: int
+    vector_count: int = 0
+    recent_count: int = 0
 
     def __post_init__(self) -> None:
-        for field_name in ("lexical_count", "recent_count"):
+        for field_name in ("lexical_count", "vector_count", "recent_count"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
-        if self.lexical_count + self.recent_count != len(self.candidates):
+        total = self.lexical_count + self.vector_count + self.recent_count
+        if total != len(self.candidates):
             raise ValueError("candidate source counts must match records")
 
 
@@ -135,6 +137,7 @@ class MemoryRepository(Protocol):
         subject: str | None,
         effective_at: datetime,
         limit: int,
+        query_embedding: Sequence[float] | None = None,
     ) -> RecallCandidateSet:
         """返回 owner/Profile 范围内词法优先、近期补齐的有界候选。
 

@@ -319,8 +319,9 @@ class PostgreSQLMemoryRepository:
         subject: str | None,
         effective_at: datetime,
         limit: int,
+        query_embedding: Sequence[float] | None = None,
     ) -> RecallCandidateSet:
-        """在 owner/Profile 边界内用 trigram 优先、近期记录补齐候选。"""
+        """在 owner/Profile 边界内用词法、向量和近期三路混合召回候选。"""
 
         with self._pool.connection() as connection:
             return query_recall_candidates(
@@ -331,6 +332,7 @@ class PostgreSQLMemoryRepository:
                 subject=subject,
                 effective_at=effective_at,
                 limit=limit,
+                query_embedding=query_embedding,
             )
 
     def maintain(
@@ -1147,12 +1149,12 @@ class PostgreSQLMemoryRepository:
                 save_rationale, observed_at, created_at, is_current,
                 primary_evidence_id, original_time_expression, normalized_time
                 , extraction_confidence, verification_status,
-                sensitivity_level, valid_from, valid_until
+                sensitivity_level, valid_from, valid_until, embedding
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s, %s
             )
             """,
             (
@@ -1176,6 +1178,7 @@ class PostgreSQLMemoryRepository:
                 revision.sensitivity_level.value,
                 revision.valid_from,
                 revision.valid_until,
+                list(revision.embedding) if revision.embedding else None,
             ),
         )
         cls._insert_evidence(connection, evidence)

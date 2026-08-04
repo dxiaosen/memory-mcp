@@ -42,6 +42,7 @@ from memory_mcp.core.exceptions import (
 from memory_mcp.core.ports import (
     CandidateExtractor,
     CaptureWrite,
+    EmbeddingProvider,
     ExtractionRequest,
     MemoryRepository,
     ProfileRegistry,
@@ -69,6 +70,7 @@ class CaptureService:
         admission_policy: ConservativeAdmissionPolicy,
         id_factory: Callable[[], UUID],
         clock: Callable[[], datetime],
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self._repository = repository
         self._profile_registry = profile_registry
@@ -91,6 +93,7 @@ class CaptureService:
         materializer = CandidateMaterializer(
             id_factory=id_factory,
             clock=clock,
+            embedding_provider=embedding_provider,
         )
         self._candidate_processor = (
             CandidateProcessor(

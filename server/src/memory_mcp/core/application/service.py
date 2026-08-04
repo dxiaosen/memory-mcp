@@ -41,6 +41,7 @@ from memory_mcp.core.exceptions import (
 )
 from memory_mcp.core.ports import (
     CandidateExtractor,
+    EmbeddingProvider,
     MemoryProfile,
     MemoryRepository,
     ProfileRegistry,
@@ -68,6 +69,7 @@ class MemoryService:
         clock: Callable[[], datetime] | None = None,
         recall_candidate_limit: int = 500,
         tokenizer: MemoryTokenizer | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self._repository = repository
         self._profile_registry = profile_registry
@@ -83,6 +85,7 @@ class MemoryService:
             admission_policy=(admission_policy or ConservativeAdmissionPolicy()),
             id_factory=id_factory,
             clock=self._clock,
+            embedding_provider=embedding_provider,
         )
         self._recall_service = RecallService(
             repository,
@@ -91,6 +94,7 @@ class MemoryService:
             clock=self._clock,
             candidate_limit=recall_candidate_limit,
             tokenizer=tokenizer,
+            embedding_provider=embedding_provider,
         )
         self._maintenance_service = MemoryMaintenanceService(
             repository,

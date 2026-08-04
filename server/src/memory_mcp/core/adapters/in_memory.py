@@ -181,8 +181,9 @@ class InMemoryMemoryRepository:
         subject: str | None,
         effective_at: datetime,
         limit: int,
+        query_embedding=None,
     ) -> RecallCandidateSet:
-        """模拟 PostgreSQL 的 lexical 配额和 recent 补齐。"""
+        """模拟 PostgreSQL 的 lexical/vector/recent 三路召回。"""
 
         if limit < 1:
             raise ValueError("limit must be positive")
@@ -239,6 +240,7 @@ class InMemoryMemoryRepository:
                 for record in (*lexical, *recent)
             ),
             lexical_count=len(lexical),
+            vector_count=0,
             recent_count=len(recent),
         )
 

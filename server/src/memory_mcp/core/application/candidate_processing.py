@@ -36,6 +36,7 @@ from memory_mcp.core.domain import (
 from memory_mcp.core.exceptions import InvalidModelOutputError
 from memory_mcp.core.ports import (
     DuplicateEvidenceWrite,
+    EmbeddingProvider,
     MemoryRepository,
     ProfileRegistry,
     ReplacementWrite,
@@ -70,9 +71,11 @@ class CandidateMaterializer:
         *,
         id_factory: Callable[[], UUID],
         clock: Callable[[], datetime],
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self._id_factory = id_factory
         self._clock = clock
+        self._embedding_provider = embedding_provider
 
     def record(
         self,
@@ -122,6 +125,7 @@ class CandidateMaterializer:
                 valid_until=candidate.valid_until,
                 original_time_expression=candidate.original_time_expression,
                 normalized_time=candidate.normalized_time,
+                embedding=self._compute_embedding(candidate.content),
             ),
             evidence=(
                 self._evidence(
@@ -194,6 +198,19 @@ class CandidateMaterializer:
                 ),
             ),
         )
+
+    def _compute_embedding(self, content: str) -> tuple[float, ...] | None:
+        """计算 content 的 embedding；provider 不可用时返回 None。"""
+
+        if self._embedding_provider is None:
+            return None
+        try:
+            vectors = self._embedding_provider.embed((content,))
+            if vectors and len(vectors) == 1:
+                return vectors[0]
+        except Exception:
+            pass
+        return None
 
     def _evidence(
         self,

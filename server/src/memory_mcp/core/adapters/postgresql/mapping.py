@@ -193,6 +193,7 @@ def to_revision(row: Mapping[str, Any]) -> MemoryRevision:
         is_current=row["is_current"],
         original_time_expression=row["original_time_expression"],
         normalized_time=optional_datetime(row["normalized_time"]),
+        embedding=_to_embedding(row.get("embedding")),
     )
 
 
@@ -293,3 +294,16 @@ def as_datetime(value: datetime | str) -> datetime:
 
 def optional_datetime(value: datetime | str | None) -> datetime | None:
     return None if value is None else as_datetime(value)
+
+
+def _to_embedding(value: object) -> tuple[float, ...] | None:
+    """将 pgvector 返回的字符串或列表转为 float 元组。"""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.strip("[]").split(",")
+        return tuple(float(p) for p in parts) if parts else None
+    if isinstance(value, (list, tuple)):
+        return tuple(float(v) for v in value)
+    return None

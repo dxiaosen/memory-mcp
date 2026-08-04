@@ -8,6 +8,7 @@ from memory_mcp.core.application import MemoryService
 from memory_mcp.core.domain import MemoryTokenizer
 from memory_mcp.core.ports import (
     CandidateExtractor,
+    EmbeddingProvider,
     MemoryProfile,
     MemoryRepository,
     ProfileRegistry,
@@ -25,6 +26,7 @@ def create_memory_service(
     sensitive_guard: SensitiveContentGuard | None = None,
     recall_candidate_limit: int = 500,
     tokenizer: MemoryTokenizer | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> MemoryService:
     """创建 ``MemoryService`` 并注册全部记忆配置，未指定适配器时使用默认实现。"""
 
@@ -36,6 +38,7 @@ def create_memory_service(
         sensitive_guard=sensitive_guard or RegexSensitiveContentGuard(),
         recall_candidate_limit=recall_candidate_limit,
         tokenizer=tokenizer or JiebaTokenizer(),
+        embedding_provider=embedding_provider,
     )
     for profile in profiles:
         service.register_profile(profile)

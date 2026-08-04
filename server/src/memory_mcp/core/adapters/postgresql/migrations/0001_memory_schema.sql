@@ -4,6 +4,7 @@
 -- 不依赖数据库外键；CHECK 和 UNIQUE 约束保留。
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE memory_profiles (
     profile_id TEXT PRIMARY KEY,
@@ -125,7 +126,8 @@ CREATE TABLE memory_revisions (
     CONSTRAINT memory_revisions_number_unique
         UNIQUE (memory_id, revision_number),
     CONSTRAINT memory_revisions_owner_identity
-        UNIQUE (revision_id, memory_id, owner_id)
+        UNIQUE (revision_id, memory_id, owner_id),
+    embedding vector(1024)
 );
 
 CREATE UNIQUE INDEX memory_revisions_one_current_idx
@@ -146,6 +148,11 @@ CREATE INDEX memory_revisions_owner_effective_idx
 
 CREATE INDEX memory_revisions_recall_content_trgm_idx
     ON memory_revisions USING GIN (lower(content) gin_trgm_ops)
+    WHERE is_current AND lifecycle_status = 'active';
+
+CREATE INDEX memory_revisions_embedding_idx
+    ON memory_revisions USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100)
     WHERE is_current AND lifecycle_status = 'active';
 
 CREATE INDEX memory_revisions_maintenance_expiry_idx

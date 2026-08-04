@@ -149,6 +149,7 @@ class MemoryRevision:
     is_current: bool = True
     original_time_expression: str | None = None
     normalized_time: datetime | None = None
+    embedding: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", _require_text(self.owner_id, "owner_id"))

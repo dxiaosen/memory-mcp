@@ -31,8 +31,9 @@ from memory_mcp.core.adapters.postgresql.schema import (
 )
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.composition import create_memory_service
+from memory_mcp.extraction.embedding import EmbeddingError, QwenEmbeddingProvider
 from memory_mcp.extraction.factory import create_configured_extractors
-from memory_mcp.extraction.settings import ExtractionSettings
+from memory_mcp.extraction.settings import EmbeddingSettings, ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
 from memory_mcp.profiles import built_in_profiles
 from memory_mcp.settings import ConfiguredPrincipal, MemoryServerSettings
@@ -211,6 +212,7 @@ def create_memory_mcp_server(
         sensitive_guard = RegexSensitiveContentGuard.from_config(
             settings.configured_sensitive_rules()
         )
+        embedding_provider = _create_embedding_provider(extraction_settings)
         memory_service = create_memory_service(
             repository,
             configured_profiles,
@@ -218,6 +220,7 @@ def create_memory_mcp_server(
             relation_extractor=configured_relation_extractor,
             sensitive_guard=sensitive_guard,
             recall_candidate_limit=settings.recall_candidate_limit,
+            embedding_provider=embedding_provider,
         )
     else:
         # 外部注入 memory_service 时，存储健康检查由调用方负责，此处禁用
@@ -335,6 +338,21 @@ async def _run_maintenance_loop(
 
 def _isoformat_or_none(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _create_embedding_provider(
+    extraction_settings: ExtractionSettings | None,
+) -> QwenEmbeddingProvider | None:
+    """从环境配置构造 embedding provider；未配置 API Key 时返回 None（降级为两路召回）。"""
+
+    try:
+        settings = EmbeddingSettings()
+    except ValueError:
+        return None
+    try:
+        return QwenEmbeddingProvider(settings)
+    except ValueError, EmbeddingError:
+        return None
 
 
 def _validate_default_profiles(

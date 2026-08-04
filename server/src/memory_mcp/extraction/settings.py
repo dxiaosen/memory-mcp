@@ -53,3 +53,34 @@ class ExtractionSettings(BaseSettings):
         if self.api_key is None:
             raise ValueError("MEMORY_MCP_MODEL_API_KEY is required")
         return self.api_key
+
+
+class EmbeddingSettings(BaseSettings):
+    """Embedding 模型的独立配置。
+
+    与抽取模型分离：可使用不同 provider/base_url/api_key，
+    默认 base_url 指向阿里云 DashScope 兼容接口。
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="MEMORY_MCP_EMBEDDING_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    model_name: str = "text-embedding-v3"
+    api_key: SecretStr | None = None
+    base_url: str = (
+        "https://llm-fsimjapgzz7fwyot.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    )
+    dimensions: int = Field(default=1024, ge=1, le=4096)
+    timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    max_retries: int = Field(default=2, ge=0, le=10)
+
+    def require_api_key(self) -> SecretStr:
+        """返回已校验的 API Key。"""
+
+        if self.api_key is None or not self.api_key.get_secret_value().strip():
+            raise ValueError("MEMORY_MCP_EMBEDDING_API_KEY is required")
+        return self.api_key

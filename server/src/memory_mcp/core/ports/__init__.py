@@ -10,6 +10,7 @@ from memory_mcp.core.ports.capture import (
     SensitiveContentGuard,
     SensitiveInspection,
 )
+from memory_mcp.core.ports.embedding import EmbeddingProvider
 from memory_mcp.core.ports.profiles import (
     MemoryMetadataPolicy,
     MemoryProfile,
@@ -31,6 +32,7 @@ __all__ = [
     "CandidateExtractor",
     "CaptureWrite",
     "DuplicateEvidenceWrite",
+    "EmbeddingProvider",
     "ExtractionRequest",
     "MemoryMetadataPolicy",
     "MemoryProfile",
