@@ -30,13 +30,18 @@ from memory_mcp.core.adapters.postgresql.schema import (
     apply_migrations as apply_postgresql_migrations,
 )
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
+from memory_mcp.core.application.team_extraction_service import TeamExtractionService
 from memory_mcp.core.composition import create_memory_service
 from memory_mcp.extraction.embedding import EmbeddingError, QwenEmbeddingProvider
 from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import EmbeddingSettings, ExtractionSettings
 from memory_mcp.logging import configure_logging_from_settings, log_event
 from memory_mcp.profiles import built_in_profiles
-from memory_mcp.settings import ConfiguredPrincipal, MemoryServerSettings
+from memory_mcp.settings import (
+    ConfiguredPrincipal,
+    MemoryServerSettings,
+    derive_team_owner_key,
+)
 from memory_mcp.tools import MemoryMcpTools
 
 _LOGGER = logging.getLogger(__name__)
@@ -104,11 +109,15 @@ class MemoryMcpServer(FastMCP[Any]):
         close_storage: Callable[[], None] | None = None,
         run_maintenance: Callable[[], MaintenanceResult] | None = None,
         maintenance_interval_seconds: int = 0,
+        run_team_extraction: Callable[[], object] | None = None,
+        team_extraction_interval_seconds: int = 0,
         **kwargs: Any,
     ) -> None:
         self._close_storage = close_storage
         self._run_maintenance = run_maintenance
         self._maintenance_interval_seconds = maintenance_interval_seconds
+        self._run_team_extraction = run_team_extraction
+        self._team_extraction_interval_seconds = team_extraction_interval_seconds
         self._maintenance_health = MaintenanceHealth(
             enabled=run_maintenance is not None and maintenance_interval_seconds > 0
         )
@@ -151,12 +160,26 @@ class MemoryMcpServer(FastMCP[Any]):
                         and self._maintenance_interval_seconds > 0
                         else None
                     )
+                    team_extraction_task = (
+                        asyncio.create_task(
+                            _run_team_extraction_loop(
+                                self._run_team_extraction,
+                                interval_seconds=self._team_extraction_interval_seconds,
+                                stop_event=stop_maintenance,
+                            )
+                        )
+                        if self._run_team_extraction is not None
+                        and self._team_extraction_interval_seconds > 0
+                        else None
+                    )
                     try:
                         yield state
                     finally:
                         stop_maintenance.set()
                         if maintenance_task is not None:
                             await maintenance_task
+                        if team_extraction_task is not None:
+                            await team_extraction_task
                         if self._close_storage is not None:
                             await asyncio.to_thread(self._close_storage)
 
@@ -222,11 +245,18 @@ def create_memory_mcp_server(
             recall_candidate_limit=settings.recall_candidate_limit,
             embedding_provider=embedding_provider,
         )
+        team_extraction_service = _create_team_extraction_service(
+            repository,
+            principals,
+            settings,
+        )
     else:
         # 外部注入 memory_service 时，存储健康检查由调用方负责，此处禁用
         # /health 对存储的探测，避免越权访问。
         def health_check() -> None:
             return None
+
+        team_extraction_service = None
 
     server = MemoryMcpServer(
         name="Memory MCP",
@@ -242,6 +272,12 @@ def create_memory_mcp_server(
         close_storage=close_storage,
         run_maintenance=memory_service.run_maintenance,
         maintenance_interval_seconds=settings.maintenance_interval_seconds,
+        run_team_extraction=(
+            team_extraction_service.run_once
+            if team_extraction_service is not None
+            else None
+        ),
+        team_extraction_interval_seconds=settings.team_extraction_interval_seconds,
         token_verifier=StaticTokenVerifier(principals),
         auth=AuthSettings(
             issuer_url=settings.auth_issuer_url,
@@ -336,8 +372,75 @@ async def _run_maintenance_loop(
             pass
 
 
+async def _run_team_extraction_loop(
+    operation: Callable[[], object],
+    *,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+) -> None:
+    """团队共性提取循环，复用维护循环的退避和隔离模式。"""
+
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(operation)
+        except Exception as exc:
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "memory.team_extraction.failed",
+                error_type=type(exc).__name__,
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            pass
+
+
 def _isoformat_or_none(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _create_team_extraction_service(
+    repository,
+    principals: dict[str, ConfiguredPrincipal],
+    settings: MemoryServerSettings,
+) -> TeamExtractionService | None:
+    """从认证主体和设置构造团队提取服务；无 team_ids 时返回 None。"""
+
+    team_configs: list[tuple[str, tuple[str, ...], str]] = []
+    for principal in principals.values():
+        if not principal.team_ids:
+            continue
+        # 团队成员 = 同 tenant 下所有配了相同 team_id 的 principal
+        for team_id in sorted(principal.team_ids):
+            team_owner = derive_team_owner_key(principal.tenant_id, team_id)
+            members = tuple(
+                p.owner_key
+                for p in principals.values()
+                if p.tenant_id == principal.tenant_id
+                and team_id in p.team_ids
+                and p.owner_key != team_owner
+            )
+            if members:
+                team_configs.append((team_owner, members, principal.default_profile_id))
+    if not team_configs:
+        return None
+    from memory_mcp.core.application.team_extraction_service import (
+        TeamExtractionService,
+    )
+    from memory_mcp.core.ports import ProfileRegistry
+
+    registry = ProfileRegistry()
+    for profile in built_in_profiles():
+        registry.register(profile)
+    return TeamExtractionService(
+        repository,
+        registry,
+        clock=lambda: datetime.now(UTC),
+        team_configs=tuple(team_configs),
+        similarity_threshold=settings.team_extraction_similarity_threshold,
+        min_cluster_size=settings.team_extraction_min_cluster_size,
+    )
 
 
 def _create_embedding_provider(

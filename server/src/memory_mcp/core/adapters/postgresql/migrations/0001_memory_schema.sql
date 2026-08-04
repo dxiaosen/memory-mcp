@@ -664,3 +664,16 @@ CREATE TABLE memory_capture_outcomes (
 
 CREATE INDEX memory_capture_outcomes_owner_decision_idx
     ON memory_capture_outcomes (owner_id, decision);
+
+CREATE TABLE memory_team_extraction_runs (
+    run_id UUID PRIMARY KEY,
+    team_owner_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    member_count INTEGER NOT NULL DEFAULT 0,
+    memory_count INTEGER NOT NULL DEFAULT 0,
+    cluster_count INTEGER NOT NULL DEFAULT 0,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);

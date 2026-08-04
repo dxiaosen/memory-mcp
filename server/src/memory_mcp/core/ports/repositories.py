@@ -19,6 +19,7 @@ from memory_mcp.core.domain import (
     PrincipalContext,
     ReviewItem,
     ReviewStatus,
+    TeamExtractionResult,
 )
 from memory_mcp.core.ports.profiles import MemoryProfile
 
@@ -166,6 +167,20 @@ class MemoryRepository(Protocol):
         limit: int,
     ) -> MaintenanceResult:
         """执行一次不经公共 Principal 暴露的系统级有界维护事务。"""
+
+        ...
+
+    def extract_team_common_memories(
+        self,
+        *,
+        team_owner_id: str,
+        member_owner_ids: tuple[str, ...],
+        profile_id: str,
+        effective_at: datetime,
+        similarity_threshold: float,
+        min_cluster_size: int,
+    ) -> TeamExtractionResult:
+        """扫描团队成员个人记忆，聚类提取共性候选并写入团队 pending review。"""
 
         ...
 

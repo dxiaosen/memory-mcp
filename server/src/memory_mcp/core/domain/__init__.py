@@ -55,6 +55,7 @@ from memory_mcp.core.domain.relations import (
     RelationScope,
     RelationStatus,
 )
+from memory_mcp.core.domain.team_extraction import TeamExtractionResult
 
 __all__ = [
     "AdmissionDecision",
@@ -97,6 +98,7 @@ __all__ = [
     "ReviewStatus",
     "SensitivityLevel",
     "SimpleTokenizer",
+    "TeamExtractionResult",
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",

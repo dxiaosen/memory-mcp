@@ -29,6 +29,7 @@ _REQUIRED_TABLES = frozenset(
         "memory_review_item_documents",
         "memory_relations",
         "memory_capture_outcomes",
+        "memory_team_extraction_runs",
     }
 )
 _REQUIRED_EXTENSIONS = frozenset({"pg_trgm", "vector"})

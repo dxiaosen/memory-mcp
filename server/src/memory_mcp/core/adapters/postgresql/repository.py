@@ -52,6 +52,7 @@ from memory_mcp.core.domain import (
     RelationStatus,
     ReviewItem,
     ReviewStatus,
+    TeamExtractionResult,
     normalize_memory_text,
 )
 from memory_mcp.core.exceptions import IdempotencyConflictError
@@ -350,6 +351,44 @@ class PostgreSQLMemoryRepository:
                 effective_at=effective_at,
                 review_cutoff=review_cutoff,
                 limit=limit,
+            )
+
+    def extract_team_common_memories(
+        self,
+        *,
+        team_owner_id: str,
+        member_owner_ids: tuple[str, ...],
+        profile_id: str,
+        effective_at: datetime,
+        similarity_threshold: float,
+        min_cluster_size: int,
+    ) -> TeamExtractionResult:
+        """扫描成员个人记忆，用 embedding 聚类提取共性并写入团队 pending review。"""
+
+        if not member_owner_ids:
+            return TeamExtractionResult(
+                team_owner_id=team_owner_id,
+                member_count=0,
+                memory_count=0,
+                cluster_count=0,
+                candidate_count=0,
+                completed_at=effective_at,
+            )
+        run_id = (
+            self._id_factory()
+            if hasattr(self, "_id_factory")
+            else __import__("uuid").uuid4()
+        )
+        with self._pool.connection() as connection:
+            return _extract_team_common(
+                connection,
+                team_owner_id=team_owner_id,
+                member_owner_ids=member_owner_ids,
+                profile_id=profile_id,
+                effective_at=effective_at,
+                similarity_threshold=similarity_threshold,
+                min_cluster_size=min_cluster_size,
+                run_id=run_id,
             )
 
     def load_recall_evidence(
@@ -1671,4 +1710,287 @@ def _load_relation(row: Mapping[str, Any]) -> MemoryRelation:
         revoked_at=row["revoked_at"],
         stale_at=row["stale_at"],
         stale_reason=row["stale_reason"],
+    )
+
+
+def _extract_team_common(
+    connection,
+    *,
+    team_owner_id: str,
+    member_owner_ids: tuple[str, ...],
+    profile_id: str,
+    effective_at: datetime,
+    similarity_threshold: float,
+    min_cluster_size: int,
+    run_id: UUID,
+) -> TeamExtractionResult:
+    """在事务内扫描成员记忆、聚类、写团队 pending review 并记录运行。"""
+
+    from uuid import uuid4
+
+    members = list(member_owner_ids)
+    # 查成员的个人 active 记忆（含 embedding）
+    rows = connection.execute(
+        """
+        SELECT i.memory_id, i.owner_id, i.subject, i.memory_type,
+               r.revision_id, r.content, r.embedding,
+               r.assertion_kind, r.observed_at, r.extraction_confidence,
+               r.sensitivity_level, r.valid_from, r.valid_until
+        FROM memory_items i
+        JOIN memory_revisions r
+          ON r.memory_id = i.memory_id AND r.owner_id = i.owner_id AND r.is_current
+        WHERE i.owner_id = ANY(%s)
+          AND i.profile_id = %s
+          AND r.lifecycle_status = 'active'
+          AND r.valid_from <= %s
+          AND (r.valid_until IS NULL OR r.valid_until > %s)
+          AND r.embedding IS NOT NULL
+        """,
+        (members, profile_id, effective_at, effective_at),
+    ).fetchall()
+
+    memory_count = len(rows)
+    if memory_count == 0:
+        _record_extraction_run(
+            connection,
+            run_id,
+            team_owner_id,
+            profile_id,
+            len(members),
+            0,
+            0,
+            0,
+            effective_at,
+        )
+        return TeamExtractionResult(
+            team_owner_id=team_owner_id,
+            member_count=len(members),
+            memory_count=0,
+            cluster_count=0,
+            candidate_count=0,
+            completed_at=effective_at,
+        )
+
+    # 按 memory_type 分组
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(row["memory_type"], []).append(
+            {
+                "memory_id": row["memory_id"],
+                "owner_id": row["owner_id"],
+                "subject": row["subject"],
+                "content": row["content"],
+                "embedding": row["embedding"],
+                "assertion_kind": row["assertion_kind"],
+                "observed_at": row["observed_at"],
+                "extraction_confidence": row["extraction_confidence"],
+                "sensitivity_level": row["sensitivity_level"],
+                "valid_from": row["valid_from"],
+                "valid_until": row["valid_until"],
+                "revision_id": row["revision_id"],
+            }
+        )
+
+    # 组内聚类
+    clusters: list[list[dict]] = []
+    for group in groups.values():
+        clusters.extend(_greedy_cluster(group, similarity_threshold))
+
+    valid_clusters = [c for c in clusters if len(c) >= min_cluster_size]
+    candidate_count = 0
+
+    for cluster in valid_clusters:
+        # 选最频繁的 subject
+        subjects = [m["subject"] for m in cluster]
+        subject = max(set(subjects), key=subjects.count)
+        # 最长 content
+        content = max((m["content"] for m in cluster), key=len)
+        memory_type = cluster[0]["memory_type"]
+        # 幂等：已有同 subject+type 的 pending 不重复创建
+        existing = connection.execute(
+            """
+            SELECT 1 FROM memory_review_items
+            WHERE owner_id = %s AND subject = %s AND memory_type = %s
+              AND status = 'pending'
+            """,
+            (team_owner_id, subject, memory_type),
+        ).fetchone()
+        if existing is not None:
+            continue
+
+        review_id = uuid4()
+        candidate_id = uuid4()
+        now = effective_at
+        # confidence = 簇内不同 owner 数 / 成员总数
+        unique_owners = len(set(m["owner_id"] for m in cluster))
+        confidence = round(unique_owners / len(members), 6)
+        assertion_kind = max(
+            set(m["assertion_kind"] for m in cluster),
+            key=lambda k: sum(1 for m in cluster if m["assertion_kind"] == k),
+        )
+        sensitivity = max(
+            set(m["sensitivity_level"] for m in cluster),
+            key=lambda k: sum(1 for m in cluster if m["sensitivity_level"] == k),
+        )
+        valid_from = min(m["valid_from"] for m in cluster)
+        valid_until = None
+        for m in cluster:
+            if m["valid_until"] is not None:
+                if valid_until is None or m["valid_until"] < valid_until:
+                    valid_until = m["valid_until"]
+
+        connection.execute(
+            """
+            INSERT INTO memory_review_items (
+                review_id, candidate_id, capture_id, owner_id, profile_id,
+                subject, memory_type, content, assertion_kind,
+                business_progress, conversation_id, source_turn_id,
+                source_expression, save_rationale, confidence, durability,
+                expression_basis, observed_at, candidate_created_at,
+                original_time_expression, normalized_time, status,
+                created_at, decided_at, source_role, source_message_id,
+                source_tool_name, verification_status, sensitivity_level,
+                valid_from, valid_until, source_type
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                NULL, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, NULL, NULL, 'pending',
+                %s, NULL, NULL, NULL, NULL, %s, %s,
+                %s, %s, %s
+            )
+            """,
+            (
+                review_id,
+                candidate_id,
+                None,
+                team_owner_id,
+                profile_id,
+                subject,
+                memory_type,
+                content,
+                assertion_kind,
+                "team-extraction",
+                "team-extraction",
+                content,
+                f"团队共性提取：{unique_owners} 个成员写了相似内容",
+                confidence,
+                "durable",
+                "explicit",
+                now,
+                now,
+                now,
+                "user_asserted",
+                sensitivity,
+                valid_from,
+                valid_until,
+                "conversation",
+            ),
+        )
+        candidate_count += 1
+
+    _record_extraction_run(
+        connection,
+        run_id,
+        team_owner_id,
+        profile_id,
+        len(members),
+        memory_count,
+        len(valid_clusters),
+        candidate_count,
+        effective_at,
+    )
+    return TeamExtractionResult(
+        team_owner_id=team_owner_id,
+        member_count=len(members),
+        memory_count=memory_count,
+        cluster_count=len(valid_clusters),
+        candidate_count=candidate_count,
+        completed_at=effective_at,
+    )
+
+
+def _greedy_cluster(
+    memories: list[dict],
+    threshold: float,
+) -> list[list[dict]]:
+    """贪心聚类：按 embedding 余弦相似度归簇。"""
+
+    assigned = [False] * len(memories)
+    clusters: list[list[dict]] = []
+    for i, m in enumerate(memories):
+        if assigned[i]:
+            continue
+        cluster = [m]
+        assigned[i] = True
+        for j in range(i + 1, len(memories)):
+            if assigned[j]:
+                continue
+            sim = _cosine_similarity(m["embedding"], memories[j]["embedding"])
+            if sim >= threshold:
+                cluster.append(memories[j])
+                assigned[j] = True
+        clusters.append(cluster)
+    return clusters
+
+
+def _cosine_similarity(a, b) -> float:
+    """计算两个 pgvector 返回值的余弦相似度。"""
+
+    vec_a = _parse_vector(a)
+    vec_b = _parse_vector(b)
+    if not vec_a or not vec_b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(vec_a, vec_b, strict=False))
+    norm_a = sum(x * x for x in vec_a) ** 0.5
+    norm_b = sum(x * x for x in vec_b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _parse_vector(value) -> list[float]:
+    """将 pgvector 返回的字符串或列表转为 float 列表。"""
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = value.strip("[]").split(",")
+        return [float(p) for p in parts if p.strip()]
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return []
+
+
+def _record_extraction_run(
+    connection,
+    run_id,
+    team_owner_id: str,
+    profile_id: str,
+    member_count: int,
+    memory_count: int,
+    cluster_count: int,
+    candidate_count: int,
+    completed_at: datetime,
+) -> None:
+    """记录一次提取运行。"""
+
+    connection.execute(
+        """
+        INSERT INTO memory_team_extraction_runs (
+            run_id, team_owner_id, profile_id, status,
+            member_count, memory_count, cluster_count, candidate_count,
+            started_at, completed_at
+        ) VALUES (%s, %s, %s, 'completed', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            run_id,
+            team_owner_id,
+            profile_id,
+            member_count,
+            memory_count,
+            cluster_count,
+            candidate_count,
+            completed_at,
+            completed_at,
+        ),
     )
