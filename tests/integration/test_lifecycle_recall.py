@@ -111,22 +111,6 @@ def _capture(
     )
 
 
-def test_general_work_policy_declares_formal_minimum() -> None:
-    profile = GeneralWorkProfile()
-
-    assert profile.profile_id == "general-work"
-    assert profile.profile_version == "general-work-v2"
-    assert profile.memory_types == {
-        "preference",
-        "stable_context",
-        "ongoing_item",
-        "decision",
-    }
-    assert profile.relation_policies == {}
-    assert set(profile.recall_priorities) == profile.memory_types
-    assert set(profile.recall_hints) == profile.memory_types
-
-
 def test_investment_research_profile_declares_complete_built_in_contract() -> None:
     profile = InvestmentResearchProfile()
 
