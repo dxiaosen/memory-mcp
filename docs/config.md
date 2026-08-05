@@ -131,10 +131,36 @@
 
 - 候选和关系抽取共享一个 ChatModel，使用独立 prompt 和严格 schema。
 - 配置缺失时启动失败，不降级为测试替身。
-- 模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_trgm` 候选及确定性应用层排序。
+- 模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_trgm` + 可选向量候选及确定性应用层排序。
+
+### 3.5 向量召回（可选）
+
+| 变量 | 默认值 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `MEMORY_MCP_EMBEDDING_MODEL` | `text-embedding-v3` | 否 | embedding 模型 ID |
+| `MEMORY_MCP_EMBEDDING_API_KEY` | 无 | 否 | embedding provider 凭据；Secret；未配置则跳过向量召回路 |
+| `MEMORY_MCP_EMBEDDING_BASE_URL` | Provider 默认 | 否 | 官方或兼容 embeddings 地址 |
+| `MEMORY_MCP_EMBEDDING_DIMENSIONS` | `1024` | 否 | 输出向量维度，需与 pgvector 列一致 |
+| `MEMORY_MCP_EMBEDDING_TIMEOUT_SECONDS` | `30` | 否 | 单次调用超时 |
+| `MEMORY_MCP_EMBEDDING_MAX_RETRIES` | `2` | 否 | Provider 重试，0–10 |
+
+- 配置 `API_KEY` 后，capture 写入期为 revision 计算 embedding 存入 pgvector 列；recall 增加向量余弦候选路。
+- 未配置或计算失败时降级为词法+近期两路召回，不影响主链路。
+
+### 3.6 团队公共记忆自动提取（可选）
+
+| 变量 | 默认值 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `MEMORY_MCP_TEAM_EXTRACTION_INTERVAL_SECONDS` | `3600` | 否 | 团队提取周期，0 关闭；范围 0–86400 |
+| `MEMORY_MCP_TEAM_EXTRACTION_SIMILARITY_THRESHOLD` | `0.85` | 否 | embedding 聚类相似度阈值 |
+| `MEMORY_MCP_TEAM_EXTRACTION_MIN_CLUSTER_SIZE` | `2` | 否 | 最小簇大小 |
+
+- 服务端周期性扫描团队成员个人记忆，用 embedding 相似度聚类提取公共知识候选，写入团队 pending review。
+- 团队成员从 `MEMORY_MCP_AUTH_TOKENS` 的 `team_ids` 派生；同 tenant 下配相同 team_id 的成员构成团队。
+- 不自动确认——候选需成员人工确认后沉淀为团队公共记忆。
 - 模型不可用不影响已有记忆的维护或召回。
 
-### 3.5 日志
+### 3.7 日志
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |

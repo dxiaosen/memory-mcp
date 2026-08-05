@@ -1,6 +1,6 @@
 """通用记忆核心可预期的异常。"""
 
-from memory_mcp.exceptions import MemoryMcpError
+from memory_mcp.core.support.exceptions import MemoryMcpError
 
 
 class MemoryCoreError(MemoryMcpError):

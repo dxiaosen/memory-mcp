@@ -11,8 +11,9 @@ PostgreSQL 持久化由服务端统一负责。
 - duplicate Evidence、replacement revision 和 history；
 - 十个带认证和 scope 的 MCP 工具，包括幂等记忆/关系撤销；
 - revision 的抽取置信度、验证状态、敏感级别、有效期，以及可引用的来源元数据；
-- owner-first 的 PostgreSQL trigram/近期混合召回、最终命中批量 Evidence 水合和安全
-  rendered context；
+- owner-first 的 PostgreSQL trigram/向量/近期三路召回、最终命中批量 Evidence 水合和安全
+  rendered context，向量路未配置时降级为两路；
+- 可选向量召回（`EmbeddingProvider` + pgvector）与服务端周期性团队公共记忆自动提取；
 - 服务端周期物化到期记忆、超龄 pending review 和失效关系的维护闭环，以及可观测的
   maintenance health 子状态；
 - 通用 Agent 生命周期合同、Codex/Claude Code 配置模板和主动召回/捕获；
@@ -169,6 +170,9 @@ OpenSpec 只承担规范和变更管理：
 - [中文分词与召回加固](openspec/changes/harden-recall-chinese-tokenization/)
 - [多层记忆](openspec/changes/add-multi-owner-memory/)
 - [Evidence 文档拆分](openspec/changes/split-evidence-document-metadata/)
+- [向量召回](openspec/changes/add-vector-recall/)
+- [团队公共记忆自动提取](openspec/changes/add-team-memory-extraction/)
+- [项目维护精简](openspec/changes/streamline-project-maintenance/)
 
 ## 验证
 
@@ -190,6 +194,9 @@ openspec-cn validate harden-recall-delivery-reliability --strict
 openspec-cn validate harden-recall-chinese-tokenization --strict
 openspec-cn validate add-multi-owner-memory --strict
 openspec-cn validate split-evidence-document-metadata --strict
+openspec-cn validate add-vector-recall --strict
+openspec-cn validate add-team-memory-extraction --strict
+openspec-cn validate streamline-project-maintenance --strict
 .venv/bin/python -m evals.runner
 ```
 

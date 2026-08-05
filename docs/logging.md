@@ -94,7 +94,9 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 | `memory.capture.completed` / `.incomplete` / `.processing_failed` | INFO/ERROR | `capture_id`, [`memory_id`]/[`error_code`]/[`error_type`] |
 | `memory.review.confirmed` / `.rejected` | INFO | `review_id` |
 | `memory.recall.candidates` | INFO | Profile, 候选硬上限, `lexical_count`, `recent_count` |
+| `memory.recall.embedding_failed` | WARNING | `error_type`（查询向量计算失败，降级为两路） |
 | `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `has_more` / `error_type` |
+| `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
 
 Core 字段约束：
 

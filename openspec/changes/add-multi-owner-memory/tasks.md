@@ -6,7 +6,7 @@
 
 ## 2. 清理冗余字段 last_verified_at
 
-- [x] 2.1 新增 migration `0002_drop_last_verified_at.sql` 删除两表的 `last_verified_at` 列。
+- [x] 2.1 新增 migration `0002_drop_last_verified_at.sql` 删除两表的 `last_verified_at` 列。注：该 migration 已并入单一 `0001_memory_schema.sql`（见 `harden-recall-chinese-tokenization` 10.1 的迁移合并），无独立 0002 文件。
 - [x] 2.2 `MemoryRevision`、`Candidate`（domain/capture.py）删 `last_verified_at` 字段。
 - [x] 2.3 schemas.py 删该字段。
 - [x] 2.4 recall_service 的 `_render_item` 删 `last_verified_at` 渲染行。
@@ -47,7 +47,7 @@
 
 ## 7. 真实 DB 应用 migration
 
-- [x] 7.1 开发库重建 schema（drop + 跑 0001 + 0002）。
+- [x] 7.1 开发库重建 schema（drop + 跑 `0001_memory_schema.sql`）。
 - [x] 7.2 validate_schema 通过，契约测试通过。
 
 ## 8. 文档梳理

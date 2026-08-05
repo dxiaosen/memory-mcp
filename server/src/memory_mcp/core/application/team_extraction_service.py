@@ -7,7 +7,7 @@ from time import perf_counter
 
 from memory_mcp.core.domain import TeamExtractionResult
 from memory_mcp.core.ports import MemoryRepository, ProfileRegistry
-from memory_mcp.logging import log_event, stable_reference
+from memory_mcp.core.support import log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 

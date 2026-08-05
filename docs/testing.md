@@ -66,12 +66,12 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' .venv/bin/python -m pytest 
 ```
 
 未满足检查时测试拒绝执行，不自动读取生产 `MEMORY_MCP_DATABASE_URL`。
-`PostgreSQL schema is up to date` 表示全部 migration 已应用且 checksum 一致。
+`Memory PostgreSQL is healthy` 表示 migration checksum 一致、扩展可用且必需索引存在。
 
 | 项 | 说明 |
 | --- | --- |
-| `0001_memory_schema.sql` | 安装 `pg_trgm` 扩展、创建全部表和索引 |
-| `health` 检查 | migration checksum、扩展和四个必需索引 |
+| `0001_memory_schema.sql` | 安装 `pg_trgm` 与 `vector` 扩展、创建全部表和索引 |
+| `health` 检查 | migration checksum、扩展和五个必需索引（含 `memory_revisions_embedding_idx`） |
 | 改 schema | 直接修改该文件并用 `migrate --rebuild` 重建 |
 
 ## 4. 投研评测

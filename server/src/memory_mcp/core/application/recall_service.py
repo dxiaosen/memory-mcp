@@ -30,7 +30,7 @@ from memory_mcp.core.ports import (
     SensitiveContentGuard,
     embed_single,
 )
-from memory_mcp.logging import log_content_event, log_event
+from memory_mcp.core.support import log_content_event, log_event
 
 _LOGGER = logging.getLogger(__name__)
 

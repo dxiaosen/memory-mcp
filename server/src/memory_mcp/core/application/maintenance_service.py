@@ -7,7 +7,7 @@ from time import perf_counter
 
 from memory_mcp.core.domain import MaintenanceResult
 from memory_mcp.core.ports import MemoryRepository
-from memory_mcp.logging import log_event
+from memory_mcp.core.support import log_event
 
 _LOGGER = logging.getLogger(__name__)
 

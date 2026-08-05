@@ -63,7 +63,7 @@ from memory_mcp.core.ports import (
     RecallCandidateSet,
     ReplacementWrite,
 )
-from memory_mcp.logging import log_event, stable_reference
+from memory_mcp.core.support import log_event, stable_reference
 
 PostgreSQLPool = ConnectionPool[Mapping[str, Any]]
 _LOGGER = logging.getLogger(__name__)

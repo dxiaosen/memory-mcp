@@ -1,9 +1,15 @@
-"""项目级可预期异常。"""
+"""根包异常别名，委托到 ``memory_mcp.core.support.exceptions``。
 
+实现保留在 Core 内部，使 Core 的异常基类不必回引根包；根包仅作为传输与
+组合根层的稳定导入路径。
+"""
 
-class MemoryMcpError(Exception):
-    """Memory MCP 可预期异常的基类。"""
+from memory_mcp.core.support.exceptions import (
+    ConfigurationError,
+    MemoryMcpError,
+)
 
-
-class ConfigurationError(MemoryMcpError):
-    """配置不完整或不受支持时抛出。"""
+__all__ = [
+    "ConfigurationError",
+    "MemoryMcpError",
+]

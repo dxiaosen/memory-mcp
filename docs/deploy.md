@@ -95,7 +95,7 @@ MEMORY_MCP_LOG_FILE=/var/log/memory-mcp/memory-mcp.log
 | --- | --- | --- |
 | 安装迁移 unit | `sudo cp deploy/systemd/memory-mcp-migrate.service /etc/systemd/system/`<br>`sudo systemctl daemon-reload` | `systemctl cat memory-mcp-migrate.service` |
 | 执行迁移 | `sudo systemctl start memory-mcp-migrate.service` | `sudo systemctl status memory-mcp-migrate.service` |
-| 验证 schema | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp-db health'` | `PostgreSQL schema is up to date` |
+| 验证 schema | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp-db health'` | `Memory PostgreSQL is healthy` |
 
 - 迁移记录 checksum，已执行的 migration 文件被修改后续迁移会拒绝执行。
 - 重复执行 migration unit 应报告 schema 已是最新状态。

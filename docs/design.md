@@ -50,7 +50,9 @@ Memory MCP Server
 | 生命周期 | owner-scoped 幂等 revoke、读取时失效过滤、服务端周期到期物化 |
 | 关系 | owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效与一跳关系感知召回 |
 | 版本管理 | duplicate Evidence、replacement revision、显式 history |
-| 召回 | owner-first trigram/近期混合 recall、阈值、数量与 token budget |
+| 召回 | owner-first trigram/vector/近期三路 recall、阈值、数量与 token budget |
+| 向量召回 | `EmbeddingProvider` 端口、Qwen 实现、pgvector `embedding` 列与向量余弦候选路，未配置时降级为两路 |
+| 团队公共记忆 | 手动 `promote_to_team` 提升与服务端周期性 embedding 聚类自动提取候选 |
 | Agent Client | 独立轻量 BeforeRun/AfterRun Agent Client 发行包 |
 | 抽取 | 真实 OpenAI-compatible/DeepSeek 抽取与测试注入的确定性 extractor |
 | 跨 Agent 闭环 | 三份独立 Agent 环境配置的跨 Agent/跨用户闭环 |
@@ -64,7 +66,6 @@ Memory MCP Server
 | --- | --- |
 | 生产 OAuth/OIDC 授权服务器 / 跨用户授权 / 多 worker 自动伸缩与数据库级 RLS | 无真实需求前不预建 |
 | Redis/Kafka 消息队列 | 当前无跨主机削峰需求 |
-| Embedding、向量数据库和 HNSW | 文本召回当前够用 |
 | 物理 delete 和 suppression | 保留历史用于审计 |
 | 自动判断端点 revision 未变化时关系语义失效 | 不从自然语言自动撤销 |
 | Web 管理后台和 MCP Apps / Docker/Kubernetes/Nginx | 无需求 |
@@ -226,7 +227,7 @@ memory-mcp/
 │       │   │   ├── postgresql/    # repository/recall/maintenance/mapping/validation/schema/migrations
 │       │   │   ├── in_memory.py / tokenizer.py / sensitive.py / structured_model.py
 │       │   └── composition.py
-│       ├── extraction/            # settings/chat_models/backends/factory
+│       ├── extraction/            # settings/chat_models/backends/factory/embedding
 │       ├── profiles/              # general_work/investment_research
 │       ├── tools/                # capture/memory/recall/review/shared
 │       ├── app.py / auth.py / schemas.py / settings.py / errors.py / db.py / logging.py
@@ -494,6 +495,21 @@ user B / agent B ─── owner B
 | `link_memories` relation owner | 跟随端点记忆的 owner；两个团队记忆建关系时 relation 写入团队 owner |
 | `revoke_memory_relation` | 同理，保证端点与关系 owner 一致 |
 
+### 5.5 团队公共记忆自动提取
+
+除手动 `promote_to_team` 提升外，服务端周期性扫描团队成员的个人记忆，用
+embedding 相似度聚类提取公共知识候选，写入团队 pending review，由成员人工确认后
+沉淀为团队公共记忆。不做自动确认——人决定哪些值得沉淀为团队知识。
+
+| 项 | 规则 |
+| --- | --- |
+| 触发 | Server lifespan 内 `_run_team_extraction_loop` 按 `MEMORY_MCP_TEAM_EXTRACTION_INTERVAL_SECONDS`（默认 3600，0 关闭）周期运行 |
+| 团队配置 | 从认证主体的 `team_ids` 派生 `team_owner_key`；同 tenant 下配相同 team_id 的成员构成一个团队 |
+| 聚类 | `Repository.extract_team_common_memories` 按 embedding 相似度（默认阈值 0.85）聚类成员记忆，最小簇大小默认 2 |
+| 产出 | 共性候选写入团队 owner 的 pending review；`TeamExtractionResult` 记录成员数、记忆数、簇数与候选数 |
+| 隔离 | 提取只读成员个人记忆、只写团队公共空间；不改变个人记忆 |
+| 依赖向量 | 聚类用 embedding 相似度，未配置 provider 时该服务不产出候选但不影响主链路 |
+
 ## 6. MCP 契约
 
 ### 6.1 Transport
@@ -586,6 +602,12 @@ user B / agent B ─── owner B
 
 正式组合根始终配置 extractor，因此 `capture_not_configured` 不应出现在正常启动路径。
 错误响应不返回 SQL、堆栈、Secret、正文或 backend 异常消息。
+
+异常基类分三层：`core.support.exceptions.MemoryMcpError` 是 Core 自包含的预期异常根
+（位于 Core 内部，使 domain/application/ports 不必回引根包）；`core.exceptions` 的
+`MemoryCoreError` 等核心业务异常继承它；`errors.py` 的 `MemoryMcpBoundaryError`
+是带稳定错误码、可安全返回客户端的边界错误。根包 `memory_mcp.exceptions` /
+`memory_mcp.logging` 是传输与组合根层的稳定别名，内部委托到 `core.support`。
 
 ## 7. 捕获与准入
 
@@ -910,6 +932,7 @@ owner 集合（个人 + 团队）
 → valid_from <= now < valid_until（或无上限）
 → optional subject
 → pg_trgm subject/content lexical top-K（约 70%）
+  + vector embedding cosine top-K（约 30%，需配置 EmbeddingProvider）
   + observed_at DESC recent 补齐（至少 1 个，limit=1 除外）
 → 去重并限制为 MEMORY_MCP_RECALL_CANDIDATE_LIMIT
 ```
@@ -920,9 +943,9 @@ owner 集合（个人 + 团队）
 | 项 | 规则 |
 | --- | --- |
 | 候选上限 | 由 Application 下推，默认总计 500 |
-| 候选选择 | PostgreSQL 在 owner/Profile/current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择词法候选，再用近期候选补齐 |
-| 优势 | 能找回超过近期窗口的较早相关记忆 |
-| 限制 | 不是 Embedding 语义索引 |
+| 候选选择 | PostgreSQL 在 owner/Profile/current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选择词法候选（约 70%），再用 embedding 向量余弦距离选语义候选（约 30%，需 pgvector 与 `EmbeddingProvider`），最后用近期候选补齐 |
+| 优势 | 词法找回较早相关记忆，向量找回字面不重叠但语义相关的内容，近期保证最新上下文 |
+| 向量降级 | 未配置 `EmbeddingProvider` 或计算失败时跳过 vector 路，仅用词法+近期两路 |
 | 排除内容 | pending、superseded、expired、revoked、deleted 和 blocked |
 
 候选 DTO 只包含 Item 与 current Revision，不携带 Evidence。Application 完成关系加权、
@@ -940,12 +963,15 @@ Application 对候选计算：
 | word overlap | 经可注入分词器切分（投研场景默认 jieba 精确模式，关闭 HMM 以保证离线评测确定性；纯标点 token 被丢弃） |
 | 字符二元组 overlap | 改善中文小样本召回 |
 | subject 完全相等 | 加权 `0.2`，不再压过正文相关度 |
+| 向量语义相似度 | 数据库侧 `retrieval_score`（0-1 余弦相似度）乘以 `0.15` 叠加，让字面不重叠但语义相关的候选不被阈值过滤 |
 | MemoryProfile memory type priority | 类型优先级 |
 | 一跳关系加权 | 当另一端自身也达到 threshold 时，最多 `0.12` |
 | observed time | 稳定排序补充 |
 
 `core.domain` 定义 `MemoryTokenizer` 协议和 `SimpleTokenizer` 兜底实现，`core.adapters`
-提供基于 jieba 的生产实现；组合根注入分词器，召回用例不直接依赖 jieba。
+提供基于 jieba 的生产实现；组合根注入分词器，召回用例不直接依赖 jieba。向量由
+`core.ports.EmbeddingProvider` 端口定义、`extraction/embedding.py` 的 Qwen 实现提供，
+未注入 provider 时降级为词法+近期两路。
 
 打分常量均为命名模块级常量，经离线评测校准且不回退 `recall_at_k`：
 
@@ -955,10 +981,12 @@ Application 对候选计算：
 | relation boost | `0.12` |
 | profile hint boost | `0.16` |
 | subject exact-match boost | `0.2` |
+| vector boost | `0.15` |
 
 只有基础文本分数达到 relevance threshold 的记录才进入结果；数据库 lexical score
-只负责候选生成，不替代应用分数。关系不能独自把不相关 endpoint 拉入召回，也不递归
-扩展候选。当前算法故意可解释、无外部 Embedding 或模型调用依赖。
+与 vector retrieval_score 只负责候选生成与加成，不替代应用分数。关系不能独自把
+不相关 endpoint 拉入召回，也不递归扩展候选。词法与排序部分故意可解释；向量路
+仅在配置 provider 时启用，不改变上述确定性打分骨架。
 
 ### 9.3 subject 语义
 
@@ -1003,17 +1031,17 @@ Rendered context 包含固定边界说明：
 每条 item 显示 revision、type、subject、assertion kind、verification、sensitivity、
 observed time、validity 和内容，使业务 Agent 能正确理解来源、确定性和时效。
 
-### 9.6 未来语义索引
+### 9.6 向量召回的定位与降级
 
-当前 v4 投研基准的零命中、同义改写、报告期/同名实体强干扰、长期旧记忆和 101 条
-大候选窗口均通过，因此不在召回热路径增加模型调用。
+向量路是召回的可选第三路，不替代词法与排序的确定性骨架。
 
 | 项 | 规则 |
 | --- | --- |
-| 触发条件 | 后续真实失败案例证明文本召回不足 |
-| 可选增强 | 可重建索引或受控 query expansion |
-| 索引定位 | 只能提出候选，永远不能成为身份或生命周期事实源 |
+| 启用条件 | 配置 `MEMORY_MCP_EMBEDDING_API_KEY` 与 provider；写入期计算 revision embedding 并存入 pgvector 列 |
+| 降级 | provider 未配置、计算失败或维度不符时跳过 vector 路，仅用词法+近期两路 |
+| 索引定位 | 向量与词法一样只能提出候选，永远不能成为身份或生命周期事实源 |
 | 返回前校验 | 必须回 PostgreSQL 复核 owner/current revision/lifecycle/`profile_id`/可见性 |
+| 后续增强 | 真实失败案例证明仍不足时可重建索引或受控 query expansion，但不动确定性打分 |
 
 ## 10. Agent Client 与 Hook
 
@@ -1344,7 +1372,7 @@ Memory profile 的版本、策略指纹、Prompt 版本随捕获写入审计数�
 27. 自动关系必须绑定可信 capture、两端 revision 和完整 provenance，模型不能选择 owner/revision 身份；
 28. replacement 必须在同一事务把旧 revision-scoped 活动边转为 stale；人工 item-scoped 边继续有效；
 29. 到期必须先由读取谓词立即隔离，再由有界维护批次物化 expired review/revision 和 endpoint_expired 关系；
-30. Recall 候选必须在 owner/Profile/active/effective 边界内组合 indexed lexical 与 recent，模型不可成为正确性依赖。
+30. Recall 候选必须在 owner/Profile/active/effective 边界内组合 indexed lexical、（可选）indexed vector 与 recent，向量路可降级但词法+近期骨架不可缺失；模型不可成为正确性依赖。
 
 ### 12.2 扩展策略
 

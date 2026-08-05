@@ -168,7 +168,9 @@ class MemoryTools(ToolSupport):
         @server.tool(
             name="revoke_memory",
             description=(
-                "Revoke one owned current memory without deleting its traceable history."
+                "Revoke one owned current memory. Marks it revoked while "
+                "preserving the full traceable revision and evidence history; "
+                "the operation is idempotent and never physically deletes data."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
@@ -271,7 +273,11 @@ class MemoryTools(ToolSupport):
 
         @server.tool(
             name="revoke_memory_relation",
-            description="Revoke one owned memory relation without deleting history.",
+            description=(
+                "Revoke one owned memory relation. Marks it revoked while "
+                "preserving the audit history; the operation is idempotent and "
+                "never physically deletes the relation."
+            ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
                 destructiveHint=True,

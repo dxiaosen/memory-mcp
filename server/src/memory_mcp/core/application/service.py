@@ -48,7 +48,7 @@ from memory_mcp.core.ports import (
     RelationExtractor,
     SensitiveContentGuard,
 )
-from memory_mcp.logging import log_content_event, log_event, stable_reference
+from memory_mcp.core.support import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 

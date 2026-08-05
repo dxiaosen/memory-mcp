@@ -50,7 +50,7 @@ from memory_mcp.core.ports import (
     SensitiveContentGuard,
     profile_fingerprint,
 )
-from memory_mcp.logging import log_content_event, log_event, stable_reference
+from memory_mcp.core.support import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")

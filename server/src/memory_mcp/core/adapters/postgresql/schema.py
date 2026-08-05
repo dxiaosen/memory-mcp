@@ -10,7 +10,7 @@ from importlib.resources import files
 import psycopg
 from psycopg.rows import dict_row
 
-from memory_mcp.logging import log_event
+from memory_mcp.core.support import log_event
 
 _LOGGER = logging.getLogger(__name__)
 _MIGRATION_LOCK_NAME = "memory-mcp-schema-migrations-v1"
