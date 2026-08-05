@@ -1,4 +1,4 @@
-"""Memory MCP 的离线与显式真实模型质量评估。"""
+"""Memory MCP 质量评估：deterministic / live-extraction / live-embedding。"""
 
 from evals.metrics import EvaluationReport, evaluate_dataset
 from evals.schema import EvaluationDataset, load_dataset

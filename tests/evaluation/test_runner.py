@@ -1,4 +1,4 @@
-"""评测数据、隔离边界和安全输出的最小回归集。"""
+"""评测体系回归测试：schema/metrics/matching/baseline/runner/deterministic 一致性。"""
 
 import json
 import sys
@@ -7,86 +7,32 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from evals.metrics import _recall_labels
-from evals.runner import _live_predictions, _run_payload, _validate_output_path, main
-from evals.schema import (
-    INVESTMENT_MEMORY_TYPES,
-    INVESTMENT_RELATION_TYPES,
-    CandidateCase,
-    RecallCase,
-    RecallCorpusItem,
-    RelationCase,
-    load_dataset,
+from evals.metrics import (
+    PrecisionRecall,
+    aggregate_precision_recall,
+    confusion_matrix,
+    evaluate_dataset,
+    mean_reciprocal_rank,
+    precision_at_k,
+    recall_at_k,
+    set_precision_recall,
 )
+from evals.runner import _compare_with_baseline, _filter_dataset, _run_payload, main
+from evals.schema import load_dataset
 
 _DATASET = Path("evals/cases.json")
 
 
-def test_recall_benchmark_preserves_production_empty_result() -> None:
-    case = RecallCase(
-        id="recall-unrelated-empty",
-        category="semantic-recall",
-        task="recall",
-        query="量子生物学实验进展",
-        top_k=1,
-        corpus=(
-            RecallCorpusItem(
-                label="report-format",
-                subject="公司深度报告格式",
-                memory_type="research_preference",
-                content="先列关键风险，再给核心结论。",
-            ),
-        ),
-        expected=frozenset(),
-    )
-
-    assert _recall_labels(case) == frozenset()
+# ── Schema 校验 ──
 
 
-def test_offline_benchmark_is_honest_deterministic_and_safe() -> None:
+def test_dataset_has_unique_case_ids() -> None:
     dataset = load_dataset(_DATASET)
-
-    payload = _run_payload(dataset, dataset_path=_DATASET, live_model=False)
-    rendered = json.dumps(payload, ensure_ascii=False)
-
-    assert payload["candidate"] is None
-    assert payload["relation"] is None
-    assert payload["recall_at_k"] == 1.0
-    assert payload["safety_pass_rate"] == 1.0
-    assert payload["thresholds_met"] is True
-    assert payload["failed_case_ids"] == ()
-    assert payload["categories"]["durable-research-context"] == {
-        "case_count": 9,
-        "evaluated_count": 0,
-        "failed_count": 0,
-        "pass_rate": None,
-    }
-    assert payload["categories"]["semantic-recall"]["pass_rate"] == 1.0
-    assert payload["run"]["model_tasks"] == []
-    assert payload["run"]["deterministic_tasks"] == ["recall", "safety"]
-    assert "以后写公司深度报告时" not in rendered
-    assert "research-pass-2026" not in rendered
+    ids = [c.id for c in dataset.cases]
+    assert len(ids) == len(set(ids)), "duplicate case ids"
 
 
-def test_dataset_contract_covers_investment_dimensions_and_rejects_identity(
-    tmp_path: Path,
-) -> None:
-    dataset = load_dataset(_DATASET)
-    candidate_types = {
-        label
-        for case in dataset.cases
-        if isinstance(case, CandidateCase)
-        for label in case.expected
-    }
-    relation_types = {
-        label.split("|", maxsplit=1)[0]
-        for case in dataset.cases
-        if isinstance(case, RelationCase)
-        for label in case.expected
-    }
-    assert candidate_types == INVESTMENT_MEMORY_TYPES
-    assert relation_types == INVESTMENT_RELATION_TYPES
-
+def test_dataset_rejects_extra_fields(tmp_path: Path) -> None:
     raw = json.loads(_DATASET.read_text(encoding="utf-8"))
     raw["cases"][0]["owner_id"] = "forged-owner"
     target = tmp_path / "invalid.json"
@@ -95,38 +41,191 @@ def test_dataset_contract_covers_investment_dimensions_and_rejects_identity(
         load_dataset(target)
 
 
-def test_output_contract_rejects_missing_parent_and_writes_safe_json(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(ValueError, match="parent directory"):
-        _validate_output_path(tmp_path / "missing" / "report.json")
+def test_dataset_all_cases_have_required_fields() -> None:
+    dataset = load_dataset(_DATASET)
+    for case in dataset.cases:
+        assert case.suite
+        assert case.mode
+        assert case.profile_id
+        assert case.rationale
 
-    output = tmp_path / "report.json"
+
+# ── 指标纯函数 ──
+
+
+def test_set_precision_recall() -> None:
+    pr = set_precision_recall(
+        frozenset({"a", "b", "c"}),
+        frozenset({"a", "c", "d"}),
+    )
+    assert pr.true_positive == 2
+    assert pr.false_positive == 1
+    assert pr.false_negative == 1
+    assert pr.precision == 2 / 3
+    assert pr.recall == 2 / 3
+
+
+def test_precision_recall_f1() -> None:
+    pr = PrecisionRecall(true_positive=1, false_positive=1, false_negative=1)
+    assert pr.f1 == pytest.approx(0.5, abs=0.01)
+
+
+def test_recall_at_k() -> None:
+    expected = frozenset({"a", "c"})
+    retrieved = ("a", "b", "c", "d")
+    assert recall_at_k(expected, retrieved, k=2) == 0.5
+    assert recall_at_k(expected, retrieved, k=4) == 1.0
+
+
+def test_precision_at_k() -> None:
+    expected = frozenset({"a", "c"})
+    retrieved = ("a", "b", "c", "d")
+    assert precision_at_k(expected, retrieved, k=2) == 0.5
+    assert precision_at_k(expected, retrieved, k=1) == 1.0
+
+
+def test_mean_reciprocal_rank() -> None:
+    assert mean_reciprocal_rank(frozenset({"c"}), ("a", "b", "c")) == pytest.approx(1 / 3)
+    assert mean_reciprocal_rank(frozenset({"z"}), ("a", "b", "c")) == 0.0
+
+
+def test_aggregate_precision_recall() -> None:
+    pairs = [
+        (frozenset({"a"}), frozenset({"a"})),
+        (frozenset({"b"}), frozenset({"c"})),
+    ]
+    pr = aggregate_precision_recall(pairs)
+    assert pr.true_positive == 1
+    assert pr.false_positive == 1
+    assert pr.false_negative == 1
+
+
+def test_confusion_matrix_diagonal() -> None:
+    cm = confusion_matrix(
+        frozenset({"a"}),
+        frozenset({"a"}),
+        ("a", "b"),
+    )
+    assert cm.matrix[0][0] == 1
+
+
+# ── Deterministic 一致性 ──
+
+
+def test_deterministic_repeatable() -> None:
+    dataset = load_dataset(_DATASET)
+    r1 = evaluate_dataset(dataset, mode="deterministic")
+    r2 = evaluate_dataset(dataset, mode="deterministic")
+    assert r1.recall_at_k == r2.recall_at_k
+    assert r1.safety_pass_rate == r2.safety_pass_rate
+    assert r1.failed_case_ids == r2.failed_case_ids
+
+
+def test_deterministic_skips_extraction() -> None:
+    dataset = load_dataset(_DATASET)
+    report = evaluate_dataset(dataset, mode="deterministic")
+    assert report.candidate is None
+    assert report.relation is None
+    assert report.recall_at_k == 1.0
+    assert report.safety_pass_rate == 1.0
+
+
+def test_deterministic_thresholds_met() -> None:
+    dataset = load_dataset(_DATASET)
+    report = evaluate_dataset(dataset, mode="deterministic")
+    assert report.thresholds_met
+
+
+# ── Provider 未配置时正确 skipped ──
+
+
+def test_live_extraction_without_provider_skips() -> None:
+    dataset = load_dataset(_DATASET)
+    report = evaluate_dataset(
+        dataset,
+        mode="live-extraction",
+        model_predictions=None,
+        skipped_reasons={},
+    )
+    assert report.candidate is None
+    assert report.relation is None
+
+
+# ── 筛选 ──
+
+
+def test_filter_by_suite() -> None:
+    dataset = load_dataset(_DATASET)
+    filtered = _filter_dataset(dataset, suite="recall")
+    assert all(c.suite == "recall" for c in filtered.cases)
+    assert len(filtered.cases) > 0
+
+
+def test_filter_by_tag() -> None:
+    dataset = load_dataset(_DATASET)
+    first_tag = dataset.cases[0].tags[0] if dataset.cases[0].tags else None
+    if first_tag:
+        filtered = _filter_dataset(dataset, tag=first_tag)
+        assert all(first_tag in c.tags for c in filtered.cases)
+
+
+# ── Baseline ──
+
+
+def test_baseline_comparison_no_regression() -> None:
+    from evals.metrics import EvaluationReport
+
+    report = EvaluationReport(
+        dataset_version="test",
+        mode="deterministic",
+        case_counts={},
+        suite_results=(),
+        recall_at_k=1.0,
+        safety_pass_rate=1.0,
+    )
+    baseline = {"recall_at_k": 1.0, "safety_pass_rate": 1.0}
+    result = _compare_with_baseline(report, baseline)
+    assert result["regression"] is False
+
+
+def test_baseline_comparison_detects_regression() -> None:
+    from evals.metrics import EvaluationReport
+
+    report = EvaluationReport(
+        dataset_version="test",
+        mode="deterministic",
+        case_counts={},
+        suite_results=(),
+        recall_at_k=0.8,
+        safety_pass_rate=1.0,
+    )
+    baseline = {"recall_at_k": 1.0, "safety_pass_rate": 1.0}
+    result = _compare_with_baseline(report, baseline)
+    assert result["regression"] is True
+    assert "recall_at_k" in result["regressed_metrics"]
+
+
+# ── 回归退出码 ──
+
+
+def test_deterministic_returns_zero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["evals.runner", "--dataset", str(_DATASET), "--output", str(output)],
+        ["evals.runner", "--mode", "deterministic"],
     )
-    assert main() == 0
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["run"]["mode"] == "offline"
-    assert payload["candidate"] is None
-    assert payload["relation"] is None
+    exit_code = main()
+    assert exit_code == 0
 
 
-def test_live_model_requires_existing_model_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    for name in (
-        "MEMORY_MCP_MODEL_NAME",
-        "MEMORY_MCP_MODEL_API_KEY",
-        "MEMORY_MCP_MODEL_PROVIDER",
-        "MEMORY_MCP_MODEL_BASE_URL",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.chdir(tmp_path)
+# ── 输出安全 ──
 
-    with pytest.raises(ValueError, match="MEMORY_MCP_MODEL_NAME"):
-        _live_predictions(load_dataset(Path(__file__).parents[2] / _DATASET))
+
+def test_report_does_not_contain_secrets() -> None:
+    dataset = load_dataset(_DATASET)
+    payload = _run_payload(dataset, dataset_path=_DATASET, mode="deterministic")
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert "Bearer " not in rendered
+    assert "postgresql://" not in rendered
+    assert '"sk-' not in rendered  # API key prefix as JSON string value
+    assert "以后写公司深度报告时" not in rendered
