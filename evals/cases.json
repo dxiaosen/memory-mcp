@@ -1,5 +1,5 @@
 {
-  "version": "investment-memory-v4-2026-08-02",
+  "version": "memory-mcp-eval-v5-2026-08-05",
   "thresholds": {
     "candidate_precision": 0.85,
     "candidate_recall": 0.8,
@@ -2122,6 +2122,356 @@
         "benign-research-content"
       ],
       "rationale": "Tests allowed content"
+    },
+    {
+      "id": "recall-gw-preference-table-format",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "english",
+        "preference"
+      ],
+      "category": "general-work-recall",
+      "rationale": "Tests general-work preference recall with English content",
+      "task": "recall",
+      "query": "What format should the weekly report use?",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 6000,
+      "corpus": [
+        {
+          "label": "report-format",
+          "subject": "weekly-report-format",
+          "memory_type": "preference",
+          "content": "Weekly report should default to table format."
+        },
+        {
+          "label": "distractor",
+          "subject": "project-status",
+          "memory_type": "ongoing_item",
+          "content": "API refactoring continues next week."
+        }
+      ],
+      "expected": [
+        "report-format"
+      ]
+    },
+    {
+      "id": "recall-gw-context-architecture",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "english",
+        "stable_context"
+      ],
+      "category": "general-work-recall",
+      "rationale": "Tests general-work stable_context recall",
+      "task": "recall",
+      "query": "What is the architecture decision for the Atlas project?",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 6000,
+      "corpus": [
+        {
+          "label": "arch-decision",
+          "subject": "atlas-architecture",
+          "memory_type": "stable_context",
+          "content": "Atlas project uses event-driven architecture with CQRS."
+        },
+        {
+          "label": "distractor",
+          "subject": "meeting-notes",
+          "memory_type": "ongoing_item",
+          "content": "Team standup scheduled for Thursday."
+        }
+      ],
+      "expected": [
+        "arch-decision"
+      ]
+    },
+    {
+      "id": "recall-gw-mixed-lang-decision",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "mixed",
+        "decision"
+      ],
+      "category": "general-work-recall",
+      "rationale": "Tests general-work recall with mixed Chinese-English content",
+      "task": "recall",
+      "query": "deployment strategy 是什么",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 6000,
+      "corpus": [
+        {
+          "label": "deploy-decision",
+          "subject": "deployment-strategy",
+          "memory_type": "decision",
+          "content": "Deployment 使用 blue-green strategy，先 canary 再全量。"
+        },
+        {
+          "label": "distractor",
+          "subject": "logging-setup",
+          "memory_type": "stable_context",
+          "content": "日志写入 RollingFileAppender。"
+        }
+      ],
+      "expected": [
+        "deploy-decision"
+      ]
+    },
+    {
+      "id": "recall-gw-zero-result-unrelated",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "zero-result"
+      ],
+      "category": "general-work-recall",
+      "rationale": "Tests zero-result when query has no matching memory",
+      "task": "recall",
+      "query": "quantum computing experiments progress",
+      "top_k": 3,
+      "candidate_limit": 500,
+      "token_budget": 6000,
+      "corpus": [
+        {
+          "label": "report-format",
+          "subject": "weekly-report",
+          "memory_type": "preference",
+          "content": "Default to table format for reports."
+        },
+        {
+          "label": "api-status",
+          "subject": "api-refactor",
+          "memory_type": "ongoing_item",
+          "content": "API refactoring continues."
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "candidate-gw-preference-english",
+      "suite": "capture-admission",
+      "mode": "live-extraction",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "english",
+        "preference"
+      ],
+      "category": "general-work-candidate",
+      "rationale": "Tests general-work preference extraction from English content",
+      "task": "candidate",
+      "content": "From now on, all project reports should use Markdown format.",
+      "source_role": "user",
+      "expected": [
+        "preference"
+      ]
+    },
+    {
+      "id": "candidate-gw-context-mixed",
+      "suite": "capture-admission",
+      "mode": "live-extraction",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "mixed",
+        "stable_context"
+      ],
+      "category": "general-work-candidate",
+      "rationale": "Tests general-work stable_context extraction from mixed content",
+      "task": "candidate",
+      "content": "项目使用 Python 3.14 和 uv 作为包管理工具。",
+      "source_role": "user",
+      "expected": [
+        "stable_context"
+      ]
+    },
+    {
+      "id": "isolation-owner-cross-read",
+      "suite": "safety-isolation",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "isolation",
+        "owner-scope"
+      ],
+      "category": "owner-isolation",
+      "rationale": "Cross-owner memory_id read must be blocked",
+      "task": "isolation",
+      "content": "Cross-owner read attempt must fail.",
+      "expected_blocked": true
+    },
+    {
+      "id": "isolation-mcp-no-owner-injection",
+      "suite": "safety-isolation",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "isolation",
+        "mcp-injection"
+      ],
+      "category": "owner-isolation",
+      "rationale": "MCP tool parameters cannot inject owner_id",
+      "task": "isolation",
+      "content": "MCP parameters must not accept owner field.",
+      "expected_blocked": true
+    },
+    {
+      "id": "isolation-team-nonmember-access",
+      "suite": "safety-isolation",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "isolation",
+        "team-scope"
+      ],
+      "category": "owner-isolation",
+      "rationale": "Non-team-member cannot access team memories",
+      "task": "isolation",
+      "content": "Non-member must not see team memories.",
+      "expected_blocked": true
+    },
+    {
+      "id": "lifecycle-duplicate-evidence",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "duplicate"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "Duplicate content appends evidence without new revision",
+      "task": "lifecycle",
+      "content": "华星科技毛利率改善的核心论点。",
+      "expected_transition": "duplicate_evidence"
+    },
+    {
+      "id": "lifecycle-explicit-replacement",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "replacement"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "Explicit replacement creates new revision",
+      "task": "lifecycle",
+      "content": "项目周报默认用表格。",
+      "second_content": "以后项目周报改为 Markdown。",
+      "expected_transition": "replacement"
+    },
+    {
+      "id": "lifecycle-ambiguous-conflict",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "ambiguous"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "Non-explicit conflict becomes pending",
+      "task": "lifecycle",
+      "content": "项目周报默认用表格。",
+      "second_content": "项目周报也可以考虑用文本。",
+      "expected_transition": "ambiguous_conflict"
+    },
+    {
+      "id": "lifecycle-revoke",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "revoke"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "Revoke marks memory as revoked and preserves history",
+      "task": "lifecycle",
+      "content": "项目周报默认用表格。",
+      "expected_transition": "revoke"
+    },
+    {
+      "id": "recall-mixed-lang-thesis",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "mixed",
+        "thesis"
+      ],
+      "category": "mixed-language-recall",
+      "rationale": "Tests recall with mixed Chinese-English query and content",
+      "task": "recall",
+      "query": "华星科技的 margin improvement thesis 是什么",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 8000,
+      "corpus": [
+        {
+          "label": "margin-thesis",
+          "subject": "华星科技-毛利率",
+          "memory_type": "thesis",
+          "content": "Product mix upgrade will drive gross margin improvement over the next two years."
+        },
+        {
+          "label": "distractor",
+          "subject": "竞品分析",
+          "memory_type": "evidence_claim",
+          "content": "竞品A的市场份额下降了5%。"
+        }
+      ],
+      "expected": [
+        "margin-thesis"
+      ]
+    },
+    {
+      "id": "recall-english-risk-factor",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "english",
+        "risk"
+      ],
+      "category": "english-recall",
+      "rationale": "Tests recall with fully English query and content",
+      "task": "recall",
+      "query": "What is the main risk to the gross margin thesis?",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 8000,
+      "corpus": [
+        {
+          "label": "price-war-risk",
+          "subject": "华星科技-价格战风险",
+          "memory_type": "risk",
+          "content": "Industry price war is the main risk to the margin improvement thesis."
+        },
+        {
+          "label": "distractor",
+          "subject": "新产能",
+          "memory_type": "catalyst",
+          "content": "New production line to start in Q4."
+        }
+      ],
+      "expected": [
+        "price-war-risk"
+      ]
     }
   ]
 }
