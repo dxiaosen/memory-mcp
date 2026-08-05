@@ -75,13 +75,15 @@ Pyright 未安装且无配置；类型检查依赖 ruff（E/F/UP/B/RUF 规则集
 
 ## 改动时的检查清单
 
-- 改了 Core 层导入 → `uv run pytest tests/core/test_dependency_boundaries.py`（必须过）。
+- 改了 Core 层导入 → `uv run pytest tests/contract/test_dependency_boundaries.py`（必须过）。
 - 改了 schema → 编辑 `0001_memory_schema.sql` 并 `migrate --rebuild`；更新 `schema.py`
   的 `_REQUIRED_INDEXES`/`_REQUIRED_EXTENSIONS` 与 `testing.md` 索引数。
 - 改了召回打分常量 → 同步 `design.md` §9.3 常量表与 evals 阈值。
 - 加了 MCP 工具 → 更新 `design.md` §6.2、README 工具表、`enforce_strict_tool_arguments`。
 - 加了环境变量 → 同步 `settings.py`、`.env.example`、`docs/config.md`。
 - 改了记忆领域字段 → 同步 `0001_memory_schema.sql` CHECK 约束、`mapping.py`、`schemas.py` DTO。
+- 改了日志事件/字段 → 同步 `docs/logging.md` 事件表、`tests/unit/test_logging_events.py`。
+  日志约束：默认模式不记正文/Token/Secret；Agent 包不支持内容日志；同一错误只记一次。
 
 ## OpenSpec 工作流
 

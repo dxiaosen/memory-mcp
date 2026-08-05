@@ -2,11 +2,13 @@
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime
 from threading import Lock
+from time import perf_counter
 from uuid import UUID
 
 from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
@@ -169,26 +171,47 @@ class CaptureService:
             and turn.payload_fingerprint is not None
             and existing.payload_fingerprint != turn.payload_fingerprint
         ):
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.capture.idempotency_conflict",
+                capture_id=existing.capture_id,
+                owner_ref=stable_reference(principal.owner_id),
+                event_id=turn.event_id,
+            )
             raise IdempotencyConflictError(
                 "event identifier was reused with a different payload"
             )
         if existing is not None and existing.status is not (
             CaptureStatus.REPROCESS_REQUIRED
         ):
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.capture.replay",
+                capture_id=existing.capture_id,
+                owner_ref=stable_reference(principal.owner_id),
+                status=existing.status.value,
+                replayed=True,
+            )
             return replace(existing, replayed=True)
 
         capture_id = existing.capture_id if existing is not None else self._id_factory()
         created_at = existing.created_at if existing is not None else self._clock()
         was_reprocessed = existing is not None
+        _capture_started_at = perf_counter()
         log_event(
             _LOGGER,
             logging.INFO,
             "memory.capture.started",
             capture_id=capture_id,
             owner_ref=stable_reference(principal.owner_id),
-            profile_version=profile.profile_version,
             profile_id=turn.profile_id,
+            profile_version=profile.profile_version,
             was_reprocessed=was_reprocessed,
+            event_id=turn.event_id,
+            message_count=len(turn.messages),
+            input_character_count=len(turn.content),
         )
 
         try:
@@ -333,6 +356,7 @@ class CaptureService:
                 status=CaptureStatus.FAILED,
                 failure_code="invalid_candidate_output",
                 was_reprocessed=was_reprocessed,
+                started_at=_capture_started_at,
             )
         except Exception as exc:
             log_event(
@@ -352,6 +376,7 @@ class CaptureService:
                 status=CaptureStatus.REPROCESS_REQUIRED,
                 failure_code="processing_interrupted",
                 was_reprocessed=was_reprocessed,
+                started_at=_capture_started_at,
             )
 
         result = CaptureResult(
@@ -411,30 +436,43 @@ class CaptureService:
                 else ()
             ),
         )
+        _decision_counts = Counter(
+            outcome.decision.value for outcome in committed.outcomes
+        )
+        _reason_counts = Counter(
+            outcome.reason_code for outcome in committed.outcomes
+        )
         log_event(
             _LOGGER,
             logging.INFO,
             "memory.capture.completed",
-            auto_saved_count=sum(
-                outcome.decision is AdmissionDecision.AUTO_SAVE
-                for outcome in committed.outcomes
-            ),
-            blocked_count=sum(
-                outcome.decision is AdmissionDecision.BLOCKED
-                for outcome in committed.outcomes
-            ),
             capture_id=committed.capture_id,
-            discarded_count=sum(
-                outcome.decision is AdmissionDecision.DISCARD
-                for outcome in committed.outcomes
-            ),
             owner_ref=stable_reference(principal.owner_id),
-            pending_count=sum(
-                outcome.decision is AdmissionDecision.PENDING
-                for outcome in committed.outcomes
-            ),
-            relation_count=(0 if committed.replayed else len(relation_plan.relations)),
+            profile_id=turn.profile_id,
             replayed=committed.replayed,
+            was_reprocessed=was_reprocessed,
+            duration_ms=round((perf_counter() - _capture_started_at) * 1000, 3),
+            candidate_count=len(processed.candidates),
+            auto_saved_count=_decision_counts.get(
+                AdmissionDecision.AUTO_SAVE.value, 0
+            ),
+            pending_count=_decision_counts.get(
+                AdmissionDecision.PENDING.value, 0
+            ),
+            discarded_count=_decision_counts.get(
+                AdmissionDecision.DISCARD.value, 0
+            ),
+            blocked_count=_decision_counts.get(
+                AdmissionDecision.BLOCKED.value, 0
+            ),
+            reason_counts=dict(_reason_counts),
+            duplicate_count=len(processed.duplicate_evidence),
+            replacement_count=len(processed.replacements),
+            review_count=len(processed.reviews),
+            relation_proposal_count=relation_plan.proposal_count,
+            relation_accepted_count=len(relation_plan.relations),
+            relation_skipped_count=relation_plan.skipped_count,
+            failure_code=committed.failure_code,
         )
         return committed
 
@@ -489,6 +527,7 @@ class CaptureService:
         status: CaptureStatus,
         failure_code: str,
         was_reprocessed: bool,
+        started_at: float = 0.0,
     ) -> CaptureResult:
         result = CaptureResult(
             capture_id=capture_id,
@@ -516,9 +555,12 @@ class CaptureService:
             logging.WARNING,
             "memory.capture.incomplete",
             capture_id=committed.capture_id,
-            failure_code=committed.failure_code,
             owner_ref=stable_reference(principal.owner_id),
+            profile_id=turn.profile_id,
             status=committed.status.value,
+            failure_code=committed.failure_code,
+            was_reprocessed=was_reprocessed,
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
         )
         return committed
 

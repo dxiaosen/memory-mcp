@@ -6,7 +6,8 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime
-from uuid import UUID
+from time import perf_counter
+from uuid import UUID, uuid4
 
 from memory_mcp.core.domain import (
     Evidence,
@@ -30,7 +31,7 @@ from memory_mcp.core.ports import (
     SensitiveContentGuard,
     embed_single,
 )
-from memory_mcp.core.support import log_content_event, log_event
+from memory_mcp.core.support import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,11 +89,26 @@ class RecallService:
         query: RecallQuery,
     ) -> RecallResult:
         """对当前用户的活动记忆做相关性排序并按 token 预算裁剪，生成召回上下文。"""
+        recall_ref = stable_reference(str(uuid4()))
+        _recall_started_at = perf_counter()
+        _embedding_enabled = self._embedding_provider is not None
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.recall.started",
+            recall_ref=recall_ref,
+            owner_ref=stable_reference(principal.owner_id),
+            profile_id=query.profile_id,
+            embedding_enabled=_embedding_enabled,
+            max_items=query.max_items,
+            token_budget=query.token_budget,
+        )
         log_content_event(
             "memory.recall.input",
             max_items=query.max_items,
             query=self._redact_for_logging(query.query),
             profile_id=query.profile_id,
+            recall_ref=recall_ref,
             subject=self._redact_for_logging(query.subject),
             task_intent=self._redact_for_logging(query.task_intent),
             token_budget=query.token_budget,
@@ -102,7 +118,11 @@ class RecallService:
         search_text = " ".join(
             value for value in (query.query, query.task_intent) if value is not None
         )
+        _embedding_degraded = False
         query_embedding = self._compute_query_embedding(search_text)
+        if _embedding_enabled and query_embedding is None:
+            _embedding_degraded = True
+        _candidates_started_at = perf_counter()
         candidate_set = self._repository.find_recall_candidates(
             principal,
             profile_id=query.profile_id,
@@ -117,11 +137,14 @@ class RecallService:
             _LOGGER,
             logging.DEBUG,
             "memory.recall.candidates",
+            recall_ref=recall_ref,
             candidate_count=len(candidates),
             candidate_limit=self._candidate_limit,
             lexical_count=candidate_set.lexical_count,
+            vector_count=candidate_set.vector_count,
             profile_id=query.profile_id,
             recent_count=candidate_set.recent_count,
+            embedding_degraded=_embedding_degraded,
         )
         candidate_ids = frozenset(record.item.memory_id for record in candidates)
         relation_summaries = self._repository.list_relations(
@@ -211,8 +234,28 @@ class RecallService:
             for score, base_score, record in ranked
             if base_score >= _RELEVANCE_THRESHOLD
         )
+        _threshold_passed = len(relevant)
+        _relation_boosted = sum(
+            1
+            for score, base, record in ranked
+            if base < _RELEVANCE_THRESHOLD and score >= _RELEVANCE_THRESHOLD
+        )
         if not relevant:
-            return _traced_result(_empty_result(query.token_budget))
+            return _traced_result(
+                _empty_result(query.token_budget),
+                recall_ref=recall_ref,
+                owner_ref=stable_reference(principal.owner_id),
+                profile_id=query.profile_id,
+                duration_ms=(perf_counter() - _recall_started_at) * 1000,
+                lexical_count=candidate_set.lexical_count,
+                vector_count=candidate_set.vector_count,
+                recent_count=candidate_set.recent_count,
+                candidate_count=len(candidates),
+                threshold_passed_count=_threshold_passed,
+                relation_boosted_count=_relation_boosted,
+                embedding_enabled=_embedding_enabled,
+                embedding_degraded=_embedding_degraded,
+            )
 
         header_tokens = _estimate_tokens(_SAFE_CONTEXT_HEADER)
         if header_tokens > query.token_budget:
@@ -223,7 +266,19 @@ class RecallService:
                     estimated_tokens=0,
                     token_budget=query.token_budget,
                     truncated=True,
-                )
+                ),
+                recall_ref=recall_ref,
+                owner_ref=stable_reference(principal.owner_id),
+                profile_id=query.profile_id,
+                duration_ms=(perf_counter() - _recall_started_at) * 1000,
+                lexical_count=candidate_set.lexical_count,
+                vector_count=candidate_set.vector_count,
+                recent_count=candidate_set.recent_count,
+                candidate_count=len(candidates),
+                threshold_passed_count=_threshold_passed,
+                relation_boosted_count=_relation_boosted,
+                embedding_enabled=_embedding_enabled,
+                embedding_degraded=_embedding_degraded,
             )
 
         selected: list[RecalledMemory] = []
@@ -274,7 +329,19 @@ class RecallService:
                     estimated_tokens=no_context_tokens if fits_budget else 0,
                     token_budget=query.token_budget,
                     truncated=True,
-                )
+                ),
+                recall_ref=recall_ref,
+                owner_ref=stable_reference(principal.owner_id),
+                profile_id=query.profile_id,
+                duration_ms=(perf_counter() - _recall_started_at) * 1000,
+                lexical_count=candidate_set.lexical_count,
+                vector_count=candidate_set.vector_count,
+                recent_count=candidate_set.recent_count,
+                candidate_count=len(candidates),
+                threshold_passed_count=_threshold_passed,
+                relation_boosted_count=_relation_boosted,
+                embedding_enabled=_embedding_enabled,
+                embedding_degraded=_embedding_degraded,
             )
         sources_by_revision = self._repository.load_recall_evidence(
             principal,
@@ -298,7 +365,19 @@ class RecallService:
                 estimated_tokens=used_tokens,
                 token_budget=query.token_budget,
                 truncated=truncated or len(selected) < len(relevant),
-            )
+            ),
+            recall_ref=recall_ref,
+            owner_ref=stable_reference(principal.owner_id),
+            profile_id=query.profile_id,
+            duration_ms=(perf_counter() - _recall_started_at) * 1000,
+            lexical_count=candidate_set.lexical_count,
+            vector_count=candidate_set.vector_count,
+            recent_count=candidate_set.recent_count,
+            candidate_count=len(candidates),
+            threshold_passed_count=_threshold_passed,
+            relation_boosted_count=_relation_boosted,
+            embedding_enabled=_embedding_enabled,
+            embedding_degraded=_embedding_degraded,
         )
 
     def _relation_expanded_candidates(
@@ -387,15 +466,54 @@ def _empty_result(token_budget: int) -> RecallResult:
     )
 
 
-def _traced_result(result: RecallResult) -> RecallResult:
-    """记录召回输出日志后原样返回结果。"""
+def _traced_result(
+    result: RecallResult,
+    *,
+    recall_ref: str,
+    owner_ref: str,
+    profile_id: str,
+    duration_ms: float,
+    lexical_count: int,
+    vector_count: int,
+    recent_count: int,
+    candidate_count: int,
+    threshold_passed_count: int,
+    relation_boosted_count: int,
+    embedding_enabled: bool,
+    embedding_degraded: bool,
+) -> RecallResult:
+    """记录召回 INFO 完成事件和内容模式输出后原样返回结果。"""
+
     log_content_event(
         "memory.recall.output",
         estimated_tokens=result.estimated_tokens,
         items=tuple(asdict(item) for item in result.items),
+        recall_ref=recall_ref,
         rendered_context=result.rendered_context,
         token_budget=result.token_budget,
         truncated=result.truncated,
+    )
+    log_event(
+        _LOGGER,
+        logging.INFO,
+        "memory.recall.completed",
+        recall_ref=recall_ref,
+        owner_ref=owner_ref,
+        profile_id=profile_id,
+        duration_ms=round(duration_ms, 3),
+        result_count=len(result.items),
+        estimated_tokens=result.estimated_tokens,
+        token_budget=result.token_budget,
+        truncated=result.truncated,
+        zero_result=len(result.items) == 0,
+        candidate_count=candidate_count,
+        lexical_count=lexical_count,
+        vector_count=vector_count,
+        recent_count=recent_count,
+        threshold_passed_count=threshold_passed_count,
+        relation_boosted_count=relation_boosted_count,
+        embedding_enabled=embedding_enabled,
+        embedding_degraded=embedding_degraded,
     )
     return result
 

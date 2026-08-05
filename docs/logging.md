@@ -1,6 +1,6 @@
 # Memory MCP 日志规范
 
-日志用于定位服务启动、MCP 调用、捕获、审核、数据库迁移和健康检查问题。实现位于
+日志用于定位服务启动、MCP 调用、捕获、召回、审核、数据库迁移和健康检查问题。实现位于
 `server/src/memory_mcp/core/support/logging.py`（Server/Core/DB 的权威实现，根包
 `memory_mcp.logging` 是别名）和 `agent/src/memory_mcp_agent/logging.py`（Agent Hook）。
 
@@ -35,15 +35,16 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 ## 2. 格式与字段
 
 每条事件是一行可检索的 `event + key=value`，字段按名称排序。示例：
-`event="memory.mcp.tool.completed" duration_ms=7.413 owner_ref="..." request_id="..." result_count=1 status="completed" tool_name="list_memories"`
+`event="memory.capture.completed" auto_saved_count=1 capture_id="..." duration_ms=3.21 owner_ref="..." replayed=false`
 
 | 字段 | 含义 | 字段 | 含义 |
 | --- | --- | --- | --- |
 | `event` | 稳定事件名 | `relation_origin` / `relation_scope` | 关系来源和 item/revision 作用域 |
 | `request_id` | MCP request id | `relation_count` / `stale_relation_count` | 新建关系和失效关系数量 |
-| `owner_ref` | owner 的稳定假名引用 | `candidate_count` / `lexical_count` / `recent_count` | 混合召回候选计数 |
+| `owner_ref` | owner 的稳定假名引用 | `candidate_count` / `lexical_count` / `vector_count` / `recent_count` | 召回候选计数 |
 | `client_ref` / `agent_ref` | 调用方稳定假名引用 | `expired_memory_count` / `expired_review_count` | 维护状态转换计数 |
 | `capture_id` / `memory_id` / `revision_id` | 技术记录 ID | `result_count` / `duration_ms` | 结果数量 / 操作耗时 |
+| `recall_ref` | 召回稳定关联标识（仅日志，不改 MCP 返回契约） | `auto_saved_count` / `pending_count` / `discarded_count` / `blocked_count` | 准入四类计数 |
 | `status` / `error_code` | 稳定状态 | `error_type` | 异常类型名，不是异常消息 |
 
 `stable_reference()` 使用截断 SHA-256 避免直接输出 identifier，但不是匿名化机制；
@@ -69,56 +70,99 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 | backend 异常 | 只记录 `type(exc).__name__`，不调用附带异常正文的 `logger.exception()` |
 | `log_content_event()` | 只接受已通过敏感边界的对象，不替代 SensitiveGuard |
 
-## 4. 事件表
+## 4. 链路关联
+
+通过以下字段还原一次完整流程：
+
+```
+Agent Hook (run_ref)
+  → MCP Tool (request_id)
+    → Core Capture (capture_id) 或 Recall (recall_ref)
+      → PostgreSQL commit (capture_id)
+```
+
+- `run_ref`：Agent Hook 的顶层轮次标识；
+- `request_id`：MCP 工具调用标识；
+- `capture_id`：捕获事务标识，贯穿 Capture started→completed→PostgreSQL commit；
+- `recall_ref`：召回的稳定关联标识（仅日志，不改 MCP 返回契约），贯穿 recall started→completed；
+- `owner_ref`：owner 稳定假名，跨所有层关联。
+
+## 5. 事件表
 
 ### 服务与 MCP
 
 | 事件名 | 级别 | 字段 |
 | --- | --- | --- |
-| `memory.mcp.server.starting` | INFO | — |
-| `memory.mcp.tool.started` / `.completed` | INFO | `request_id`[, `duration_ms`,`status`,`result_count`,`tool_name`] |
-| `memory.mcp.tool.failed` | ERROR | `request_id`, `error_code`, `error_type` |
+| `memory.mcp.server.starting` | INFO | `host`, `port`, `mcp_path` |
+| `memory.mcp.server.stopped` | INFO | `reason` |
+| `memory.mcp.tool.started` | INFO | `request_id`, `client_ref`, `owner_ref`, `tool_name` |
+| `memory.mcp.tool.completed` | INFO | `request_id`, `duration_ms`, `status`, `result_count`, `tool_name` |
+| `memory.mcp.tool.failed` | ERROR/WARNING | `request_id`, `error_code`, `error_type`, `tool_name` |
 
-### Core
+### Capture 阶段
 
 | 事件名 | 级别 | 字段 |
 | --- | --- | --- |
-| `memory.profile.registered` | INFO | `profile_id` |
-| `memory.create.started` / `.completed` / `.blocked` | INFO | `owner_ref`, [`memory_id`,`revision_id`]/[`error_code`] |
-| `memory.get.completed` / `.unavailable` | INFO | `owner_ref`, `memory_id`/`error_code` |
-| `memory.list.completed` | INFO | `owner_ref`, `result_count` |
-| `memory.revoke.completed` | INFO | `owner_ref`, `memory_id` |
-| `memory.relation.linked` / `.revoked` | INFO | `relation_origin`, `relation_scope`[, `relation_count`] |
-| `memory.capture.started` | INFO | `capture_id` |
+| `memory.capture.started` | INFO | `capture_id`, `owner_ref`, `profile_id`, `profile_version`, `was_reprocessed`, `event_id`, `message_count`, `input_character_count` |
+| `memory.capture.replay` | INFO | `capture_id`, `owner_ref`, `status`, `replayed` |
+| `memory.capture.idempotency_conflict` | WARNING | `capture_id`, `owner_ref`, `event_id` |
+| `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code` |
+| `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
+| `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `owner_ref` |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
-| `memory.capture.completed` / `.incomplete` / `.processing_failed` | INFO/ERROR | `capture_id`, [`memory_id`]/[`error_code`]/[`error_type`] |
-| `memory.review.confirmed` / `.rejected` | INFO | `review_id` |
-| `memory.recall.candidates` | INFO | Profile, 候选硬上限, `lexical_count`, `recent_count` |
-| `memory.recall.embedding_failed` | WARNING | `error_type`（查询向量计算失败，降级为两路） |
-| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `has_more` / `error_type` |
-| `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
 
-Core 字段约束：
-
-| 事件 | 约束 |
-| --- | --- |
-| `relations_planned` | 不记录端点 subject/content、关系原文或 owner |
-| `relation.linked/revoked` | 可记录 origin/scope/status，不得记录 provenance 的 conversation/turn/source expression |
-| `recall.candidates` | 不记录 query 或候选正文 |
-| `maintenance.*` | 不记录 owner/review/memory/relation 标识 |
-
-### 内容模式（仅 `LOG_CONTENT=true`）
+Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 
 | 事件名 | 记录内容 |
 | --- | --- |
-| `logging.content.enabled` | 启用警告 |
-| `memory.capture.input` / `.candidates` / `.admission` / `.relation_candidates` / `.persisted` | 脱敏输入 / 候选及 source expression / 准入结果 / 脱敏建议和计划关系 / 持久化结构 |
+| `memory.capture.input` | 脱敏输入、messages、subject_hint |
+| `memory.capture.candidates` | 候选及 source expression |
+| `memory.capture.admission` | 准入结果 |
+| `memory.capture.relation_candidates` | 脱敏建议和计划关系 |
+| `memory.capture.persisted` | 持久化结构（memory/review/duplicate/replacement/relation） |
+
+### Recall 阶段
+
+| 事件名 | 级别 | 字段 |
+| --- | --- | --- |
+| `memory.recall.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `embedding_enabled`, `max_items`, `token_budget` |
+| `memory.recall.candidates` | DEBUG | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded` |
+| `memory.recall.embedding_failed` | WARNING | `error_type` |
+| `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded` |
+
+Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
+
+| 事件名 | 记录内容 |
+| --- | --- |
+| `memory.recall.input` | 脱敏查询、subject、task_intent |
+| `memory.recall.ranked` | 排序记录 |
+| `memory.recall.output` | 召回输出、rendered_context |
+
+### Core 操作与状态变化
+
+| 事件名 | 级别 | 字段 |
+| --- | --- | --- |
+| `memory.profile.registered` | INFO | `profile_id`, `memory_type_count` |
+| `memory.create.started` | DEBUG | `memory_type`, `owner_ref`, `profile_id` |
+| `memory.create.completed` | INFO | `duration_ms`, `evidence_count`, `lifecycle_status`, `memory_id`, `owner_ref`, `revision_id`, `profile_id` |
+| `memory.create.blocked` | WARNING | `blocked_categories`, `owner_ref`, `profile_id` |
+| `memory.get.completed` / `.unavailable` | INFO | `owner_ref`, `memory_id`/`error_code` |
+| `memory.list.completed` | INFO | `include_inactive`, `owner_ref`, `result_count` |
+| `memory.revoke.completed` | INFO | `lifecycle_status`, `memory_id`, `owner_ref` |
+| `memory.relation.linked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type`, `source_memory_id`, `target_memory_id` |
+| `memory.relation.revoked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type` |
+| `memory.review.confirmed` / `.rejected` | INFO | `review_id`, `owner_ref`, `promoted_to_team` |
+| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `has_more` / `error_type` |
+| `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
+| `memory.embedding.completed` | DEBUG | — |
+
+Core 读取内容模式事件：
+
+| 事件名 | 记录内容 |
+| --- | --- |
 | `memory.create.input` / `.persisted` | 创建输入与持久化结构 |
 | `memory.read.get` / `.history` / `.list` | 读取记录 |
 | `memory.review.list` / `.get` / `.confirmed` / `.rejected` | 评审记录 |
-| `memory.recall.input` / `.ranked` / `.output` | 召回查询、排序和输出 |
-
-`log_content_event()` 只接受已通过敏感边界的对象，不替代 SensitiveGuard。
 
 ### 持久化与运维
 
@@ -128,30 +172,38 @@ Core 字段约束：
 | `memory.postgresql.record_committed` | INFO | `memory_id` |
 | `memory.postgresql.relation_linked` | INFO | `relation_count` |
 | `memory.postgresql.capture_committed` | INFO | `capture_id`, `stale_relation_count` |
-| `memory.postgresql.migration.started` / `.applied` | INFO | — |
+| `memory.postgresql.capture_replayed` | INFO | `capture_id` |
+| `memory.postgresql.migration.started` / `.applied` / `.rebuild` | INFO | — |
 | `memory.postgresql.health_check.completed` | INFO | `status` |
-
-`stale_relation_count` 表示本次 replacement 物化失效的边数。`/health` 的 maintenance
-快照只包含状态、连续失败次数、时间和异常类型，不包含异常消息。
 
 ### Agent Host
 
 | 事件名 | 级别 | 字段 |
 | --- | --- | --- |
 | `agent_hook.started` | INFO | `run_ref` |
-| `recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
-| `capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
-| `pending_retry.completed` | INFO | `run_ref`, `attempts` |
-| `pending_retry.failed` / `agent_hook.failed` | ERROR | `run_ref`, `attempts`, `warning_code` / `error_type` |
+| `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
+| `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
+| `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts` |
+| `agent_hook.pending_retry.failed` / `agent_hook.failed` | ERROR | `run_ref`, `attempts`, `warning_code` / `error_type` |
 
-Agent Hook 事件不记录 prompt、最终回复、Token 或本地状态内容。已删除的 Knowledge、
-Agent、旧 CLI 和 bootstrap 事件不再属于本项目。
+Agent Hook 事件不记录 prompt、最终回复、Token 或本地状态内容。
 
-## 5. 新增日志
+## 6. 日志级别
+
+| 级别 | 使用场景 |
+| --- | --- |
+| INFO | 正常开始、完成、状态变化和聚合结果 |
+| WARNING | 可恢复降级、重试、fail-open、embedding 不可用、幂等冲突 |
+| ERROR | 请求失败、事务失败、不可恢复错误 |
+| DEBUG | 不含敏感正文的细粒度对象状态（候选计数、召回候选分布） |
+
+pending、discard、blocked 和 zero-result 本身不属于异常，不记 WARNING。
+
+## 7. 新增日志
 
 ```python
 from time import perf_counter
-from memory_mcp.logging import log_event
+from memory_mcp.core.support import log_event
 # started → try 业务逻辑 → except: log_event(..., error_type=type(exc).__name__) raise
 # → log_event(..., duration_ms=round((perf_counter()-started_at)*1000, 3))
 ```
@@ -162,14 +214,33 @@ from memory_mcp.logging import log_event
 | 内容日志 | 必须用 `log_content_event()`，确保数据已通过身份限定和敏感检查 |
 | 禁止传入 | settings、HTTP headers、异常对象、数据库连接参数、未经 SensitiveGuard 检查的原始 payload |
 | Agent 包 | 从 `memory_mcp_agent.logging` 导入 `log_event`，永远不接受 `content=True`，不得反向依赖 `memory_mcp.logging` |
+| 同一错误 | 只在最有业务上下文的一层记录一次 |
 
-## 6. 查看日志、限制与联调收尾
+## 8. 常用 grep 示例
+
+```bash
+# 还原一次完整 Capture 流程
+grep "capture_id=<id>" .memory-mcp/logs/memory-mcp.log
+
+# 还原一次完整 Recall 流程
+grep "recall_ref=<ref>" .memory-mcp/logs/memory-mcp.log
+
+# 查所有失败
+grep "event=\"memory.*failed\"\|event=\"memory.*incomplete\"" .memory-mcp/logs/memory-mcp.log
+
+# 查 embedding 降级
+grep "embedding_degraded=true" .memory-mcp/logs/memory-mcp.log
+
+# 查 Agent Hook 轮次
+grep "run_ref=<ref>" .memory-mcp/logs/agent-hook.log
+```
+
+## 9. 查看日志、限制与联调收尾
 
 ```bash
 tail -n 50 .memory-mcp/logs/memory-mcp.log      # 或 tail -f 持续跟踪
 tail -f .memory-mcp/logs/agent-hook.log
 journalctl -u memory-mcp.service -f
-# PowerShell: Get-Content .memory-mcp/logs/memory-mcp.log -Tail 50 / -Wait
 ```
 
 当前实现是单进程文本日志，不含集中式日志平台、trace/span、metrics、远程上传或

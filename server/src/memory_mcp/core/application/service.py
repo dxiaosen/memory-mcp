@@ -467,19 +467,7 @@ class MemoryService:
     ) -> RecallResult:
         """从当前用户的活动/当前记忆集合生成召回上下文，委托给召回子服务。"""
 
-        started_at = perf_counter()
-        result = self._recall_service.recall(principal, query)
-        log_event(
-            _LOGGER,
-            logging.INFO,
-            "memory.recall.completed",
-            duration_ms=round((perf_counter() - started_at) * 1000, 3),
-            owner_ref=stable_reference(principal.owner_id),
-            result_count=len(result.items),
-            profile_id=query.profile_id,
-            truncated=result.truncated,
-        )
-        return result
+        return self._recall_service.recall(principal, query)
 
     def list_pending_reviews(
         self,

@@ -13,7 +13,7 @@ _LAYER_BY_DIR = {
     "unit": "unit",
     "contract": "contract",
     "integration": "integration",
-    "end_to_end": "integration",
+    "end_to_end": "end_to_end",
     "evaluation": "evaluation",
 }
 
