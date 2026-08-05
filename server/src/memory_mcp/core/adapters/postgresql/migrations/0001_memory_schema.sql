@@ -35,10 +35,13 @@ CREATE TABLE memory_items (
     subject TEXT NOT NULL,
     memory_type TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
+    lifecycle_status TEXT NOT NULL DEFAULT 'active',
     CONSTRAINT memory_items_owner_non_empty
         CHECK (length(btrim(owner_id)) > 0),
     CONSTRAINT memory_items_subject_non_empty
         CHECK (length(btrim(subject)) > 0),
+    CONSTRAINT memory_items_lifecycle_status
+        CHECK (lifecycle_status IN ('active', 'superseded', 'expired', 'revoked')),
     CONSTRAINT memory_items_owner_identity UNIQUE (memory_id, owner_id),
     CONSTRAINT memory_items_owner_profile_identity
         UNIQUE (memory_id, owner_id, profile_id)
@@ -52,6 +55,13 @@ CREATE INDEX memory_items_owner_profile_type_idx
 
 CREATE INDEX memory_items_recall_subject_trgm_idx
     ON memory_items USING GIN (lower(subject) gin_trgm_ops);
+
+-- 同一 owner/profile 下，每个 (subject, memory_type) 至多一条活动记忆，
+-- 防止并发 auto_save 产生双写（find_current 与 commit_capture 跨事务时的 TOCTOU）。
+-- 非活动（superseded/expired/revoked）记忆保留历史，不参与唯一约束。
+CREATE UNIQUE INDEX memory_items_one_active_scope_idx
+    ON memory_items (owner_id, profile_id, subject, memory_type)
+    WHERE lifecycle_status = 'active';
 
 CREATE TABLE memory_revisions (
     revision_id UUID PRIMARY KEY,

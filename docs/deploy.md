@@ -21,7 +21,7 @@ VPC/VPN Agent ── HTTP + Authorization ───────┐
 ## 2. 前置条件
 
 - ECS 与 PostgreSQL 位于同地域、同 VPC，或已建立可控私网路由。
-- PostgreSQL 创建独立数据库和最小权限应用账号；migration 账号需 `CREATE EXTENSION pg_trgm` 权限（`0001_memory_schema.sql` 要求）。
+- PostgreSQL 创建独立数据库和最小权限应用账号；migration 账号需 `CREATE EXTENSION pg_trgm` 与 `CREATE EXTENSION vector`（pgvector）权限（`0001_memory_schema.sql` 要求）。
 - 公网接入时，ALB/CLB 已配置域名和有效 TLS 证书。
 - Linux 已安装 `uv`；项目部署到 `/opt/memory-mcp`；时间同步正常。
 
@@ -196,7 +196,9 @@ AfterRun  → capture_completed_turn（仅成功完成的轮次）
 ## 12. 当前边界
 
 - Bearer Token 映射是静态认证适配器，不是 OAuth/OIDC。
-- Recall 使用 `pg_trgm` 索引化词法候选，不是向量语义检索；候选硬上限约束应用层载入，不能用无限调大配置替代容量评测。
-- 周期维护在 Server lifespan 内运行，不增加第三个 systemd unit、队列或 Agent 配置。
+- Recall 使用 `pg_trgm` 词法 + 可选 pgvector 向量 + 近期三路候选；向量路未配置
+  `MEMORY_MCP_EMBEDDING_API_KEY` 时降级为词法+近期两路。候选硬上限约束应用层载入，
+  不能用无限调大配置替代容量评测。
+- 周期维护与团队提取在 Server lifespan 内运行，不增加额外 systemd unit、队列或 Agent 配置。
 - PostgreSQL 是唯一运行时存储，不提供 SQLite 降级路径。
 - 部署到新 RDS 实例时仍需先在隔离测试库执行验收套件。

@@ -413,7 +413,7 @@ class PostgreSQLMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
-        """把可见的 active revision 标记为 revoked，返回更新后的记录。"""
+        """把可见的 active revision 标记为 revoked，并物化其 revision-scoped 活动关系为 stale。"""
 
         with self._pool.connection() as connection:
             row = connection.execute(
@@ -438,6 +438,27 @@ class PostgreSQLMemoryRepository:
                   AND lifecycle_status = 'active'
                 """,
                 (row["owner_id"], memory_id, row["revision_id"]),
+            )
+            # 同步 memory_items.lifecycle_status，使部分唯一索引释放该 subject+type 槽位。
+            connection.execute(
+                """
+                UPDATE memory_items
+                SET lifecycle_status = 'revoked'
+                WHERE owner_id = %s AND memory_id = %s
+                """,
+                (row["owner_id"], memory_id),
+            )
+            # 与 replacement 对齐：revoke 也把指向该 memory 当前 revision 的
+            # revision-scoped 活动边物化为 stale，避免 memory_relations.status
+            # 与端点实际状态不一致。item-scoped 手动边不受影响。
+            revoked_principal = PrincipalContext(row["owner_id"])
+            _stale_revision_relations(
+                connection,
+                revoked_principal,
+                memory_id,
+                row["revision_id"],
+                stale_at=row["revision_created_at"],
+                stale_reason="endpoint_revoked",
             )
             row["lifecycle_status"] = "revoked"
             return to_record(connection, row, row["owner_id"])
@@ -1156,9 +1177,10 @@ class PostgreSQLMemoryRepository:
         connection.execute(
             """
             INSERT INTO memory_items (
-                memory_id, owner_id, profile_id, subject, memory_type, created_at
+                memory_id, owner_id, profile_id, subject, memory_type, created_at,
+                lifecycle_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 item.memory_id,
@@ -1167,6 +1189,7 @@ class PostgreSQLMemoryRepository:
                 item.subject,
                 item.memory_type,
                 item.created_at,
+                revision.lifecycle_status.value,
             ),
         )
         cls._insert_revision(connection, revision, record.evidence)
@@ -1404,32 +1427,52 @@ def _stale_revision_relations(
     current_revision_id: UUID,
     *,
     stale_at: datetime,
+    stale_reason: str = "endpoint_revision_changed",
 ) -> int:
-    """在 replacement 事务内物化只对旧 revision 成立的关系。"""
+    """在 replacement/revoke 事务内物化只对旧 revision 成立的关系。
 
-    cursor = connection.execute(
-        """
-        UPDATE memory_relations
-        SET status = 'stale',
-            stale_at = %s,
-            stale_reason = 'endpoint_revision_changed'
-        WHERE owner_id = %s
-          AND scope = 'revision'
-          AND status = 'active'
-          AND (
-              (source_memory_id = %s AND source_revision_id <> %s)
-              OR
-              (target_memory_id = %s AND target_revision_id <> %s)
-          )
-        """,
-        (
+    ``stale_reason`` 为 ``endpoint_revision_changed``（replacement，旧 revision 变非 current）
+    或 ``endpoint_revoked``（revoke，端点被撤销）。两条路径都只对 revision-scoped
+    活动边生效；item-scoped 手动边不受影响。
+    """
+
+    if stale_reason == "endpoint_revision_changed":
+        clause = (
+            "(source_memory_id = %s AND source_revision_id <> %s)"
+            " OR "
+            "(target_memory_id = %s AND target_revision_id <> %s)"
+        )
+        params = (
             stale_at,
             principal.owner_id,
             memory_id,
             current_revision_id,
             memory_id,
             current_revision_id,
-        ),
+            stale_reason,
+        )
+    else:
+        # revoke：端点被撤销，所有指向该 memory 当前 revision 的 revision-scoped 活动边失效。
+        clause = "source_memory_id = %s OR target_memory_id = %s"
+        params = (
+            stale_at,
+            principal.owner_id,
+            memory_id,
+            memory_id,
+            stale_reason,
+        )
+    cursor = connection.execute(
+        f"""
+        UPDATE memory_relations
+        SET status = 'stale',
+            stale_at = %s,
+            stale_reason = %s
+        WHERE owner_id = %s
+          AND scope = 'revision'
+          AND status = 'active'
+          AND ({clause})
+        """,
+        params,
     )
     return cursor.rowcount
 
@@ -1745,6 +1788,7 @@ def _extract_team_common(
           AND r.valid_from <= %s
           AND (r.valid_until IS NULL OR r.valid_until > %s)
           AND r.embedding IS NOT NULL
+        ORDER BY i.memory_type, i.owner_id, i.memory_id
         """,
         (members, profile_id, effective_at, effective_at),
     ).fetchall()
@@ -1797,7 +1841,13 @@ def _extract_team_common(
     for group in groups.values():
         clusters.extend(_greedy_cluster(group, similarity_threshold))
 
-    valid_clusters = [c for c in clusters if len(c) >= min_cluster_size]
+    # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室产生虚假团队候选。
+    valid_clusters = [
+        c
+        for c in clusters
+        if len(c) >= min_cluster_size
+        and len({m["owner_id"] for m in c}) >= 2
+    ]
     candidate_count = 0
 
     for cluster in valid_clusters:

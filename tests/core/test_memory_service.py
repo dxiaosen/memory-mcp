@@ -590,3 +590,94 @@ def test_created_timestamps_are_timezone_aware() -> None:
     assert record.item.created_at == fixed_now
     assert record.current_revision.created_at == fixed_now
     assert record.evidence[0].created_at == fixed_now
+
+
+def test_revoke_stales_revision_scoped_automatic_relations() -> None:
+    """revoke 端点时，指向它的 automatic/revision-scoped 活动关系应物化为 stale。
+
+    item-scoped 手动关系不受影响。该不变量与 replacement 同源（见
+    test_relation_survives_endpoint_replacement_and_domain_invariants）。
+    """
+
+    from uuid import uuid4
+
+    from memory_mcp.core import ExpressionBasis, MemoryRelation, RelationProvenance
+
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+    )
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(principal, _ongoing_command())
+    # 注入一条 automatic/revision-scoped 关系（正常经 capture 产出）
+    automatic = MemoryRelation(
+        relation_id=uuid4(),
+        owner_id=principal.owner_id,
+        profile_id=source.item.profile_id,
+        source_memory_id=source.item.memory_id,
+        target_memory_id=target.item.memory_id,
+        relation_type="supports",
+        status=RelationStatus.ACTIVE,
+        created_at=source.current_revision.created_at,
+        origin=RelationOrigin.AUTOMATIC,
+        scope=RelationScope.REVISION,
+        source_revision_id=source.current_revision.revision_id,
+        target_revision_id=target.current_revision.revision_id,
+        provenance=RelationProvenance(
+            capture_id=uuid4(),
+            conversation_id="test",
+            source_turn_id="test-turn",
+            source_expression="test",
+            confidence=0.95,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            model_id="test",
+            prompt_version="test",
+            schema_version="test",
+        ),
+    )
+    repository = service._repository  # type: ignore[attr-defined]
+    repository.register_profile(_relation_profile())
+    repository._relations[automatic.relation_id] = automatic  # type: ignore[attr-defined]
+
+    service.revoke_memory(principal, target.item.memory_id)
+
+    relations = service.list_memory_relations(
+        principal,
+        target.item.memory_id,
+        include_inactive=True,
+    )
+    assert relations, "relation should still exist after revoke"
+    assert relations[0].relation.status is RelationStatus.STALE
+    assert relations[0].relation.stale_reason == "endpoint_revoked"
+
+
+def test_revoke_does_not_stale_item_scoped_manual_relations() -> None:
+    """revoke 端点时，item-scoped 手动关系保持 active（与 replacement 一致）。"""
+
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+    )
+    principal = PrincipalContext("analyst-a")
+    source = service.create_memory(principal, project_preference_command())
+    target = service.create_memory(principal, _ongoing_command())
+    manual = service.link_memories(
+        principal,
+        source.item.memory_id,
+        target.item.memory_id,
+        "supports",
+    )
+
+    service.revoke_memory(principal, target.item.memory_id)
+
+    relations = service.list_memory_relations(
+        principal,
+        target.item.memory_id,
+        include_inactive=True,
+    )
+    assert any(
+        r.relation.relation_id == manual.relation_id
+        and r.relation.status is RelationStatus.ACTIVE
+        for r in relations
+    ), "manual/item-scoped relation must survive revoke"

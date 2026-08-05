@@ -50,6 +50,14 @@ def run_maintenance(
                       revision.memory_id,
                       revision.owner_id
         ),
+        expired_items AS (
+            UPDATE memory_items AS item
+            SET lifecycle_status = 'expired'
+            FROM expired_revisions AS expired
+            WHERE item.memory_id = expired.memory_id
+              AND item.owner_id = expired.owner_id
+              AND item.lifecycle_status = 'active'
+        ),
         stale_relations AS (
             UPDATE memory_relations AS relation
             SET status = 'stale',

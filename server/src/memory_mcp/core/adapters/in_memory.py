@@ -448,13 +448,27 @@ class InMemoryMemoryRepository:
                 completed_at=effective_at,
             )
 
+        # 按 memory_type/owner/memory_id 排序使聚类可复现（与 PostgreSQL ORDER BY 对齐）。
+        eligible.sort(
+            key=lambda e: (
+                str(e["memory_type"]),
+                str(e["owner_id"]),
+                str(e["memory_id"]),
+            ),
+        )
         groups: dict[str, list[dict[str, object]]] = {}
         for entry in eligible:
             groups.setdefault(entry["memory_type"], []).append(entry)
         clusters: list[list[dict[str, object]]] = []
         for group in groups.values():
             clusters.extend(_greedy_cluster(group, similarity_threshold))
-        valid_clusters = [c for c in clusters if len(c) >= min_cluster_size]
+        # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室。
+        valid_clusters = [
+            c
+            for c in clusters
+            if len(c) >= min_cluster_size
+            and len({m["owner_id"] for m in c}) >= 2
+        ]
 
         candidate_count = 0
         for cluster in valid_clusters:
@@ -510,7 +524,7 @@ class InMemoryMemoryRepository:
         principal: PrincipalContext,
         memory_id: UUID,
     ) -> MemoryRecord | None:
-        """把可见的 active revision 标记为 revoked。"""
+        """把可见的 active revision 标记为 revoked，并物化其 revision-scoped 活动关系为 stale。"""
 
         record = self.get(principal, memory_id)
         if record is None:
@@ -529,6 +543,15 @@ class InMemoryMemoryRepository:
             else entry
             for entry in self._history[memory_id]
         )
+        # 与 replacement/revoke(PG) 对齐：指向该 memory 的 revision-scoped 活动边物化为 stale。
+        revoked_principal = PrincipalContext(revision.owner_id)
+        with self._relation_lock:
+            self._relations = _stale_revoked_relations(
+                self._relations,
+                revoked_principal,
+                memory_id,
+                stale_at=revision.created_at,
+            )
         return updated
 
     def link_relation(
@@ -1383,6 +1406,36 @@ def _stale_revision_relations(
                     relation.target_memory_id == replacement.memory_id
                     and relation.target_revision_id != current_revision_id
                 )
+            )
+            else relation
+        )
+        for relation_id, relation in relations.items()
+    }
+
+
+def _stale_revoked_relations(
+    relations: dict[UUID, MemoryRelation],
+    principal: PrincipalContext,
+    memory_id: UUID,
+    *,
+    stale_at: datetime,
+) -> dict[UUID, MemoryRelation]:
+    """返回 revoke 后的关系副本，指向该 memory 的 revision-scoped 活动边置为 stale。"""
+
+    return {
+        relation_id: (
+            replace(
+                relation,
+                status=RelationStatus.STALE,
+                stale_at=stale_at,
+                stale_reason="endpoint_revoked",
+            )
+            if relation.owner_id in principal.visible_owner_ids
+            and relation.scope is RelationScope.REVISION
+            and relation.status is RelationStatus.ACTIVE
+            and (
+                relation.source_memory_id == memory_id
+                or relation.target_memory_id == memory_id
             )
             else relation
         )

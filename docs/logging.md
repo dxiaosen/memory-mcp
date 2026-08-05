@@ -1,8 +1,8 @@
 # Memory MCP 日志规范
 
 日志用于定位服务启动、MCP 调用、捕获、审核、数据库迁移和健康检查问题。实现位于
-`server/src/memory_mcp/logging.py`（Server/Core/DB）和
-`agent/src/memory_mcp_agent/logging.py`（Agent Hook）。
+`server/src/memory_mcp/core/support/logging.py`（Server/Core/DB 的权威实现，根包
+`memory_mcp.logging` 是别名）和 `agent/src/memory_mcp_agent/logging.py`（Agent Hook）。
 
 | 模式 | 说明 |
 | --- | --- |

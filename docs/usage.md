@@ -4,13 +4,9 @@
 
 ## 1. 拓扑
 
-```text
-Agent Host ── BeforeRun/AfterRun ──▶ Memory MCP Server
-  (URL + Token)                      PostgreSQL + 真实模型 + 认证
-```
-
-- Agent 与 Server 可不同机器。
-- Agent Host 只安装轻量 Client；模型提取、身份派生和持久化都在 Server。
+Agent Host 通过 BeforeRun/AfterRun Hook 与 Memory MCP Server 交互；Agent 与 Server 可不同
+机器。Agent Host 只安装轻量 Client；模型提取、身份派生和持久化都在 Server。架构图见
+[docs/README.md](README.md)。
 
 ## 2. 安装与配置
 
@@ -43,7 +39,7 @@ curl --fail http://127.0.0.1:8765/health
 .venv/bin/python examples/client.py --env-file examples/agent.env tools
 ```
 
-- `PostgreSQL schema is up to date` 表示 migration 与 checksum 已同步。
+- `Memory PostgreSQL is healthy` 表示 migration checksum 一致、扩展可用且必需索引存在。
 - 源码移动后重新运行 `uv sync --all-packages --frozen`。
 
 ## 4. 真实模型闭环

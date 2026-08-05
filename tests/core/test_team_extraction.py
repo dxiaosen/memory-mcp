@@ -202,7 +202,7 @@ def test_memories_without_embedding_are_excluded() -> None:
 
 
 def test_non_member_personal_memory_not_clustered() -> None:
-    """非成员的个人记忆即使相似也不会进入团队提取。"""
+    """非成员的个人记忆即使与成员相似也不会进入团队提取。"""
 
     repository = _repo_with_members()
     repository.add(
@@ -215,6 +215,16 @@ def test_non_member_personal_memory_not_clustered() -> None:
         ),
     )
     repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMBEDDING_SEMANTIC_A,
+        ),
+    )
+    # 外部人员写入相同内容，但不在 member_owner_ids 内
+    repository.add(
         PrincipalContext("outsider"),
         _member_record(
             owner_id="outsider",
@@ -225,19 +235,51 @@ def test_non_member_personal_memory_not_clustered() -> None:
     )
     result = repository.extract_team_common_memories(
         team_owner_id=_TEAM_OWNER,
+        member_owner_ids=(_MEMBERS[0], _MEMBERS[1]),
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    assert result.member_count == 2
+    # 仅 2 个成员的记忆被扫描，外部人员记忆不计入 memory_count
+    assert result.memory_count == 2
+    assert result.candidate_count == 1
+
+
+def test_single_member_echo_chamber_produces_no_candidate() -> None:
+    """单个成员写多条近似记忆不构成团队共性（unique_owners < 2）。"""
+
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMBEDDING_SEMANTIC_A,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="周报格式",
+            content="项目周报还是用表格",
+            embedding=_EMBEDDING_SEMANTIC_A_DRIFT,
+        ),
+    )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
         member_owner_ids=(_MEMBERS[0],),
         profile_id="project-work",
         effective_at=_NOW,
         similarity_threshold=0.85,
-        min_cluster_size=1,
+        min_cluster_size=2,
     )
-    assert result.member_count == 1
-    assert result.memory_count == 1
-    pending = repository.list_reviews(
-        PrincipalContext(_TEAM_OWNER),
-        status=ReviewStatus.PENDING,
-    )
-    assert len(pending) == 1
+    assert result.memory_count == 2
+    # 同一成员的两条近似记忆聚成一簇，但 unique_owners=1 不产出团队候选
+    assert result.candidate_count == 0
 
 
 def test_below_similarity_threshold_produces_no_cluster() -> None:
