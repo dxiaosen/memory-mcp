@@ -1829,6 +1829,209 @@
       "expected": [
         "price-war-risk"
       ]
+    },
+    {
+      "id": "recall-gw-preference-chinese",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "chinese",
+        "preference"
+      ],
+      "category": "general-work-recall",
+      "rationale": "Tests general-work preference recall with pure Chinese content",
+      "task": "recall",
+      "query": "项目周报用什么格式",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 6000,
+      "corpus": [
+        {
+          "label": "report-format",
+          "subject": "周报格式",
+          "memory_type": "preference",
+          "content": "项目周报默认使用表格格式，便于快速对比进度。"
+        },
+        {
+          "label": "distractor",
+          "subject": "代码评审",
+          "memory_type": "ongoing_item",
+          "content": "下周需要完成 API 层代码评审。"
+        }
+      ],
+      "expected": [
+        "report-format"
+      ]
+    },
+    {
+      "id": "candidate-gw-preference-chinese",
+      "suite": "capture-admission",
+      "mode": "live-extraction",
+      "profile_id": "general-work",
+      "tags": [
+        "general-work",
+        "chinese",
+        "preference"
+      ],
+      "category": "general-work-candidate",
+      "rationale": "Tests general-work preference extraction from pure Chinese content",
+      "task": "candidate",
+      "content": "以后项目周报统一用表格格式，方便对比进度。",
+      "source_role": "user",
+      "expected": [
+        "preference"
+      ]
+    },
+    {
+      "id": "lifecycle-multiround-thesis-evolution",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "multiround",
+        "thesis",
+        "evidence"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "多轮研究流程：提出假设→补充证据→修正论点。第一轮提出毛利率改善论点，第二轮补充高毛利产品占比提升证据（duplicate），第三轮明确下调预期（replacement）。",
+      "task": "lifecycle",
+      "content": "我的核心论点是华星科技产品结构升级将推动未来两年毛利率持续改善。",
+      "second_content": "我现在认为毛利率改善幅度会低于预期，产品结构升级推动收入增长但利润率可能承压。",
+      "expected_transition": "replacement"
+    },
+    {
+      "id": "lifecycle-multiround-evidence-supplement",
+      "suite": "lifecycle",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "lifecycle",
+        "multiround",
+        "evidence",
+        "duplicate"
+      ],
+      "category": "lifecycle-state",
+      "rationale": "多轮研究流程：同一论点补充新证据应追加 Evidence 而非创建新 Revision。第一轮提出论点，第二轮用不同措辞重述同一论点。",
+      "task": "lifecycle",
+      "content": "我认为华星科技海外收入占比提升会持续改善整体盈利能力。",
+      "second_content": "华星科技海外收入占比提升将持续改善整体盈利能力，这是我的核心判断。",
+      "expected_transition": "duplicate_evidence"
+    },
+    {
+      "id": "recall-team-consensus-margin",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "team",
+        "thesis",
+        "consensus"
+      ],
+      "category": "team-recall",
+      "rationale": "团队成员可召回团队公共记忆中的投研共识；corpus 含团队公共记忆和个人记忆，团队记忆应优先召回。",
+      "task": "recall",
+      "query": "团队对华星科技毛利率的共识是什么",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 8000,
+      "corpus": [
+        {
+          "label": "team-consensus",
+          "subject": "华星科技-团队毛利率共识",
+          "memory_type": "thesis",
+          "content": "团队共识：产品结构升级将推动毛利率改善，但改善幅度可能低于预期。"
+        },
+        {
+          "label": "personal-distractor",
+          "subject": "个人-库存跟踪",
+          "memory_type": "ongoing_research",
+          "content": "下周继续访谈渠道商确认库存。"
+        },
+        {
+          "label": "personal-distractor2",
+          "subject": "个人-报告偏好",
+          "memory_type": "research_preference",
+          "content": "报告先列风险再写结论。"
+        }
+      ],
+      "expected": [
+        "team-consensus"
+      ]
+    },
+    {
+      "id": "recall-large-corpus-risk-evidence",
+      "suite": "recall",
+      "mode": "deterministic",
+      "profile_id": "investment-research",
+      "tags": [
+        "large-corpus",
+        "risk",
+        "evidence",
+        "disambiguation"
+      ],
+      "category": "large-corpus-recall",
+      "rationale": "大 corpus 召回：8 条记忆中需精准命中华星科技价格战风险，而非竞品风险或旧周期证据。",
+      "task": "recall",
+      "query": "华星科技利润率上行的主要风险是什么",
+      "top_k": 1,
+      "candidate_limit": 500,
+      "token_budget": 8000,
+      "corpus": [
+        {
+          "label": "price-war-risk",
+          "subject": "华星科技-价格战风险",
+          "memory_type": "risk",
+          "content": "行业价格战可能压低华星科技产品售价，破坏毛利率改善趋势。"
+        },
+        {
+          "label": "competitor-risk",
+          "subject": "竞品-降价风险",
+          "memory_type": "risk",
+          "content": "竞品B大幅降价可能影响北辰软件订阅收入。"
+        },
+        {
+          "label": "old-margin-evidence",
+          "subject": "华星科技-2024年毛利率",
+          "memory_type": "evidence_claim",
+          "content": "2024年综合毛利率同比下降1个百分点。"
+        },
+        {
+          "label": "capacity-catalyst",
+          "subject": "华星科技-新产线",
+          "memory_type": "catalyst",
+          "content": "四季度新产线计划投产可能推动收入加速。"
+        },
+        {
+          "label": "renewal-question",
+          "subject": "北辰软件-续约率",
+          "memory_type": "research_question",
+          "content": "需要确认重点客户续约率是否连续下降。"
+        },
+        {
+          "label": "scope-decision",
+          "subject": "华星科技-研究范围",
+          "memory_type": "research_decision",
+          "content": "本轮只分析国内企业客户。"
+        },
+        {
+          "label": "report-preference",
+          "subject": "报告格式",
+          "memory_type": "research_preference",
+          "content": "先列关键风险再写结论。"
+        },
+        {
+          "label": "old-cash-quality",
+          "subject": "华星科技-现金流",
+          "memory_type": "research_preference",
+          "content": "优先关注自由现金流与利润含金量。"
+        }
+      ],
+      "expected": [
+        "price-war-risk"
+      ]
     }
   ]
 }
