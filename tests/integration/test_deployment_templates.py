@@ -7,7 +7,7 @@ from memory_mcp.extraction.settings import ExtractionSettings
 from memory_mcp.settings import MemoryServerSettings
 from memory_mcp_agent import MemoryHookSettings
 
-_ROOT = Path(__file__).parents[1]
+_ROOT = Path(__file__).parents[2]
 
 
 def test_systemd_units_load_secrets_from_environment_file() -> None:

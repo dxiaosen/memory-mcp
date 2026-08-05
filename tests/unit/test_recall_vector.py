@@ -202,3 +202,83 @@ def test_recall_degrades_when_embedding_provider_fails() -> None:
         ),
     )
     assert len(result.items) == 1
+
+
+def test_recall_pulls_relation_endpoint_not_in_candidates() -> None:
+    """关系感知召回补漏：被已过阈值候选引用但未进候选集的关系端点应被拉入结果。
+
+    场景：记忆 A "项目周报用表格" 与查询词法匹配；记忆 B "季度财务汇总"
+    与查询词法不匹配，但 A→B 有自动关系。召回应同时返回 A 与 B（B 经关系补漏）。
+    """
+
+    from uuid import uuid4
+
+    from memory_mcp.core import (
+        ExpressionBasis,
+        MemoryRelation,
+        RelationOrigin,
+        RelationProvenance,
+        RelationScope,
+        RelationStatus,
+    )
+
+    repository = InMemoryMemoryRepository()
+    repository.register_profile(TestMemoryProfile())
+    principal = PrincipalContext("owner-a")
+    # A：与查询词法匹配，会过阈值
+    record_a = _record(subject="周报格式", content="项目周报默认使用表格")
+    # B：与查询词法不匹配，正常不会进候选
+    record_b = _record(
+        subject="季度财务汇总",
+        content="Q3 营收与利润的财务汇总数据",
+    )
+    repository.add(principal, record_a)
+    repository.add(principal, record_b)
+    # A → B 自动关系（revision-scoped）
+    relation = MemoryRelation(
+        relation_id=uuid4(),
+        owner_id="owner-a",
+        profile_id="project-work",
+        source_memory_id=record_a.item.memory_id,
+        target_memory_id=record_b.item.memory_id,
+        relation_type="supports",
+        status=RelationStatus.ACTIVE,
+        created_at=_OBSERVED_AT,
+        origin=RelationOrigin.AUTOMATIC,
+        scope=RelationScope.REVISION,
+        source_revision_id=record_a.current_revision.revision_id,
+        target_revision_id=record_b.current_revision.revision_id,
+        provenance=RelationProvenance(
+            capture_id=uuid4(),
+            conversation_id="test",
+            source_turn_id="test",
+            source_expression="supports",
+            confidence=0.95,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            model_id="test",
+            prompt_version="test",
+            schema_version="test",
+        ),
+    )
+    repository._relations[relation.relation_id] = relation  # type: ignore[attr-defined]
+
+    service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        embedding_provider=None,
+    )
+    result = service.recall_memory(
+        principal,
+        RecallQuery(
+            profile_id="project-work",
+            query="周报 表格",
+            subject=None,
+            task_intent=None,
+            max_items=5,
+        ),
+    )
+    recalled_ids = {item.memory_id for item in result.items}
+    assert record_a.item.memory_id in recalled_ids, "matching record must be recalled"
+    assert record_b.item.memory_id in recalled_ids, (
+        "relation-linked record must be pulled in via relation expansion"
+    )

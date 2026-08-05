@@ -148,6 +148,21 @@ class MemoryRepository(Protocol):
 
         ...
 
+    def find_recall_candidates_by_ids(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        effective_at: datetime,
+    ) -> Sequence[MemoryRecallCandidate]:
+        """按 memory_id 集合加载可见的当前活动候选（用于关系感知召回补漏）。
+
+        仅返回 owner 在 visible_owner_ids 内、is_current 且 active/effective
+        的记忆；retrieval_score 为 0（由调用方按关系加成提升）。
+        """
+
+        ...
+
     def load_recall_evidence(
         self,
         principal: PrincipalContext,

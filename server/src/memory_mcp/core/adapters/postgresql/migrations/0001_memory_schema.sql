@@ -353,6 +353,7 @@ CREATE TABLE memory_review_items (
     valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     valid_until TIMESTAMPTZ,
     source_type TEXT NOT NULL DEFAULT 'conversation',
+    embedding vector(1024),
     CONSTRAINT memory_review_items_content_non_empty
         CHECK (length(btrim(content)) > 0),
     CONSTRAINT memory_review_items_source_non_empty
@@ -447,6 +448,12 @@ CREATE INDEX memory_review_items_owner_status_idx
 CREATE INDEX memory_review_items_resolved_memory_idx
     ON memory_review_items (owner_id, resolved_memory_id)
     WHERE resolved_memory_id IS NOT NULL;
+
+-- pending review 语义去重：按 owner+type 检索有 embedding 的 pending 候选，
+-- 用余弦相似度判断是否与待建候选语义重复（< 0.05 距离 ≈ >0.95 相似）。
+CREATE INDEX memory_review_items_pending_embedding_idx
+    ON memory_review_items (owner_id, memory_type)
+    WHERE status = 'pending' AND embedding IS NOT NULL;
 
 CREATE INDEX memory_review_items_maintenance_idx
     ON memory_review_items (valid_until, created_at, owner_id, review_id)
@@ -685,5 +692,7 @@ CREATE TABLE memory_team_extraction_runs (
     cluster_count INTEGER NOT NULL DEFAULT 0,
     candidate_count INTEGER NOT NULL DEFAULT 0,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ
+    completed_at TIMESTAMPTZ,
+    CONSTRAINT memory_team_extraction_runs_team_profile_completed_unique
+        UNIQUE (team_owner_id, profile_id, completed_at)
 );

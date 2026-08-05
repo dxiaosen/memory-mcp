@@ -1767,11 +1767,53 @@ def _extract_team_common(
     min_cluster_size: int,
     run_id: UUID,
 ) -> TeamExtractionResult:
-    """在事务内扫描成员记忆、聚类、写团队 pending review 并记录运行。"""
+    """在事务内扫描成员记忆、聚类、写团队 pending review 并记录运行。
+
+    Run 级幂等：插入 run 行用 ``ON CONFLICT DO NOTHING``，若同 (team, profile,
+    completed_at) 已有 run 则加载其计数直接返回，不重复扫描/聚类/写 pending。
+    """
 
     from uuid import uuid4
 
     members = list(member_owner_ids)
+    # run 级幂等：同 (team, profile, completed_at) 已运行则直接返回既有计数。
+    inserted = connection.execute(
+        """
+        INSERT INTO memory_team_extraction_runs (
+            run_id, team_owner_id, profile_id, status, completed_at
+        ) VALUES (%s, %s, %s, 'completed', %s)
+        ON CONFLICT (team_owner_id, profile_id, completed_at) DO NOTHING
+        RETURNING run_id
+        """,
+        (run_id, team_owner_id, profile_id, effective_at),
+    ).fetchone()
+    if inserted is None:
+        existing = connection.execute(
+            """
+            SELECT member_count, memory_count, cluster_count, candidate_count
+            FROM memory_team_extraction_runs
+            WHERE team_owner_id = %s AND profile_id = %s AND completed_at = %s
+            """,
+            (team_owner_id, profile_id, effective_at),
+        ).fetchone()
+        if existing is not None:
+            return TeamExtractionResult(
+                team_owner_id=team_owner_id,
+                member_count=existing["member_count"],
+                memory_count=existing["memory_count"],
+                cluster_count=existing["cluster_count"],
+                candidate_count=existing["candidate_count"],
+                completed_at=effective_at,
+            )
+        # 极端情况：冲突但查不到既有行（被并发删除），按零结果返回。
+        return TeamExtractionResult(
+            team_owner_id=team_owner_id,
+            member_count=len(members),
+            memory_count=0,
+            cluster_count=0,
+            candidate_count=0,
+            completed_at=effective_at,
+        )
     # 查成员的个人 active 记忆（含 embedding）
     rows = connection.execute(
         """
@@ -1795,16 +1837,13 @@ def _extract_team_common(
 
     memory_count = len(rows)
     if memory_count == 0:
-        _record_extraction_run(
+        _update_extraction_run_counts(
             connection,
             run_id,
-            team_owner_id,
-            profile_id,
-            len(members),
-            0,
-            0,
-            0,
-            effective_at,
+            member_count=len(members),
+            memory_count=0,
+            cluster_count=0,
+            candidate_count=0,
         )
         return TeamExtractionResult(
             team_owner_id=team_owner_id,
@@ -1857,14 +1896,20 @@ def _extract_team_common(
         # 最长 content
         content = max((m["content"] for m in cluster), key=len)
         memory_type = cluster[0]["memory_type"]
-        # 幂等：已有同 subject+type 的 pending 不重复创建
+        # 幂等：同 subject+type 的 pending 不重复；并按 embedding 余弦相似度
+        # 检测语义重复（距离 < 0.05 视为同义），避免近似候选淹没 pending 列表。
+        cluster_embedding = cluster[0]["embedding"]
         existing = connection.execute(
             """
             SELECT 1 FROM memory_review_items
-            WHERE owner_id = %s AND subject = %s AND memory_type = %s
-              AND status = 'pending'
+            WHERE owner_id = %s AND memory_type = %s AND status = 'pending'
+              AND (
+                  subject = %s
+                  OR (embedding IS NOT NULL
+                      AND embedding <=> %s::vector < 0.05)
+              )
             """,
-            (team_owner_id, subject, memory_type),
+            (team_owner_id, memory_type, subject, cluster_embedding),
         ).fetchone()
         if existing is not None:
             continue
@@ -1901,13 +1946,13 @@ def _extract_team_common(
                 original_time_expression, normalized_time, status,
                 created_at, decided_at, source_role, source_message_id,
                 source_tool_name, verification_status, sensitivity_level,
-                valid_from, valid_until, source_type
+                valid_from, valid_until, source_type, embedding
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, NULL, NULL, 'pending',
                 %s, NULL, NULL, NULL, NULL, %s, %s,
-                %s, %s, %s
+                %s, %s, %s, %s::vector
             )
             """,
             (
@@ -1935,20 +1980,18 @@ def _extract_team_common(
                 valid_from,
                 valid_until,
                 "conversation",
+                cluster_embedding,
             ),
         )
         candidate_count += 1
 
-    _record_extraction_run(
+    _update_extraction_run_counts(
         connection,
         run_id,
-        team_owner_id,
-        profile_id,
-        len(members),
-        memory_count,
-        len(valid_clusters),
-        candidate_count,
-        effective_at,
+        member_count=len(members),
+        memory_count=memory_count,
+        cluster_count=len(valid_clusters),
+        candidate_count=candidate_count,
     )
     return TeamExtractionResult(
         team_owner_id=team_owner_id,
@@ -2012,36 +2055,32 @@ def _parse_vector(value) -> list[float]:
     return []
 
 
-def _record_extraction_run(
+def _update_extraction_run_counts(
     connection,
     run_id,
-    team_owner_id: str,
-    profile_id: str,
+    *,
     member_count: int,
     memory_count: int,
     cluster_count: int,
     candidate_count: int,
-    completed_at: datetime,
 ) -> None:
-    """记录一次提取运行。"""
+    """把已插入的 run 行补齐计数（run 行在函数开始时已占位）。"""
 
     connection.execute(
         """
-        INSERT INTO memory_team_extraction_runs (
-            run_id, team_owner_id, profile_id, status,
-            member_count, memory_count, cluster_count, candidate_count,
-            started_at, completed_at
-        ) VALUES (%s, %s, %s, 'completed', %s, %s, %s, %s, %s, %s)
+        UPDATE memory_team_extraction_runs
+        SET member_count = %s,
+            memory_count = %s,
+            cluster_count = %s,
+            candidate_count = %s,
+            started_at = completed_at
+        WHERE run_id = %s
         """,
         (
-            run_id,
-            team_owner_id,
-            profile_id,
             member_count,
             memory_count,
             cluster_count,
             candidate_count,
-            completed_at,
-            completed_at,
+            run_id,
         ),
     )

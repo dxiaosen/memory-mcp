@@ -21,9 +21,12 @@ uv sync --all-packages --frozen
 # 静态检查与测试
 uv run ruff check .
 uv run pytest -q            # 12 skipped 属正常（真实 PostgreSQL 契约测试需显式 DB）
+uv run pytest -m unit -q    # 仅 unit 层（秒级）
+uv run pytest -m contract -q  # 仅 contract 层
+uv run pytest -m integration -q  # 仅 integration 层
 
 # 真实 PostgreSQL 契约测试（可选，需显式设置，库名必须含 "test"）
-MEMORY_MCP_TEST_DATABASE_URL=postgres://... uv run pytest tests/core/test_postgresql_contract.py
+MEMORY_MCP_TEST_DATABASE_URL=postgres://... uv run pytest tests/contract/test_postgresql_contract.py
 
 # OpenSpec 规范校验
 openspec-cn validate <change-name> --strict

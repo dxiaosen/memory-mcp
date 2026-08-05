@@ -76,6 +76,7 @@ class InMemoryMemoryRepository:
         self._capture_lock = Lock()
         self._relation_lock = Lock()
         self._id_factory = uuid4
+        self._team_extraction_runs: dict[tuple[str, str, datetime], TeamExtractionResult] = {}
 
     def register_profile(self, profile: MemoryProfile) -> None:
         """注册 profile 的 memory_type 和 relation policy 配置。"""
@@ -252,6 +253,29 @@ class InMemoryMemoryRepository:
             recent_count=len(recent),
         )
 
+    def find_recall_candidates_by_ids(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        effective_at: datetime,
+    ) -> tuple[MemoryRecallCandidate, ...]:
+        """按 memory_id 集合加载可见的当前活动候选（关系感知召回补漏用）。"""
+
+        requested = frozenset(memory_ids)
+        owner_ids = principal.visible_owner_ids
+        return tuple(
+            MemoryRecallCandidate(
+                item=record.item,
+                current_revision=record.current_revision,
+            )
+            for record in self._records.values()
+            if record.item.memory_id in requested
+            and record.item.owner_id in owner_ids
+            and record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+            and _is_effective(record.current_revision, effective_at)
+        )
+
     def load_recall_evidence(
         self,
         principal: PrincipalContext,
@@ -394,12 +418,18 @@ class InMemoryMemoryRepository:
         语义与 PostgreSQL 版本对齐：仅纳入有 embedding 的 active/effective 成员
         记忆；按 memory_type 分组后贪心聚类；簇内聚合 subject/content/
         assertion/sensitivity/validity，confidence 取不同 owner 数 / 成员数；
-        同 subject+type 的已有团队 pending 不重复创建。
+        同 subject+type 的已有团队 pending 不重复创建。Run 级幂等：同
+        (team, profile, effective_at) 已运行则直接返回既有计数，不重复扫描。
         """
 
         members = list(member_owner_ids)
+        # run 级幂等：同 (team, profile, effective_at) 已运行则返回既有计数。
+        run_key = (team_owner_id, profile_id, effective_at)
+        existing_run = self._team_extraction_runs.get(run_key)
+        if existing_run is not None:
+            return existing_run
         if not members:
-            return TeamExtractionResult(
+            result = TeamExtractionResult(
                 team_owner_id=team_owner_id,
                 member_count=0,
                 memory_count=0,
@@ -407,6 +437,8 @@ class InMemoryMemoryRepository:
                 candidate_count=0,
                 completed_at=effective_at,
             )
+            self._team_extraction_runs[run_key] = result
+            return result
         eligible: list[dict[str, object]] = []
         for record in self._records.values():
             if record.item.owner_id not in members:
@@ -476,6 +508,9 @@ class InMemoryMemoryRepository:
             subject = max(set(subjects), key=subjects.count)
             content = max((m["content"] for m in cluster), key=len)
             memory_type = cluster[0]["memory_type"]
+            # 幂等：同 subject+type 的 pending 不重复创建。
+            # 注：生产 PostgreSQL 版本额外按 embedding 余弦距离做语义去重，
+            # in_memory 版本因 Candidate 无 embedding 字段只做精确 subject 匹配。
             already_pending = any(
                 review.owner_id == team_owner_id
                 and review.candidate.subject == subject
@@ -510,7 +545,7 @@ class InMemoryMemoryRepository:
             self._reviews[review.review_id] = review
             candidate_count += 1
 
-        return TeamExtractionResult(
+        result = TeamExtractionResult(
             team_owner_id=team_owner_id,
             member_count=len(members),
             memory_count=memory_count,
@@ -518,6 +553,8 @@ class InMemoryMemoryRepository:
             candidate_count=candidate_count,
             completed_at=effective_at,
         )
+        self._team_extraction_runs[run_key] = result
+        return result
 
     def revoke(
         self,

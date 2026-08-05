@@ -83,7 +83,11 @@ class AlternateMemoryProfile:
 
 
 class FakeCandidateExtractor:
-    """记录请求并返回预设候选的离线结构化抽取器。"""
+    """记录请求并返回预设候选的离线结构化抽取器。
+
+    每次 ``extract`` 返回构造时传入的全部 proposals（适合单轮捕获）。
+    多轮捕获逐条产出用 :class:`SequentialCandidateExtractor`。
+    """
 
     model_id = "fake-structured-model"
     prompt_version = "capture-prompt-v1"
@@ -107,6 +111,31 @@ class FakeCandidateExtractor:
         if len(self.requests) <= self.failures_before_success:
             raise RuntimeError("temporary model interruption")
         return self.proposals
+
+
+class SequentialCandidateExtractor:
+    """每次 extract 返回预设队列的下一条候选，模拟多轮捕获逐条产出。
+
+    与 :class:`FakeCandidateExtractor` 互补：后者每次返回全部 proposals，
+    本类按调用顺序逐条弹出，适合需要多轮不同候选的端到端场景。
+    """
+
+    model_id = "fake-structured-model"
+    prompt_version = "capture-prompt-v1"
+    schema_version = "candidate-v1"
+
+    def __init__(self, proposals: tuple[CandidateProposal, ...]) -> None:
+        self._queue = list(proposals)
+        self.requests: list[ExtractionRequest] = []
+
+    def extract(
+        self,
+        request: ExtractionRequest,
+    ) -> tuple[CandidateProposal, ...]:
+        self.requests.append(request)
+        if not self._queue:
+            return ()
+        return (self._queue.pop(0),)
 
 
 class FakeRelationExtractor:

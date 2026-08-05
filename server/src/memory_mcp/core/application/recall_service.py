@@ -142,6 +142,34 @@ class RecallService:
             )
             for record in candidates
         }
+        # 关系感知补漏：把被已过阈值的候选引用、但未进入候选集的关系端点
+        # 拉入候选，使其能经关系加成进入结果（语义相关但字面不重叠的记忆）。
+        expanded, promoted = self._relation_expanded_candidates(
+            principal,
+            candidate_ids=candidate_ids,
+            base_scores=base_scores,
+            relations_by_memory=relations_by_memory,
+            effective_at=effective_at,
+        )
+        if expanded or promoted:
+            for record in expanded:
+                candidate_ids = candidate_ids | {record.item.memory_id}
+                base_scores[record.item.memory_id] = _RELEVANCE_THRESHOLD
+                candidates = (*candidates, record)
+            for memory_id in promoted:
+                base_scores[memory_id] = _RELEVANCE_THRESHOLD
+            expanded_ids = frozenset(r.item.memory_id for r in expanded) | promoted
+            if expanded_ids:
+                expanded_relations = self._repository.list_relations(
+                    principal,
+                    memory_ids=tuple(expanded_ids),
+                    active_only=True,
+                    effective_at=effective_at,
+                )
+                relations_by_memory = _group_relations(
+                    (*relation_summaries, *expanded_relations),
+                    candidate_ids,
+                )
         ranked = tuple(
             sorted(
                 (
@@ -272,6 +300,52 @@ class RecallService:
                 truncated=truncated or len(selected) < len(relevant),
             )
         )
+
+    def _relation_expanded_candidates(
+        self,
+        principal: PrincipalContext,
+        *,
+        candidate_ids: frozenset[UUID],
+        base_scores: Mapping[UUID, float],
+        relations_by_memory: Mapping[UUID, Sequence[MemoryRelationSummary]],
+        effective_at: datetime,
+    ) -> tuple[tuple[MemoryRecallCandidate, ...], frozenset[UUID]]:
+        """语义关系召回补漏：把被已过阈值候选引用的关系端点补入/提升。
+
+        返回 (new_records, promote_ids)：
+        - new_records：不在候选集内的关系端点，需新增进候选集；
+        - promote_ids：已在候选集内但 base_score 低于阈值的关系端点，需把其
+          base_score 提升到阈值，使其能经关系加成进入结果。
+
+        仅当引用端的 base_score 已达到阈值时才补漏其关系对端，保证补漏的候选
+        有一个已相关的邻居作为锚点。
+        """
+
+        related_ids: set[UUID] = set()
+        for memory_id, score in base_scores.items():
+            if score < _RELEVANCE_THRESHOLD:
+                continue
+            for summary in relations_by_memory.get(memory_id, ()):
+                related_ids.add(summary.related_memory_id)
+        if not related_ids:
+            return (), frozenset()
+        new_ids = related_ids - candidate_ids
+        promote_ids = frozenset(
+            mid
+            for mid in (related_ids & candidate_ids)
+            if base_scores.get(mid, 0.0) < _RELEVANCE_THRESHOLD
+        )
+        if not new_ids and not promote_ids:
+            return (), frozenset()
+        loaded = self._repository.find_recall_candidates_by_ids(
+            principal,
+            memory_ids=tuple(new_ids),
+            effective_at=effective_at,
+        )
+        new_records = tuple(
+            record for record in loaded if record.item.memory_id not in candidate_ids
+        )
+        return new_records, promote_ids
 
     def _compute_query_embedding(self, search_text: str) -> tuple[float, ...] | None:
         """计算查询向量；embedding provider 不可用或失败时返回 None（降级为两路）。"""
@@ -500,11 +574,14 @@ def _group_relations(
     relations: Sequence[MemoryRelationSummary],
     candidate_ids: frozenset[UUID],
 ) -> dict[UUID, tuple[MemoryRelationSummary, ...]]:
-    """把关系按其当前端点分组，只保留对端也落入候选集合的关系。"""
+    """把关系按其当前端点分组。
+
+    不再按"对端在候选集内"过滤：关系感知召回需要看到对端不在候选集内的关系
+    才能补漏（语义关系召回）。渲染时 ``_render_item`` 会单独按已选集合过滤，
+    保证只展示指向已选记忆的关系，不产生前向引用。
+    """
     grouped: dict[UUID, list[MemoryRelationSummary]] = {}
     for summary in relations:
-        if summary.related_memory_id not in candidate_ids:
-            continue
         current_memory_id = (
             summary.relation.source_memory_id
             if summary.direction is RelationDirection.OUTGOING

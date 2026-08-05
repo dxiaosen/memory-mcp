@@ -10,7 +10,7 @@ from memory_mcp.core.adapters.postgresql.mapping import (
     to_evidence,
     to_recall_candidate,
 )
-from memory_mcp.core.domain import Evidence, PrincipalContext
+from memory_mcp.core.domain import Evidence, MemoryRecallCandidate, PrincipalContext
 from memory_mcp.core.ports import RecallCandidateSet
 
 _RECORD_FIELDS = """
@@ -356,3 +356,33 @@ def load_recall_evidence(
     for row in rows:
         grouped.setdefault(as_uuid(row["revision_id"]), []).append(to_evidence(row))
     return {revision_id: tuple(sources) for revision_id, sources in grouped.items()}
+
+
+def find_recall_candidates_by_ids(
+    connection,
+    principal: PrincipalContext,
+    *,
+    memory_ids: Sequence[UUID],
+    effective_at: datetime,
+) -> tuple[MemoryRecallCandidate, ...]:
+    """按 memory_id 集合加载可见的当前活动候选（关系感知召回补漏用）。
+
+    retrieval_score 固定为 0，由 RecallService 按关系加成提升。
+    """
+
+    if not memory_ids:
+        return ()
+    owner_ids = list(principal.visible_owner_ids)
+    rows = connection.execute(
+        f"""
+        SELECT {_RECORD_FIELDS}
+        {_CURRENT_JOIN}
+        WHERE i.owner_id = ANY(%s)
+          AND i.memory_id = ANY(%s)
+          AND r.lifecycle_status = 'active'
+          AND r.valid_from <= %s
+          AND (r.valid_until IS NULL OR r.valid_until > %s)
+        """,
+        (owner_ids, [str(mid) for mid in memory_ids], effective_at, effective_at),
+    ).fetchall()
+    return tuple(to_recall_candidate(row) for row in rows)

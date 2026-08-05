@@ -9,6 +9,12 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
+markers = [
+    "unit: pure domain/function/rule tests with no I/O",
+    "contract: Port protocol contract tests (Repository/Extractor/Profile/Guard)",
+    "integration: cross-layer tests (MCP transport, PostgreSQL, transactions)",
+    "evaluation: offline/live quality evaluation, not functional tests",
+]
 
 [tool.ruff]
 line-length = 88

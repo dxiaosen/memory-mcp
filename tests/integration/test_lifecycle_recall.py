@@ -1043,7 +1043,17 @@ def test_recall_uses_only_bounded_relations_between_relevant_candidates() -> Non
             token_budget=600,
         ),
     )
-    assert [item.memory_id for item in unrelated.items] == [source.item.memory_id]
+    # 关系感知召回补漏（#1）：source 命中查询，其关系端点 target 即使与查询
+    # 词法不匹配也经关系补漏进入结果（语义相关但字面不重叠）。
+    assert set(item.memory_id for item in unrelated.items) == {
+        source.item.memory_id,
+        target.item.memory_id,
+    }
+    assert source.item.memory_id in [item.memory_id for item in unrelated.items]
+    assert any(
+        item.memory_id == target.item.memory_id and item.relations
+        for item in unrelated.items
+    )
 
 
 class _BlockingExtractor(FakeCandidateExtractor):

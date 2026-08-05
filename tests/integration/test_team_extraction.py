@@ -142,7 +142,7 @@ def test_similar_member_memories_cluster_into_team_pending() -> None:
 
 
 def test_idempotent_second_run_does_not_duplicate_pending() -> None:
-    """第二次提取相同相似记忆不重复创建 pending。"""
+    """同一 (team, profile, effective_at) 的第二次提取直接返回既有计数，不重复扫描/创建。"""
 
     repository = _repo_with_members()
     for owner in _MEMBERS[:2]:
@@ -165,8 +165,10 @@ def test_idempotent_second_run_does_not_duplicate_pending() -> None:
     )
     first = repository.extract_team_common_memories(**args)
     second = repository.extract_team_common_memories(**args)
+    # run 级幂等：第二次返回与第一次相同的计数（no-op，不重新扫描/聚类/写 pending）。
     assert first.candidate_count == 1
-    assert second.candidate_count == 0
+    assert second.candidate_count == first.candidate_count
+    assert second.memory_count == first.memory_count
     assert (
         len(
             repository.list_reviews(
