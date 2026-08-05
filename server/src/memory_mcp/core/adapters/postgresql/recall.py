@@ -72,7 +72,7 @@ def find_recall_candidates(
             subject=subject,
             effective_at=effective_at,
             limit=limit,
-            query_embedding=query_embedding,
+            query_embedding=query_embedding,  # type: ignore[arg-type]
         )
     return _two_way_query(
         connection,

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from threading import Lock
+from typing import Any
 from uuid import UUID, uuid4
 
 from memory_mcp.core.domain import (
@@ -439,7 +440,7 @@ class InMemoryMemoryRepository:
             )
             self._team_extraction_runs[run_key] = result
             return result
-        eligible: list[dict[str, object]] = []
+        eligible: list[dict[str, Any]] = []
         for record in self._records.values():
             if record.item.owner_id not in members:
                 continue
@@ -488,10 +489,10 @@ class InMemoryMemoryRepository:
                 str(e["memory_id"]),
             ),
         )
-        groups: dict[str, list[dict[str, object]]] = {}
+        groups: dict[str, list[dict[str, Any]]] = {}
         for entry in eligible:
             groups.setdefault(entry["memory_type"], []).append(entry)
-        clusters: list[list[dict[str, object]]] = []
+        clusters: list[list[dict[str, Any]]] = []
         for group in groups.values():
             clusters.extend(_greedy_cluster(group, similarity_threshold))
         # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室。
@@ -1481,13 +1482,13 @@ def _stale_revoked_relations(
 
 
 def _greedy_cluster(
-    memories: list[dict[str, object]],
+    memories: list[dict[str, Any]],
     threshold: float,
-) -> list[list[dict[str, object]]]:
+) -> list[list[dict[str, Any]]]:
     """按 embedding 余弦相似度贪心归簇，语义与 PostgreSQL 版本一致。"""
 
     assigned = [False] * len(memories)
-    clusters: list[list[dict[str, object]]] = []
+    clusters: list[list[dict[str, Any]]] = []
     for index, memory in enumerate(memories):
         if assigned[index]:
             continue
@@ -1534,7 +1535,7 @@ def _parse_embedding(value: tuple[float, ...] | None) -> list[float]:
 
 
 def _team_candidate_from_cluster(
-    cluster: list[dict[str, object]],
+    cluster: list[dict[str, Any]],
     *,
     team_owner_id: str,
     profile_id: str,
@@ -1591,7 +1592,7 @@ def _team_candidate_from_cluster(
 
 
 def _cluster_mode(
-    cluster: list[dict[str, object]],
+    cluster: list[dict[str, Any]],
     field: str,
     enum: type,
 ) -> object:

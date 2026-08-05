@@ -332,6 +332,7 @@ def evaluate_dataset(
         suite_counts[case.suite][1] += 1
 
         if isinstance(case, CandidateCase | RelationCase):
+            assert model_predictions is not None
             predicted = model_predictions[case.id]
             if not isinstance(predicted, frozenset):
                 raise ValueError(f"prediction for {case.id} must be a label set")

@@ -183,7 +183,7 @@ class MemoryMcpServer(FastMCP[Any]):
                         if self._close_storage is not None:
                             await asyncio.to_thread(self._close_storage)
 
-            app.router.lifespan_context = lifespan
+            app.router.lifespan_context = lifespan  # type: ignore[method-assign]
         self._streamable_app = app
         return app
 

@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -289,7 +289,7 @@ class MemoryView(MemorySummaryView):
         )
 
 
-def _memory_summary_values(record: MemoryRecord) -> dict[str, object]:
+def _memory_summary_values(record: MemoryRecord) -> dict[str, Any]:
     revision = record.current_revision
     return {
         "memory_id": record.item.memory_id,

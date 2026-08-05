@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from memory_mcp.core.application.admission import (
@@ -525,7 +526,7 @@ def _source_metadata(
     turn: TurnEnvelope,
     source_expression: str,
     guard: SensitiveContentGuard,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """从可信消息块派生候选的来源身份（角色、消息 ID 等），不信任模型自报字段。"""
 
     matching: list[TurnMessage] = []

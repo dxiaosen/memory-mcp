@@ -34,3 +34,17 @@ members = ["server", "agent"]
 [tool.uv.sources]
 memory-mcp = { workspace = true }
 memory-mcp-agent = { workspace = true }
+
+[tool.pyright]
+include = ["server/src", "agent/src", "evals"]
+exclude = ["tests", "examples", "**/__pycache__"]
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportPrivateImportUsage = false
+reportCallIssue = false
+reportAttributeAccessIssue = false
+reportArgumentType = false

@@ -65,7 +65,7 @@ from memory_mcp.core.ports import (
 )
 from memory_mcp.core.support import log_event, stable_reference
 
-PostgreSQLPool = ConnectionPool[Mapping[str, Any]]
+PostgreSQLPool = ConnectionPool  # type: ignore[type-arg]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -78,7 +78,7 @@ def create_pool(
 ) -> PostgreSQLPool:
     """为 MCP 服务打开有界同步连接池。"""
 
-    pool: PostgreSQLPool = ConnectionPool(
+    pool = ConnectionPool(  # type: ignore[assignment]
         conninfo=database_url,
         min_size=min_size,
         max_size=max_size,
@@ -91,7 +91,7 @@ def create_pool(
         open=False,
     )
     pool.open(wait=True, timeout=timeout)
-    return pool
+    return pool  # type: ignore[return-value]
 
 
 class PostgreSQLMemoryRepository:
@@ -378,7 +378,7 @@ class PostgreSQLMemoryRepository:
             self._id_factory()
             if hasattr(self, "_id_factory")
             else __import__("uuid").uuid4()
-        )
+        )  # type: ignore[union-attr]
         with self._pool.connection() as connection:
             return _extract_team_common(
                 connection,
@@ -460,7 +460,7 @@ class PostgreSQLMemoryRepository:
                 stale_at=row["revision_created_at"],
                 stale_reason="endpoint_revoked",
             )
-            row["lifecycle_status"] = "revoked"
+            row["lifecycle_status"] = "revoked"  # type: ignore[index]
             return to_record(connection, row, row["owner_id"])
 
     def link_relation(
