@@ -25,4 +25,22 @@ class EmbeddingProvider(Protocol):
         ...
 
 
-__all__ = ["EmbeddingProvider"]
+def embed_single(
+    provider: EmbeddingProvider | None,
+    text: str,
+) -> tuple[float, ...] | None:
+    """计算单条文本的 embedding；provider 为空时返回 None。
+
+    底层 ``embed`` 抛出的异常向上传播，由调用方决定降级与可观测性策略；
+    返回 None 但底层未抛异常时，表示返回的向量序列不符合预期。
+    """
+
+    if provider is None:
+        return None
+    vectors = provider.embed((text,))
+    if vectors and len(vectors) == 1:
+        return vectors[0]
+    return None
+
+
+__all__ = ["EmbeddingProvider", "embed_single"]

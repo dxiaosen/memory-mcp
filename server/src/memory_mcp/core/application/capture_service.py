@@ -381,32 +381,33 @@ class CaptureService:
                 relations=relation_plan.relations,
             ),
         )
+        persisted = not committed.replayed
         log_content_event(
             "memory.capture.persisted",
             capture=asdict(committed),
-            duplicate_evidence=tuple(
-                asdict(write) for write in processed.duplicate_evidence
-            )
-            if not committed.replayed
-            else (),
+            duplicate_evidence=(
+                tuple(asdict(write) for write in processed.duplicate_evidence)
+                if persisted
+                else ()
+            ),
             memories=(
                 tuple(asdict(memory) for memory in processed.memories)
-                if not committed.replayed
+                if persisted
                 else ()
             ),
             replacements=(
                 tuple(asdict(write) for write in processed.replacements)
-                if not committed.replayed
+                if persisted
                 else ()
             ),
             relations=(
                 tuple(asdict(relation) for relation in relation_plan.relations)
-                if not committed.replayed
+                if persisted
                 else ()
             ),
             reviews=(
                 tuple(asdict(review) for review in processed.reviews)
-                if not committed.replayed
+                if persisted
                 else ()
             ),
         )

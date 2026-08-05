@@ -10,7 +10,7 @@ from memory_mcp.core.ports.capture import (
     SensitiveContentGuard,
     SensitiveInspection,
 )
-from memory_mcp.core.ports.embedding import EmbeddingProvider
+from memory_mcp.core.ports.embedding import EmbeddingProvider, embed_single
 from memory_mcp.core.ports.profiles import (
     MemoryMetadataPolicy,
     MemoryProfile,
@@ -45,5 +45,6 @@ __all__ = [
     "ReplacementWrite",
     "SensitiveContentGuard",
     "SensitiveInspection",
+    "embed_single",
     "profile_fingerprint",
 ]

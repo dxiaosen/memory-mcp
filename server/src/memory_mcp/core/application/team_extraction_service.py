@@ -7,7 +7,7 @@ from time import perf_counter
 
 from memory_mcp.core.domain import TeamExtractionResult
 from memory_mcp.core.ports import MemoryRepository, ProfileRegistry
-from memory_mcp.logging import log_event
+from memory_mcp.logging import log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class TeamExtractionService:
                 _LOGGER,
                 logging.INFO,
                 "memory.team_extraction.completed",
-                team_owner_ref=_stable_ref(team_owner_id),
+                team_owner_ref=stable_reference(team_owner_id),
                 member_count=result.member_count,
                 memory_count=result.memory_count,
                 cluster_count=result.cluster_count,
@@ -74,11 +74,3 @@ class TeamExtractionService:
             total_candidates=sum(r.candidate_count for r in results),
         )
         return tuple(results)
-
-
-def _stable_ref(owner_id: str) -> str:
-    """生成 owner 的稳定短引用用于日志。"""
-
-    import hashlib
-
-    return hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:12]

@@ -1,5 +1,6 @@
 """候选记忆处理：校验模型建议、执行准入决策、产出记忆写入与待确认项。"""
 
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ from memory_mcp.core.ports import (
     ProfileRegistry,
     ReplacementWrite,
     SensitiveContentGuard,
+    embed_single,
 )
 
 _EXPLICIT_REPLACEMENT = re.compile(
@@ -200,17 +202,11 @@ class CandidateMaterializer:
         )
 
     def _compute_embedding(self, content: str) -> tuple[float, ...] | None:
-        """计算 content 的 embedding；provider 不可用时返回 None。"""
+        """计算 content 的 embedding；provider 不可用或失败时返回 None。"""
 
-        if self._embedding_provider is None:
-            return None
         try:
-            vectors = self._embedding_provider.embed((content,))
-            if vectors and len(vectors) == 1:
-                return vectors[0]
+            return embed_single(self._embedding_provider, content)
         except Exception as exc:
-            import logging
-
             logging.getLogger(__name__).warning(
                 "embedding computation failed: %s: %s",
                 type(exc).__name__,

@@ -28,6 +28,7 @@ from memory_mcp.core.ports import (
     MemoryRepository,
     ProfileRegistry,
     SensitiveContentGuard,
+    embed_single,
 )
 from memory_mcp.logging import log_content_event, log_event
 
@@ -134,6 +135,7 @@ class RecallService:
             record.item.memory_id: _score_record(
                 record,
                 query,
+                search_text,
                 profile.recall_priorities,
                 profile.recall_hints,
                 self._tokenizer,
@@ -235,19 +237,13 @@ class RecallService:
             used_tokens = prospective_tokens
 
         if not selected:
+            no_context_tokens = _estimate_tokens(_NO_RELEVANT_CONTEXT)
+            fits_budget = no_context_tokens <= query.token_budget
             return _traced_result(
                 RecallResult(
                     items=(),
-                    rendered_context=(
-                        _NO_RELEVANT_CONTEXT
-                        if _estimate_tokens(_NO_RELEVANT_CONTEXT) <= query.token_budget
-                        else ""
-                    ),
-                    estimated_tokens=(
-                        _estimate_tokens(_NO_RELEVANT_CONTEXT)
-                        if _estimate_tokens(_NO_RELEVANT_CONTEXT) <= query.token_budget
-                        else 0
-                    ),
+                    rendered_context=_NO_RELEVANT_CONTEXT if fits_budget else "",
+                    estimated_tokens=no_context_tokens if fits_budget else 0,
                     token_budget=query.token_budget,
                     truncated=True,
                 )
@@ -278,14 +274,10 @@ class RecallService:
         )
 
     def _compute_query_embedding(self, search_text: str) -> tuple[float, ...] | None:
-        """计算查询向量；embedding provider 不可用时返回 None（降级为两路）。"""
+        """计算查询向量；embedding provider 不可用或失败时返回 None（降级为两路）。"""
 
-        if self._embedding_provider is None:
-            return None
         try:
-            vectors = self._embedding_provider.embed((search_text,))
-            if vectors and len(vectors) == 1:
-                return vectors[0]
+            return embed_single(self._embedding_provider, search_text)
         except Exception as exc:
             log_event(
                 _LOGGER,
@@ -337,14 +329,12 @@ def _traced_result(result: RecallResult) -> RecallResult:
 def _score_record(
     record: MemoryRecallCandidate,
     query: RecallQuery,
+    search_text: str,
     priorities: Mapping[str, int],
     recall_hints: Mapping[str, frozenset[str]],
     tokenizer: MemoryTokenizer,
 ) -> float:
     """计算一条记忆的基础相关性分数：文本相关性 + Profile 信号 + subject 精确命中。"""
-    search_text = " ".join(
-        value for value in (query.query, query.task_intent) if value is not None
-    )
     target_text = " ".join(
         (
             record.item.subject,
