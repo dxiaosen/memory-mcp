@@ -9,7 +9,7 @@
 - [x] 2.1 `core/ports/embedding.py` 定义 `EmbeddingProvider` 协议（含共享辅助 `embed_single`）。
 - [x] 2.2 `extraction/embedding.py` 实现 `QwenEmbeddingProvider`（DashScope /v1/embeddings）。
 - [x] 2.3 `extraction/settings.py` 新增 embedding 配置项。
-- [ ] 2.4 导出新类型到 `core.ports.__init__` 和 `core.__init__`。已导出至 `core.ports.__init__`，但 `core/__init__.py` 与 `core.__all__` 尚未导出 `EmbeddingProvider`/`embed_single`——与其余 ports 导出风格不一致，待补。
+- [x] 2.4 导出新类型到 `core.ports.__init__` 和 `core.__init__`（`EmbeddingProvider`/`embed_single` 已在两处与 `__all__` 导出）。
 
 ## 3. capture 写入 embedding
 
@@ -35,11 +35,11 @@
 
 ## 6. 测试与评测
 
-- [ ] 6.1 单元测试：embedding provider mock + 三路召回逻辑（代码已实现向量路，但测试套件尚无向量/embedding 专项用例）。
+- [x] 6.1 单元测试：embedding provider mock + 三路召回逻辑（`tests/core/test_recall_vector.py` 覆盖 `embed_single`、查询向量下推、降级）。
 - [ ] 6.2 评测：加一个语义召回 case（"看好新能源"↔"锂电池前景"）。
-- [ ] 6.3 降级测试：embedding API 不可用时退化为两路（无专项测试，仅靠 provider 返回 None 的隐式路径）。
-- [ ] 6.4 真实 DB 契约测试：pgvector 查询执行。
-- [x] 6.5 跑全量 pytest + evals 确认不回退。
+- [x] 6.3 降级测试：embedding API 不可用时退化为两路（`test_recall_degrades_to_two_paths_without_provider`、`test_recall_degrades_when_embedding_provider_fails`）。
+- [ ] 6.4 真实 DB 契约测试：pgvector 查询执行（需显式 PostgreSQL）。
+- [x] 6.5 跑全量 pytest + evals 确认不回退（201 passed）。
 
 ## 7. 文档
 

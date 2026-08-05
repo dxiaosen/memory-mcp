@@ -188,19 +188,25 @@ flowchart TD
 
 ### 3.2 依赖图与守卫
 
-```text
-memory_mcp.app / tools ──────────┐
-memory_mcp.profiles ─────────────┼──> core.application
-postgresql / extraction adapter ─┘           │
-                                             ▼
-                                  core.domain / core.ports
-
-memory_mcp_agent ── 最小 JSON-RPC/HTTP ──> memory_mcp
+```mermaid
+flowchart TD
+    APP["memory_mcp.app / tools / auth / settings"]
+    PROF["memory_mcp.profiles"]
+    ADAPT["postgresql / extraction / sensitive / tokenizer 适配层"]
+    APPSUP["core.support (logging / exceptions)"]
+    APP --> CORE
+    PROF --> CORE
+    ADAPT --> CORE
+    APP -.别名.-> APPSUP
+    CORE["core.application → core.ports → core.domain"]
+    CORE --> APPSUP
+    AGENT["memory_mcp_agent"] -.最小 JSON-RPC/HTTP.-> APP
 ```
 
 | 约束 | 说明 |
 | --- | --- |
-| Domain/Application/Ports 不导入 | MCP、HTTP、LangChain、psycopg、settings |
+| Domain/Application/Ports 不导入 | MCP、HTTP、LangChain、psycopg、settings、根包非 core 模块 |
+| Core 自包含的日志/异常 | 实现在 `core/support/`，根包 `memory_mcp.logging`/`exceptions` 是传输层别名 |
 | Server 只调用 Application 或公开 Port | 不直接执行 SQL |
 | Agent Client 不导入 | Server、Core、完整 MCP SDK、LangChain、psycopg |
 | Server 生产依赖不含 Agent 发行包 | 双向隔离 |
@@ -246,7 +252,7 @@ memory-mcp/
 | CaptureService | 保留公共用例入口 |
 | `memory_mcp_agent` | 单独 distribution（远程消费者，不是服务端插件） |
 | `db.py` | migration/health 运维入口 |
-| `logging.py` | 横切基础设施放在包根 |
+| `core/support` | 日志与异常基类实现，使 Core 自包含；根包 `logging.py`/`exceptions.py` 是传输层别名 |
 
 ## 4. 领域模型
 

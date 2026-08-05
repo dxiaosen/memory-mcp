@@ -493,6 +493,29 @@ def test_value_error_maps_to_invalid_event() -> None:
     assert retryable is False
 
 
+def test_timeout_error_maps_to_retryable() -> None:
+    """TimeoutError 标记为可重试的临时不可用。"""
+
+    from memory_mcp.errors import ErrorCode
+    from memory_mcp.tools.shared import _map_error
+
+    code, _message, retryable = _map_error(TimeoutError("request timed out"))
+    assert code is ErrorCode.TEMPORARILY_UNAVAILABLE
+    assert retryable is True
+
+
+def test_asyncio_timeout_error_maps_to_retryable() -> None:
+    """asyncio.TimeoutError 同样映射为可重试。"""
+
+
+    from memory_mcp.errors import ErrorCode
+    from memory_mcp.tools.shared import _map_error
+
+    code, _message, retryable = _map_error(TimeoutError())
+    assert code is ErrorCode.TEMPORARILY_UNAVAILABLE
+    assert retryable is True
+
+
 def test_maintenance_loop_backs_off_after_consecutive_has_more() -> None:
     """连续 has_more 超过软上限时插入退避延迟，避免紧密循环。"""
 

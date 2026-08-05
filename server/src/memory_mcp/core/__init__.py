@@ -78,6 +78,7 @@ from memory_mcp.core.ports import (
     CandidateExtractor,
     CaptureWrite,
     DuplicateEvidenceWrite,
+    EmbeddingProvider,
     ExtractionRequest,
     MemoryMetadataPolicy,
     MemoryProfile,
@@ -90,6 +91,7 @@ from memory_mcp.core.ports import (
     ReplacementWrite,
     SensitiveContentGuard,
     SensitiveInspection,
+    embed_single,
     profile_fingerprint,
 )
 
@@ -113,6 +115,7 @@ __all__ = [
     "ConservativeAdmissionPolicy",
     "CreateMemoryCommand",
     "DuplicateEvidenceWrite",
+    "EmbeddingProvider",
     "Evidence",
     "EvidenceDocument",
     "EvidenceSourceType",
@@ -175,6 +178,7 @@ __all__ = [
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",
+    "embed_single",
     "normalize_memory_text",
     "profile_fingerprint",
     "tokenize_memory_text",

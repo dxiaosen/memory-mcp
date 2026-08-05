@@ -4,14 +4,18 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from threading import Lock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from memory_mcp.core.domain import (
+    AssertionKind,
     Candidate,
+    CandidateDurability,
     CaptureResult,
     CaptureStatus,
     Evidence,
     EvidenceDocument,
+    EvidenceSourceType,
+    ExpressionBasis,
     LifecycleStatus,
     MaintenanceResult,
     MemoryHistoryEntry,
@@ -27,6 +31,9 @@ from memory_mcp.core.domain import (
     RelationStatus,
     ReviewItem,
     ReviewStatus,
+    SensitivityLevel,
+    TeamExtractionResult,
+    VerificationStatus,
     normalize_memory_text,
 )
 from memory_mcp.core.exceptions import (
@@ -68,6 +75,7 @@ class InMemoryMemoryRepository:
         self._relations: dict[UUID, MemoryRelation] = {}
         self._capture_lock = Lock()
         self._relation_lock = Lock()
+        self._id_factory = uuid4
 
     def register_profile(self, profile: MemoryProfile) -> None:
         """注册 profile 的 memory_type 和 relation policy 配置。"""
@@ -369,6 +377,132 @@ class InMemoryMemoryRepository:
                 len(memory_targets) == memory_limit
                 or (review_limit > 0 and len(review_targets) == review_limit)
             ),
+        )
+
+    def extract_team_common_memories(
+        self,
+        *,
+        team_owner_id: str,
+        member_owner_ids: tuple[str, ...],
+        profile_id: str,
+        effective_at: datetime,
+        similarity_threshold: float,
+        min_cluster_size: int,
+    ) -> TeamExtractionResult:
+        """扫描成员个人记忆，用 embedding 余弦相似度聚类并写团队 pending review。
+
+        语义与 PostgreSQL 版本对齐：仅纳入有 embedding 的 active/effective 成员
+        记忆；按 memory_type 分组后贪心聚类；簇内聚合 subject/content/
+        assertion/sensitivity/validity，confidence 取不同 owner 数 / 成员数；
+        同 subject+type 的已有团队 pending 不重复创建。
+        """
+
+        members = list(member_owner_ids)
+        if not members:
+            return TeamExtractionResult(
+                team_owner_id=team_owner_id,
+                member_count=0,
+                memory_count=0,
+                cluster_count=0,
+                candidate_count=0,
+                completed_at=effective_at,
+            )
+        eligible: list[dict[str, object]] = []
+        for record in self._records.values():
+            if record.item.owner_id not in members:
+                continue
+            if record.item.profile_id != profile_id:
+                continue
+            revision = record.current_revision
+            if (
+                revision.lifecycle_status is not LifecycleStatus.ACTIVE
+                or not _is_effective(revision, effective_at)
+                or revision.embedding is None
+            ):
+                continue
+            eligible.append(
+                {
+                    "memory_type": record.item.memory_type,
+                    "memory_id": record.item.memory_id,
+                    "owner_id": record.item.owner_id,
+                    "subject": record.item.subject,
+                    "content": revision.content,
+                    "embedding": revision.embedding,
+                    "assertion_kind": revision.assertion_kind,
+                    "observed_at": revision.observed_at,
+                    "extraction_confidence": revision.extraction_confidence,
+                    "sensitivity_level": revision.sensitivity_level,
+                    "valid_from": revision.valid_from,
+                    "valid_until": revision.valid_until,
+                }
+            )
+
+        memory_count = len(eligible)
+        if memory_count == 0:
+            return TeamExtractionResult(
+                team_owner_id=team_owner_id,
+                member_count=len(members),
+                memory_count=0,
+                cluster_count=0,
+                candidate_count=0,
+                completed_at=effective_at,
+            )
+
+        groups: dict[str, list[dict[str, object]]] = {}
+        for entry in eligible:
+            groups.setdefault(entry["memory_type"], []).append(entry)
+        clusters: list[list[dict[str, object]]] = []
+        for group in groups.values():
+            clusters.extend(_greedy_cluster(group, similarity_threshold))
+        valid_clusters = [c for c in clusters if len(c) >= min_cluster_size]
+
+        candidate_count = 0
+        for cluster in valid_clusters:
+            subjects = [m["subject"] for m in cluster]
+            subject = max(set(subjects), key=subjects.count)
+            content = max((m["content"] for m in cluster), key=len)
+            memory_type = cluster[0]["memory_type"]
+            already_pending = any(
+                review.owner_id == team_owner_id
+                and review.candidate.subject == subject
+                and review.candidate.memory_type == memory_type
+                and review.status is ReviewStatus.PENDING
+                for review in self._reviews.values()
+            )
+            if already_pending:
+                continue
+            unique_owners = len({m["owner_id"] for m in cluster})
+            confidence = round(unique_owners / len(members), 6)
+            candidate = _team_candidate_from_cluster(
+                cluster,
+                team_owner_id=team_owner_id,
+                profile_id=profile_id,
+                subject=subject,
+                content=content,
+                memory_type=memory_type,
+                confidence=confidence,
+                observed_at=effective_at,
+            )
+            review = ReviewItem(
+                review_id=self._id_factory(),
+                candidate=candidate,
+                status=ReviewStatus.PENDING,
+                created_at=effective_at,
+            )
+            self._validate_review(
+                PrincipalContext(team_owner_id),
+                review,
+            )
+            self._reviews[review.review_id] = review
+            candidate_count += 1
+
+        return TeamExtractionResult(
+            team_owner_id=team_owner_id,
+            member_count=len(members),
+            memory_count=memory_count,
+            cluster_count=len(valid_clusters),
+            candidate_count=candidate_count,
+            completed_at=effective_at,
         )
 
     def revoke(
@@ -1254,3 +1388,124 @@ def _stale_revision_relations(
         )
         for relation_id, relation in relations.items()
     }
+
+
+def _greedy_cluster(
+    memories: list[dict[str, object]],
+    threshold: float,
+) -> list[list[dict[str, object]]]:
+    """按 embedding 余弦相似度贪心归簇，语义与 PostgreSQL 版本一致。"""
+
+    assigned = [False] * len(memories)
+    clusters: list[list[dict[str, object]]] = []
+    for index, memory in enumerate(memories):
+        if assigned[index]:
+            continue
+        cluster = [memory]
+        assigned[index] = True
+        for other in range(index + 1, len(memories)):
+            if assigned[other]:
+                continue
+            similarity = _cosine_similarity(
+                memory["embedding"],
+                memories[other]["embedding"],
+            )
+            if similarity >= threshold:
+                cluster.append(memories[other])
+                assigned[other] = True
+        clusters.append(cluster)
+    return clusters
+
+
+def _cosine_similarity(
+    left: tuple[float, ...] | None,
+    right: tuple[float, ...] | None,
+) -> float:
+    """计算两个 embedding 的余弦相似度；缺失或零向量返回 0。"""
+
+    vector_left = _parse_embedding(left)
+    vector_right = _parse_embedding(right)
+    if not vector_left or not vector_right:
+        return 0.0
+    dot = sum(x * y for x, y in zip(vector_left, vector_right, strict=False))
+    norm_left = sum(x * x for x in vector_left) ** 0.5
+    norm_right = sum(x * x for x in vector_right) ** 0.5
+    if norm_left == 0 or norm_right == 0:
+        return 0.0
+    return dot / (norm_left * norm_right)
+
+
+def _parse_embedding(value: tuple[float, ...] | None) -> list[float]:
+    """把内存中的 embedding 元组转为 float 列表。"""
+
+    if value is None:
+        return []
+    return [float(component) for component in value]
+
+
+def _team_candidate_from_cluster(
+    cluster: list[dict[str, object]],
+    *,
+    team_owner_id: str,
+    profile_id: str,
+    subject: str,
+    content: str,
+    memory_type: str,
+    confidence: float,
+    observed_at: datetime,
+) -> Candidate:
+    """从聚类结果聚合出团队 pending 候选，字段选择与 PostgreSQL 版本对齐。"""
+
+    assertion_kind = _cluster_mode(
+        cluster,
+        "assertion_kind",
+        AssertionKind,
+    )
+    sensitivity_level = _cluster_mode(
+        cluster,
+        "sensitivity_level",
+        SensitivityLevel,
+    )
+    valid_from = min(m["valid_from"] for m in cluster)
+    valid_until: datetime | None = None
+    for member in cluster:
+        member_until = member["valid_until"]
+        if member_until is not None and (
+            valid_until is None or member_until < valid_until
+        ):
+            valid_until = member_until
+    unique_owners = len({m["owner_id"] for m in cluster})
+    return Candidate(
+        candidate_id=uuid4(),
+        owner_id=team_owner_id,
+        profile_id=profile_id,
+        subject=subject,
+        memory_type=memory_type,
+        content=content,
+        assertion_kind=assertion_kind,
+        conversation_id="team-extraction",
+        source_turn_id="team-extraction",
+        source_expression=content,
+        save_rationale=f"团队共性提取：{unique_owners} 个成员写了相似内容",
+        confidence=confidence,
+        durability=CandidateDurability.DURABLE,
+        expression_basis=ExpressionBasis.EXPLICIT,
+        observed_at=observed_at,
+        created_at=observed_at,
+        verification_status=VerificationStatus.USER_ASSERTED,
+        sensitivity_level=sensitivity_level,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        source_type=EvidenceSourceType.CONVERSATION,
+    )
+
+
+def _cluster_mode(
+    cluster: list[dict[str, object]],
+    field: str,
+    enum: type,
+) -> object:
+    """取簇内某枚举字段的众数。"""
+
+    values = [member[field] for member in cluster]
+    return max(set(values), key=values.count)

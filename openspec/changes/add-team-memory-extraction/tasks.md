@@ -21,7 +21,7 @@
 
 - [x] 4.1 `repository.py` 实现 `extract_team_common_memories`（查成员个人记忆 + embedding 聚类 + 写团队 pending review，一次 SQL 完成）。
 - [x] 4.2 `mapping.py` 加映射（结果集映射到 `TeamExtractionResult`）。
-- [ ] 4.3 in_memory adapter 同步实现（`InMemoryMemoryRepository` 未实现 `extract_team_common_memories`，离线/演示场景无团队提取能力）。
+- [x] 4.3 in_memory adapter 同步实现（`InMemoryMemoryRepository.extract_team_common_memories` 已实现，含 embedding 聚类、幂等与团队 pending 写入，语义对齐 PostgreSQL 版本）。
 
 ## 5. 集成
 
@@ -32,10 +32,10 @@
 
 ## 6. 测试
 
-- [ ] 6.1 单元测试：聚类算法 + 幂等（测试套件无 team extraction 专项用例）。
-- [ ] 6.2 in_memory 端到端：多成员写相似内容 → 提取 → pending → confirm。
-- [ ] 6.3 真实 DB 契约测试。
-- [x] 6.4 跑全量 pytest + evals（不回退，但无 team 提取专项验证）。
+- [x] 6.1 单元测试：聚类算法 + 幂等（`tests/core/test_team_extraction.py` 覆盖聚类、幂等、阈值、非成员隔离、空成员）。
+- [x] 6.2 in_memory 端到端：多成员写相似内容 → 提取 → pending（`test_team_extraction_service_run_once_collects_results` 验证服务层；confirm 复用既有 review 路径）。
+- [ ] 6.3 真实 DB 契约测试（需显式 PostgreSQL）。
+- [x] 6.4 跑全量 pytest + evals（201 passed）。
 
 ## 7. 文档
 

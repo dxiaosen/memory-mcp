@@ -194,3 +194,34 @@ def project_preference_command(
         observed_at=datetime(2026, 7, 29, 10, tzinfo=UTC),
         business_progress=business_progress,
     )
+
+
+class FakeEmbeddingProvider:
+    """返回固定向量的确定性 embedding 提供者，供召回向量路测试使用。
+
+    按文本到向量的映射返回；未映射的文本返回零向量，使相似度测试稳定可控。
+    实现 ``EmbeddingProvider`` 端口契约（model_id/dimensions/embed）。
+    """
+
+    model_id = "fake-embedding-model"
+    dimensions = 8
+
+    def __init__(
+        self,
+        vectors: dict[str, tuple[float, ...]],
+        *,
+        failures_before_success: int = 0,
+    ) -> None:
+        self._vectors = dict(vectors)
+        self.failures_before_success = failures_before_success
+        self.calls = 0
+
+    def embed(
+        self,
+        texts: tuple[str, ...],
+    ) -> tuple[tuple[float, ...], ...]:
+        self.calls += 1
+        if self.calls <= self.failures_before_success:
+            raise RuntimeError("temporary embedding interruption")
+        zero = tuple(0.0 for _ in range(self.dimensions))
+        return tuple(self._vectors.get(text, zero) for text in texts)
