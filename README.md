@@ -69,7 +69,7 @@ flowchart TD
 | 接入 Agent | [agents.md](docs/agents.md) — Hook 合同、Codex/Claude Code |
 | 本地跑通 | [usage.md](docs/usage.md) — 安装、启动、手工验证 |
 | 跑测试 | [testing.md](docs/testing.md) — 分层、命令、DB 安全 |
-| 看评测 | [evaluation.md](docs/evaluation.md) — 52 案例、指标、快照 |
+| 看评测 | [evaluation.md](docs/evaluation.md) — 66 案例、三模式、指标、baseline |
 | 查日志 | [logging.md](docs/logging.md) — 事件、字段、脱敏 |
 | 生产部署 | [deploy.md](docs/deploy.md) — ECS/RDS、systemd |
 | 在本仓库工作 | [CLAUDE.md](CLAUDE.md) — 架构铁律、模块速查、改动检查清单 |
@@ -81,6 +81,7 @@ OpenSpec 管变更历史与规范，不作为使用手册：[OpenSpec 导航](op
 ```bash
 uv run ruff check .
 uv run pytest -q
+uv run python -m evals.runner --mode deterministic
 openspec-cn validate <change-name> --strict
 ```
 

@@ -31,6 +31,11 @@ MEMORY_MCP_TEST_DATABASE_URL=postgres://... uv run pytest tests/contract/test_po
 # OpenSpec 规范校验
 openspec-cn validate <change-name> --strict
 
+# 质量评测
+uv run python -m evals.runner --mode deterministic    # CI 门禁，确定性
+uv run python -m evals.runner --mode live-extraction  # 真实模型抽取
+uv run python -m evals.runner --mode live-embedding   # 真实向量召回
+
 # 本地启动 Server
 cp server/.env.example .env && chmod 600 .env   # 编辑 DSN/Token/模型
 .venv/bin/memory-mcp-db migrate
@@ -38,7 +43,7 @@ cp server/.env.example .env && chmod 600 .env   # 编辑 DSN/Token/模型
 .venv/bin/memory-mcp
 ```
 
-Pyright 未安装且无配置；类型检查依赖 ruff（E/F/UP/B/RUF 规则集）与 Pydantic 运行期校验。
+Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF 规则集）+ pyright + Pydantic 运行期校验。
 
 ## 架构铁律（不可违反）
 
