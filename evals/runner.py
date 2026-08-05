@@ -247,9 +247,28 @@ def _live_predictions(dataset, candidate_extractor, relation_extractor):
                     ),
                 ),
             )
+            # 评测候选抽取质量：直接看模型 backend 返回的 memory_type，
+            # 但只统计模型标注为 durable + explicit 的候选（模型认为值得保存的），
+            # 不混入后续准入决策（pending/discard 是另一个维度）。
+            from memory_mcp.core.ports import ExtractionRequest
+
+            request = ExtractionRequest(
+                profile_id=case.profile_id,
+                conversation_id=f"eval-{case.id}",
+                source_turn_id="turn-1",
+                content=case.content,
+                observed_at=_now,
+                allowed_memory_types=profile.memory_types,
+                capture_guidance=profile.capture_guidance,
+                profile_version=profile.profile_version,
+            )
+            raw = candidate_extractor._backend(request)
             predictions[case.id] = frozenset(
-                record.item.memory_type
-                for record in service.list_memories(_owner)
+                item.get("memory_type", "")
+                for item in raw
+                if item.get("memory_type")
+                and item.get("durability") == "durable"
+                and item.get("expression_basis") == "explicit"
             )
         elif isinstance(case, RelationCase):
             profile = _profiles[case.profile_id]
