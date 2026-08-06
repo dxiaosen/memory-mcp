@@ -973,9 +973,7 @@ class PostgreSQLMemoryRepository:
                     raise ValueError("confirmed review requires one memory write")
                 if memory is not None:
                     validate_review_memory(review, memory)
-                    self._insert_record(
-                        connection, memory, capture_id=review.capture_id
-                    )
+                    self._insert_record(connection, memory)
                 elif duplicate_evidence is not None:
                     target = connection.execute(
                         """
@@ -1399,22 +1397,22 @@ def _stale_revision_relations(
         )
         params = (
             stale_at,
+            stale_reason,
             principal.owner_id,
             memory_id,
             current_revision_id,
             memory_id,
             current_revision_id,
-            stale_reason,
         )
     else:
         # revoke：端点被撤销，所有指向该 memory 当前 revision 的 revision-scoped 活动边失效。
         clause = "source_memory_id = %s OR target_memory_id = %s"
         params = (
             stale_at,
+            stale_reason,
             principal.owner_id,
             memory_id,
             memory_id,
-            stale_reason,
         )
     cursor = connection.execute(
         f"""
