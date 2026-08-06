@@ -654,6 +654,34 @@ class MemoryRelationReceipt(StrictDto):
     relation: MemoryRelationView
 
 
+class MemorySearchReceipt(StrictDto):
+    """搜索记忆工具的返回凭证。"""
+
+    ok: Literal[True] = True
+    request_id: str
+    items: tuple[MemorySummaryView, ...]
+
+
+class BatchReviewResolutionReceipt(StrictDto):
+    """批量确认待审工具的返回凭证。"""
+
+    ok: Literal[True] = True
+    request_id: str
+    confirmed: tuple[ReviewResolutionReceipt, ...] = ()
+    failed_review_ids: tuple[UUID, ...] = ()
+
+
+class MemoryStatsReceipt(StrictDto):
+    """记忆统计概览工具的返回凭证。"""
+
+    ok: Literal[True] = True
+    request_id: str
+    total_active_memories: int
+    by_memory_type: dict[str, int] = {}
+    by_profile: dict[str, int] = {}
+    pending_review_count: int = 0
+
+
 def encode_cursor(offset: int) -> str:
     return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
 

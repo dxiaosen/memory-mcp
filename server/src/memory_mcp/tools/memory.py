@@ -9,6 +9,7 @@ from mcp.types import ToolAnnotations
 
 from memory_mcp.auth import MemoryScope
 from memory_mcp.schemas import (
+    BatchReviewResolutionReceipt,
     ErrorResponse,
     MemoryDetailReceipt,
     MemoryListReceipt,
@@ -17,8 +18,11 @@ from memory_mcp.schemas import (
     MemoryRelationView,
     MemoryRevisionView,
     MemoryRevocationReceipt,
+    MemorySearchReceipt,
+    MemoryStatsReceipt,
     MemorySummaryView,
     MemoryView,
+    ReviewResolutionReceipt,
     decode_cursor,
     encode_cursor,
 )
@@ -320,5 +324,172 @@ class MemoryTools(ToolSupport):
                 return self._error_response(
                     current_request_id,
                     "revoke_memory_relation",
+                    exc,
+                )
+
+        @server.tool(
+            name="search_memories",
+            description=(
+                "Search active memories by keyword. Returns full records sorted "
+                "by relevance, not token-budget-limited. Use for precise retrieval "
+                "of historical evidence or theses by topic."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def search_memories(
+            query: str,
+            ctx: Context,
+            profile_id: str,
+            memory_type: str | None = None,
+            limit: int = 20,
+        ) -> MemorySearchReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.READ)
+                if not 1 <= limit <= 100:
+                    raise ValueError("limit must be between 1 and 100")
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "search_memories",
+                )
+                records = await asyncio.to_thread(
+                    self._service.search_memories,
+                    principal.to_core(),
+                    query=query,
+                    profile_id=profile_id,
+                    memory_type=memory_type,
+                    limit=limit,
+                )
+                receipt = MemorySearchReceipt(
+                    request_id=current_request_id,
+                    items=tuple(
+                        MemorySummaryView.from_record(record) for record in records
+                    ),
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "search_memories",
+                    started_at,
+                    status="completed",
+                    result_count=len(records),
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "search_memories",
+                    exc,
+                )
+
+        @server.tool(
+            name="batch_confirm_pending",
+            description=(
+                "Confirm multiple owned pending candidates in one call. "
+                "Each is confirmed independently; failures do not block others."
+            ),
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        async def batch_confirm_pending(
+            review_ids: list[str],
+            ctx: Context,
+            promote_to_team: str | None = None,
+        ) -> BatchReviewResolutionReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.REVIEW)
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "batch_confirm_pending",
+                )
+                ids = tuple(UUID(rid) for rid in review_ids)
+                confirmed_records, failed_ids = await asyncio.to_thread(
+                    self._service.batch_confirm_reviews,
+                    principal.to_core(),
+                    ids,
+                    team_id=promote_to_team,
+                    team_owner_ids=frozenset(principal.team_owner_ids)
+                    if promote_to_team is not None
+                    else frozenset(),
+                )
+                receipt = BatchReviewResolutionReceipt(
+                    request_id=current_request_id,
+                    confirmed=tuple(
+                        ReviewResolutionReceipt(
+                            request_id=current_request_id,
+                            review_id=record.item.memory_id,  # type: ignore[arg-type]
+                            status="confirmed",
+                            memory=MemoryView.from_record(record),
+                        )
+                        for record in confirmed_records
+                    ),
+                    failed_review_ids=failed_ids,
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "batch_confirm_pending",
+                    started_at,
+                    status="confirmed",
+                    result_count=len(confirmed_records),
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "batch_confirm_pending",
+                    exc,
+                )
+
+        @server.tool(
+            name="get_memory_stats",
+            description=(
+                "Get a summary of the authenticated owner's memory inventory: "
+                "counts by type, profile, and pending review count."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def get_memory_stats(
+            ctx: Context,
+        ) -> MemoryStatsReceipt | ErrorResponse:
+            current_request_id = request_id(ctx)
+            try:
+                principal = self._authorize(MemoryScope.READ)
+                started_at = self._log_started(
+                    current_request_id,
+                    principal,
+                    "get_memory_stats",
+                )
+                stats = await asyncio.to_thread(
+                    self._service.get_memory_stats,
+                    principal.to_core(),
+                )
+                receipt = MemoryStatsReceipt(
+                    request_id=current_request_id,
+                    total_active_memories=stats["total_active_memories"],  # type: ignore[index]
+                    by_memory_type=stats["by_memory_type"],  # type: ignore[index]
+                    by_profile=stats["by_profile"],  # type: ignore[index]
+                    pending_review_count=stats["pending_review_count"],  # type: ignore[index]
+                )
+                self._log_completed(
+                    current_request_id,
+                    principal,
+                    "get_memory_stats",
+                    started_at,
+                    status="completed",
+                    result_count=stats["total_active_memories"],  # type: ignore[index]
+                )
+                return receipt
+            except Exception as exc:
+                return self._error_response(
+                    current_request_id,
+                    "get_memory_stats",
                     exc,
                 )

@@ -254,6 +254,9 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                     "revoke_memory",
                     "link_memories",
                     "revoke_memory_relation",
+                    "search_memories",
+                    "batch_confirm_pending",
+                    "get_memory_stats",
                 }
                 capture_tool = next(
                     tool

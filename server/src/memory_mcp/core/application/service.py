@@ -320,6 +320,139 @@ class MemoryService:
         )
         return records
 
+    def search_memories(
+        self,
+        principal: PrincipalContext,
+        *,
+        query: str,
+        profile_id: str | None = None,
+        memory_type: str | None = None,
+        limit: int = 20,
+    ) -> Sequence[MemoryRecord]:
+        """按关键词搜索当前用户的活动记忆，返回完整记录列表（不裁剪 token 预算）。
+
+        与 recall_memory 的区别：recall 做相关性排序并裁剪到 token 预算生成
+        rendered context；search 只按 pg_trgm 相似度排序返回完整记录列表，
+        供研究员精准检索特定主题的历史证据和判断。
+        """
+
+        if not query.strip():
+            raise ValueError("query must not be empty")
+        if limit < 1 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        if profile_id is None:
+            raise ValueError("profile_id is required for search")
+        resolved_profile_id = profile_id
+        log_event(
+            _LOGGER,
+            logging.DEBUG,
+            "memory.search.started",
+            owner_ref=stable_reference(principal.owner_id),
+            profile_id=resolved_profile_id,
+            memory_type=memory_type,
+            limit=limit,
+        )
+        candidates = self._repository.find_recall_candidates(
+            principal,
+            profile_id=resolved_profile_id,
+            search_text=query,
+            subject=None,
+            effective_at=self._clock(),
+            limit=limit,
+        )
+        # search 只返回词法/向量匹配的候选，排除近期补齐
+        match_count = candidates.lexical_count + candidates.vector_count
+        matched = candidates.candidates[:match_count]
+        records: list[MemoryRecord] = []
+        for candidate in matched:
+            record = self._repository.get(
+                principal, candidate.item.memory_id
+            )
+            if record is not None and (
+                memory_type is None
+                or record.item.memory_type == memory_type
+            ):
+                records.append(record)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.search.completed",
+            owner_ref=stable_reference(principal.owner_id),
+            result_count=len(records),
+        )
+        log_content_event(
+            "memory.read.search",
+            memories=tuple(asdict(record) for record in records),
+        )
+        return records
+
+    def batch_confirm_reviews(
+        self,
+        principal: PrincipalContext,
+        review_ids: Sequence[UUID],
+        *,
+        team_id: str | None = None,
+        team_owner_ids: frozenset[str] = frozenset(),
+    ) -> tuple[tuple[MemoryRecord, ...], tuple[UUID, ...]]:
+        """批量确认待审候选，返回成功和失败的 review_id。
+
+        每条独立调用 confirm_review，单条失败不影响其他条。
+        """
+
+        confirmed: list[MemoryRecord] = []
+        failed: list[UUID] = []
+        for review_id in review_ids:
+            try:
+                record = self._capture_service.confirm_review(
+                    principal,
+                    review_id,
+                    team_id=team_id,
+                    team_owner_ids=team_owner_ids,
+                )
+                confirmed.append(record)
+            except Exception:
+                failed.append(review_id)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.review.batch_confirmed",
+            owner_ref=stable_reference(principal.owner_id),
+            confirmed_count=len(confirmed),
+            failed_count=len(failed),
+        )
+        return tuple(confirmed), tuple(failed)
+
+    def get_memory_stats(
+        self,
+        principal: PrincipalContext,
+    ) -> dict[str, object]:
+        """返回当前用户的记忆统计概览。"""
+
+        records = self._repository.list(
+            principal,
+            active_only=True,
+            effective_at=self._clock(),
+        )
+        from collections import Counter
+
+        type_counts = Counter(record.item.memory_type for record in records)
+        profile_counts = Counter(record.item.profile_id for record in records)
+        pending_reviews = self._capture_service.list_pending_reviews(principal)
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.stats.completed",
+            owner_ref=stable_reference(principal.owner_id),
+            total_memories=len(records),
+            pending_count=len(pending_reviews),
+        )
+        return {
+            "total_active_memories": len(records),
+            "by_memory_type": dict(type_counts),
+            "by_profile": dict(profile_counts),
+            "pending_review_count": len(pending_reviews),
+        }
+
     def revoke_memory(
         self,
         principal: PrincipalContext,

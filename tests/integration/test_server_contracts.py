@@ -191,6 +191,9 @@ def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:
         "revoke_memory",
         "link_memories",
         "revoke_memory_relation",
+        "search_memories",
+        "batch_confirm_pending",
+        "get_memory_stats",
     }
     capture = next(tool for tool in tools if tool.name == "capture_completed_turn")
     serialized_schema = json.dumps(capture.inputSchema)

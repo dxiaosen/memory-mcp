@@ -102,19 +102,55 @@ class InvestmentResearchProfile:
     recall_hints: dict[str, frozenset[str]] = field(
         default_factory=lambda: {
             "research_preference": frozenset(
-                {"偏好", "习惯", "格式", "怎么写", "如何组织"}
+                {"偏好", "习惯", "格式", "怎么写", "如何组织", "模板"}
             ),
             "research_question": frozenset(
-                {"问题", "待确认", "是否", "未解决", "需要核实"}
+                {
+                    "问题",
+                    "待确认",
+                    "是否",
+                    "未解决",
+                    "需要核实",
+                    "验证",
+                    "跟踪",
+                }
             ),
-            "thesis": frozenset({"论点", "判断", "核心看法", "逻辑"}),
-            "evidence_claim": frozenset({"证据", "依据", "数据", "披露"}),
-            "risk": frozenset({"风险", "威胁", "破坏", "不利因素"}),
-            "catalyst": frozenset({"催化", "事件", "推动", "加速"}),
+            "thesis": frozenset(
+                {"论点", "判断", "核心看法", "逻辑", "估值", "目标价", "预测"}
+            ),
+            "evidence_claim": frozenset(
+                {
+                    "证据",
+                    "依据",
+                    "数据",
+                    "披露",
+                    "季报",
+                    "年报",
+                    "调研纪要",
+                    "路演",
+                }
+            ),
+            "risk": frozenset(
+                {"风险", "威胁", "破坏", "不利因素", "竞品", "产能过剩"}
+            ),
+            "catalyst": frozenset(
+                {"催化", "事件", "推动", "加速", "投产", "放量"}
+            ),
             "ongoing_research": frozenset(
-                {"下一步", "后续", "继续", "调研", "访谈", "跟进", "还要做"}
+                {
+                    "下一步",
+                    "后续",
+                    "继续",
+                    "调研",
+                    "访谈",
+                    "跟进",
+                    "还要做",
+                    "路演",
+                }
             ),
-            "research_decision": frozenset({"决定", "最终", "怎么定", "范围", "结论"}),
+            "research_decision": frozenset(
+                {"决定", "最终", "怎么定", "范围", "结论", "是否纳入"}
+            ),
         }
     )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
