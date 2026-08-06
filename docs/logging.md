@@ -152,7 +152,8 @@ Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.relation.linked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type`, `source_memory_id`, `target_memory_id` |
 | `memory.relation.revoked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type` |
 | `memory.review.confirmed` / `.rejected` | INFO | `review_id`, `owner_ref`, `promoted_to_team` |
-| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `has_more` / `error_type` |
+| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `expired_relation_context_count`, `reminder_count`, `has_more` / `error_type` |
+| `memory.maintenance.reminder_written` | INFO | `owner_ref`, `profile_id`, `relation_type`, `focus_memory_id`, `reminder_memory_type` |
 | `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
 | `memory.embedding.completed` | DEBUG | — |
 

@@ -129,6 +129,26 @@ class MemoryRepository(Protocol):
 
         ...
 
+    def find_semantically_similar(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> MemoryRecord | None:
+        """按嵌入余弦相似度查找同 Profile+类型下最接近的一条活动记忆。
+
+        用于准入阶段语义去重：当字面 subject 不匹配但内容语义近似的候选
+        即将 auto_save 时，先查同 owner + profile + memory_type 的现有活动记忆，
+        余弦相似度 >= ``threshold`` 时返回首条命中，交由调用方决定合并为替换
+        或重复证据，避免记忆碎片化。无嵌入或无命中返回 None。
+        """
+
+        ...
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,

@@ -30,6 +30,8 @@ from memory_mcp.core.domain import (
     RelationScope,
     RelationStatus,
     ReviewItem,
+    TimelineQuery,
+    TimelineResult,
     TurnEnvelope,
     VerificationStatus,
 )
@@ -98,7 +100,9 @@ class MemoryService:
         )
         self._maintenance_service = MemoryMaintenanceService(
             repository,
+            profile_registry,
             clock=self._clock,
+            id_factory=id_factory,
         )
 
     def register_profile(self, profile: MemoryProfile) -> None:
@@ -601,6 +605,15 @@ class MemoryService:
         """从当前用户的活动/当前记忆集合生成召回上下文，委托给召回子服务。"""
 
         return self._recall_service.recall(principal, query)
+
+    def recall_timeline(
+        self,
+        principal: PrincipalContext,
+        query: TimelineQuery,
+    ) -> TimelineResult:
+        """以焦点记忆为起点沿演进关系展开时间线，委托给召回子服务。"""
+
+        return self._recall_service.recall_timeline(principal, query)
 
     def list_pending_reviews(
         self,

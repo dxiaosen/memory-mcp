@@ -79,6 +79,51 @@ def test_real_backend_uses_strict_schema_and_untrusted_source_prompt() -> None:
     assert "以后项目周报默认用表格" in rendered
 
 
+def test_system_prompt_renders_allowed_business_progress_values() -> None:
+    """Profile 声明 business_progress_values 时，prompt 必须把它们作为硬约束呈现。"""
+    request = ExtractionRequest(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="turn-1",
+        content="这是核心论点",
+        observed_at=datetime(2026, 7, 30, tzinfo=UTC),
+        allowed_memory_types=frozenset({"thesis"}),
+        capture_guidance="capture thesis",
+        profile_version="v1",
+        business_progress_values=frozenset(
+            {"open", "monitoring", "resolved", "invalidated", "archived"}
+        ),
+    )
+    model = _StructuredModel()
+    LangChainCandidateBackend(model)(request)
+
+    rendered = "\n".join(str(message.content) for message in model.runnable.messages)
+    assert "Allowed business_progress values:" in rendered
+    for value in ("open", "monitoring", "resolved", "invalidated", "archived"):
+        assert value in rendered
+    assert "Never invent or paraphrase a value outside this list" in rendered
+
+
+def test_system_prompt_omits_business_progress_for_empty_profile() -> None:
+    """Profile 不使用 business_progress（空集合）时，prompt 必须要求留空。"""
+    request = ExtractionRequest(
+        profile_id="general-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-1",
+        content="项目周报默认用表格",
+        observed_at=datetime(2026, 7, 30, tzinfo=UTC),
+        allowed_memory_types=frozenset({"preference"}),
+        capture_guidance="capture preference",
+        profile_version="v1",
+    )
+    model = _StructuredModel()
+    LangChainCandidateBackend(model)(request)
+
+    rendered = "\n".join(str(message.content) for message in model.runnable.messages)
+    assert "does not use business_progress; always leave it null" in rendered
+    assert "Allowed business_progress values:" not in rendered
+
+
 def test_relation_backend_uses_bounded_schema_and_policy_prompt() -> None:
     source_id = UUID("11111111-1111-1111-1111-111111111111")
     target_id = UUID("22222222-2222-2222-2222-222222222222")

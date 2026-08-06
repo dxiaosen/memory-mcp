@@ -434,7 +434,7 @@ Streamable HTTP（`stateless_http=true` 默认），JSON response 模式。默�
 | 工具 | Scope | 作用 | annotations |
 | --- | --- | --- | --- |
 | `capture_completed_turn` | write | 提交成功完成的顶层轮次 | 非只读/非破坏/幂等 |
-| `recall_memory` | read | BeforeRun 主动召回 | 只读/幂等 |
+| `recall_memory` | read | BeforeRun 主动召回（`mode=timeline` 展开演进链） | 只读/幂等 |
 | `list_memories` | read | 列出当前活动记忆 | 只读/幂等 |
 | `get_memory` | read | 查看当前详情和可选 history | 只读/幂等 |
 | `list_pending_reviews` | review | 查看待确认候选 | 只读/幂等 |
@@ -511,7 +511,9 @@ ambiguous）→ 关系规划 → 单事务提交。
 
 `CandidateExtractor.extract(ExtractionRequest)` 返回 `CandidateProposal` 序列。
 `ExtractionRequest` 携带 profile_id/conversation/source_turn/脱敏 content/observed_at/
-allowed_memory_types/capture_guidance/profile_version/subject_hint。模型输出必须符合严格
+allowed_memory_types/business_progress_values/capture_guidance/profile_version/subject_hint。
+`business_progress_values` 作为硬约束透传给模型 prompt：非空集合时列出允许值并要求模型不得编造
+集合外的值；空集合（如 general-work）时要求模型留空 `business_progress`。模型输出必须符合严格
 schema，否则 `InvalidModelOutputError`。
 
 ### 7.4 候选可信化
@@ -612,6 +614,21 @@ real_holding/transaction_instruction。`RegexSensitiveContentGuard.from_config` 
 即用户须明确表达"当前值/默认值变更"（如"改成""换成""以后用""no longer""replace""new default"），
 模糊的"改一下"不触发。
 
+当 `find_current` 字面无命中、候选为 `auto_save` 时，追加一层语义去重：读 Profile
+`metadata_policies.semantic_dedup_threshold`，非 None 时计算候选嵌入并查
+`find_semantically_similar`（同 owner + profile + type 的活动记忆，余弦相似度
+>= threshold）。命中则视为生命周期目标，按上表四支处理，新增 reason code：
+
+| 语义分支 | 条件 | 行为 |
+| --- | --- | --- |
+| semantic_duplicate_evidence | 近似目标内容与候选等价 | 追加 Evidence |
+| semantic_explicit_replacement | 近似目标 + 用户明确替换 | 生成 replacement |
+| semantic_lifecycle_conflict | 近似目标但非替换 | 降级 pending |
+
+未声明 threshold（如 general-work）、嵌入不可用、无命中时回退到原有新增路径。
+阈值由 Profile 按 memory_type 声明（投研 thesis=0.92、evidence_claim=0.90），
+不硬编码于 Core。
+
 ## 8. 生命周期与 Review
 
 ### 8.1 状态机
@@ -657,6 +674,17 @@ revoke 和 replacement 都不物理删除，保留可追溯 history。到期采�
 立即隔离（active 但 `valid_until <= now` 不返回），维护批次有界物化 `expired`。
 维护批次 `MAINTENANCE_BATCH_SIZE=500`，每轮把过期 revision/review 及其关系终态物化，
 `has_more` 时立即续批，连续续批超 8 次插入 1 秒退避。
+
+**过期证据依赖链提醒（A2）**：维护批次物化失效关系时，同时返回每条失效关系的双端
+上下文（`expired_relation_contexts`：过期端 + 另一端 focus）。维护服务据此查
+Profile 的 `expiry_derivations`：若该 `relation_type` 命中某派生规则，则按
+`reminder_template`（占位符 `{endpoint_subject}` / `{thesis_subject}`）渲染一条
+`ongoing_research` 提醒记忆写入原 owner 名下（如"支撑论点的证据已过期，需复核该论点
+是否仍成立"），促使用户重新审视原 thesis。同一 owner + 同一 focus thesis 已有活动
+`ongoing_research` 提醒时跳过（去重，避免重复提醒）。系统提醒记忆的 `conversation_id`
+为 `system:maintenance`、`source_turn_id` 为 `expired-evidence-reminder`、
+`source_type=system`，便于追溯与统计。Profile 未声明 `expiry_derivations`（如
+`general-work`）则不派生任何提醒。
 
 ### 8.5 Relation 生命周期
 
@@ -753,6 +781,8 @@ flowchart LR
 | profile hint boost | `0.16` |
 | subject exact-match boost | `0.2` |
 | vector boost | `0.15` |
+| time-decay half-life | `90` 天（默认；优先取该类型 `metadata_policies.validity_days`） |
+| time-decay weight | `0.15`（半衰期外记忆最多衰减 15%） |
 
 > 改这些常量后必须同步本表与 evals 阈值。
 
@@ -760,6 +790,12 @@ flowchart LR
 与 vector retrieval_score 只负责候选生成与加成，不替代应用分数。关系不能独自把
 不相关 endpoint 拉入召回，也不递归扩展候选。词法与排序部分故意可解释；向量路
 仅在配置 provider 时启用，不改变确定性打分骨架。
+
+时效衰减在 `min(score, 1.0)` 封顶前施加：`observed_at` 距 `effective_at` 越久，
+分数衰减越多，半衰期外（`age = half_life`）记忆最多衰减 15%；半衰期优先取该
+类型 `metadata_policies.validity_days`（与有效期对齐），未声明时回退 90 天。
+衰减只作用于已为正的分数，不凭空拉入无关记忆，衰减后仍需通过 relevance
+threshold 才进入结果。
 
 ### 9.4 subject 语义
 
@@ -814,6 +850,30 @@ observed time、validity 和内容，使业务 Agent 能正确理解来源、确
 | 降级 | provider 未配置、计算失败或维度不符时跳过 vector 路，仅用词法+近期两路 |
 | 索引定位 | 向量与词法一样只能提出候选，永远不能成为身份或生命周期事实源 |
 | 返回前校验 | 必须回 PostgreSQL 复核 owner/current revision/lifecycle/`profile_id`/可见性 |
+
+### 9.8 时间线召回（A1 投研演进链）
+
+`recall_memory` 的 `mode=timeline` 以一条记忆（通常为 thesis）为焦点，沿 Profile
+声明的 `timeline_relation_types` 关系展开演进链，回答"这个观点后来被什么证据支撑 /
+挑战、被哪些风险威胁、如何演进"。与默认 `mode=relevant` 的区别：timeline 不做
+相关度排序，而是从焦点出发做有界 BFS，返回按 `observed_at` 升序的演进跳。
+
+| 项 | 规则 |
+| --- | --- |
+| 入口 | `recall_timeline(principal, TimelineQuery)`；MCP 工具 `mode=timeline` + `focus_memory_id` |
+| 起点 | `repository.get(focus_memory_id)`；不存在 / 非活动 / 非 `effective` / 跨 Profile → 空结果 |
+| BFS | `list_relations(frontier, active_only=True, effective_at)` 逐层扩展；`visited` 防环 |
+| 关系过滤 | 只处理 `profile.timeline_relation_types` 内的关系；未声明该集合 → 空结果 |
+| 深度上限 | `_TIMELINE_MAX_DEPTH=3`（覆盖 thesis→evidence→risk/catalyst 两层衍生） |
+| 跳数上限 | `TimelineQuery.max_hops`（默认 20，MCP 工具复用 `max_items` 上限） |
+| 端点载入 | `find_recall_candidates_by_ids` 批量取活动候选 → `RecalledMemory` |
+| 排序 | hops 按 `observed_at` 升序（演进时序），非相关度 |
+| 渲染 | 安全头 + 焦点行 + 逐跳累加，超 `token_budget` 时 `truncated=True` |
+| Profile 不声明 | `general-work` 等 `timeline_relation_types` 为空集时直接返回空结果，不报错 |
+
+通用 Profile 默认关闭时间线（`timeline_relation_types=frozenset()`），投研 Profile
+声明全部 6 类关系，使演进链能跨 thesis / evidence_claim / risk / catalyst 等
+类型展开。时间线只读、幂等，不写入任何记忆或关系。
 
 ## 10. Agent Client 与 Hook
 
@@ -949,6 +1009,7 @@ last_success_at/last_error_type）。`MaintenanceHealth` observe_success/observe
 26. 向量与词法一样只能提出候选，不能成为身份/生命周期事实源；
 27. 团队提取只读成员个人记忆、只写团队公共空间，不自动确认；团队共性候选要求簇内至少 2 个不同成员，防止单成员回声室；
 28. Agent fail_open 默认开启，记忆服务不可用不阻断 Agent 任务。
+29. 系统提醒记忆（维护派生的过期证据提醒）`capture_id=NULL`、`conversation_id=system:*`、`source_type=system`，不冒充用户对话来源；同 owner + 同 focus thesis 的活动 ongoing_research 提醒至多一条。
 
 ### 12.2 扩展策略
 

@@ -187,6 +187,7 @@ class CandidateMaterializer:
             valid_until=candidate.valid_until,
             original_time_expression=candidate.original_time_expression,
             normalized_time=candidate.normalized_time,
+            embedding=self._compute_embedding(candidate.content),
         )
         return ReplacementWrite(
             memory_id=target.item.memory_id,
@@ -476,6 +477,22 @@ class CandidateProcessor:
                     AdmissionDecision.PENDING,
                     "ambiguous_lifecycle_conflict",
                 )
+            elif target is None and admission.decision is AdmissionDecision.AUTO_SAVE:
+                # 字面 subject 无命中：尝试基于嵌入的语义去重，把近似现有记忆
+                # 视为生命周期目标，避免同主题 thesis/evidence 碎片化。阈值由
+                # Profile 的 metadata_policies 声明，None 表示该类型不启用。
+                admission = self._resolve_semantic_target(
+                    principal,
+                    candidate,
+                    admission,
+                    lifecycle_target_ids,
+                    duplicate_evidence,
+                    replacements,
+                    outcomes,
+                )
+                if admission is None:
+                    # 已在分支内产出写入并 append outcome，跳过后续 auto_save 新增。
+                    continue
             if admission.decision is AdmissionDecision.AUTO_SAVE:
                 memory = self._materializer.record(candidate)
                 memories.append(memory)
@@ -519,6 +536,86 @@ class CandidateProcessor:
             reviews=tuple(reviews),
             duplicate_evidence=tuple(duplicate_evidence),
             replacements=tuple(replacements),
+        )
+
+    def _resolve_semantic_target(
+        self,
+        principal: PrincipalContext,
+        candidate: Candidate,
+        admission: AdmissionOutcome,
+        lifecycle_target_ids: set[UUID],
+        duplicate_evidence: list[DuplicateEvidenceWrite],
+        replacements: list[ReplacementWrite],
+        outcomes: list[CaptureOutcome],
+    ) -> AdmissionOutcome | None:
+        """对未匹配字面 subject 的 auto_save 候选尝试语义去重。
+
+        读 Profile 的 ``semantic_dedup_threshold``：None 表示该类型不启用，
+        直接返回原 admission 走新增路径。threshold 非 None 时计算候选嵌入，
+        查同 owner+profile+type 的活动记忆，命中则按既有生命周期决策树
+        （近似重复 -> duplicate evidence；显式替换 -> replacement；
+        否则 -> pending 交用户确认）处理。返回 None 表示已产出写入、
+        调用方应跳过后续 auto_save 新增。
+        """
+
+        metadata_policy = self._profile_registry.metadata_policy(
+            candidate.profile_id,
+            candidate.memory_type,
+        )
+        threshold = metadata_policy.semantic_dedup_threshold
+        if threshold is None:
+            return admission
+        embedding = self._materializer._compute_embedding(candidate.content)
+        if embedding is None:
+            return admission
+        target = self._repository.find_semantically_similar(
+            principal,
+            profile_id=candidate.profile_id,
+            memory_type=candidate.memory_type,
+            embedding=embedding,
+            threshold=threshold,
+            effective_at=self._clock(),
+        )
+        if target is None:
+            return admission
+        if target.item.memory_id in lifecycle_target_ids:
+            return AdmissionOutcome(
+                AdmissionDecision.PENDING,
+                "lifecycle_target_already_changed",
+            )
+        if normalize_memory_text(target.current_revision.content) == (
+            normalize_memory_text(candidate.content)
+        ):
+            duplicate_evidence.append(
+                self._materializer.duplicate(target, candidate)
+            )
+            lifecycle_target_ids.add(target.item.memory_id)
+            outcomes.append(
+                CaptureOutcome(
+                    candidate_id=candidate.candidate_id,
+                    decision=AdmissionDecision.AUTO_SAVE,
+                    reason_code="semantic_duplicate_evidence",
+                    memory_id=target.item.memory_id,
+                )
+            )
+            return None
+        if _is_explicit_replacement(candidate):
+            replacements.append(
+                self._materializer.replacement(target, candidate)
+            )
+            lifecycle_target_ids.add(target.item.memory_id)
+            outcomes.append(
+                CaptureOutcome(
+                    candidate_id=candidate.candidate_id,
+                    decision=AdmissionDecision.AUTO_SAVE,
+                    reason_code="semantic_explicit_replacement",
+                    memory_id=target.item.memory_id,
+                )
+            )
+            return None
+        return AdmissionOutcome(
+            AdmissionDecision.PENDING,
+            "semantic_lifecycle_conflict",
         )
 
 

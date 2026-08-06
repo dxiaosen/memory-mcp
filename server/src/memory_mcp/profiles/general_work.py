@@ -2,7 +2,11 @@
 
 from dataclasses import dataclass, field
 
-from memory_mcp.core import MemoryMetadataPolicy, MemoryRelationPolicy
+from memory_mcp.core import (
+    MemoryExpiryDerivation,
+    MemoryMetadataPolicy,
+    MemoryRelationPolicy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,3 +53,5 @@ class GeneralWorkProfile:
             )
         }
     )
+    timeline_relation_types: frozenset[str] = field(default_factory=frozenset)
+    expiry_derivations: dict[str, MemoryExpiryDerivation] = field(default_factory=dict)

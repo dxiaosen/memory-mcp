@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from memory_mcp.core import (
+    MemoryExpiryDerivation,
     MemoryMetadataPolicy,
     MemoryRelationPolicy,
     SensitivityLevel,
@@ -157,10 +158,14 @@ class InvestmentResearchProfile:
         default_factory=lambda: {
             "research_preference": MemoryMetadataPolicy(),
             "research_question": MemoryMetadataPolicy(validity_days=365),
-            "thesis": MemoryMetadataPolicy(validity_days=180),
+            "thesis": MemoryMetadataPolicy(
+                validity_days=180,
+                semantic_dedup_threshold=0.92,
+            ),
             "evidence_claim": MemoryMetadataPolicy(
                 sensitivity_level=SensitivityLevel.INTERNAL,
                 validity_days=90,
+                semantic_dedup_threshold=0.90,
             ),
             "risk": MemoryMetadataPolicy(validity_days=180),
             "catalyst": MemoryMetadataPolicy(
@@ -169,5 +174,36 @@ class InvestmentResearchProfile:
             ),
             "ongoing_research": MemoryMetadataPolicy(validity_days=365),
             "research_decision": MemoryMetadataPolicy(),
+        }
+    )
+    timeline_relation_types: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "supports",
+                "challenges",
+                "threatens",
+                "could_catalyze",
+                "addresses",
+                "resolves",
+            }
+        )
+    )
+    expiry_derivations: dict[str, MemoryExpiryDerivation] = field(
+        default_factory=lambda: {
+            "supports/challenges": MemoryExpiryDerivation(
+                frozenset({"supports", "challenges"}),
+                "ongoing_research",
+                "支撑论点「{thesis_subject}」的证据「{endpoint_subject}」已过期，需复核该论点是否仍成立",
+            ),
+            "could_catalyze": MemoryExpiryDerivation(
+                frozenset({"could_catalyze"}),
+                "ongoing_research",
+                "论点「{thesis_subject}」的催化剂「{endpoint_subject}」已过期，需跟踪是否兑现",
+            ),
+            "threatens": MemoryExpiryDerivation(
+                frozenset({"threatens"}),
+                "ongoing_research",
+                "论点「{thesis_subject}」的风险「{endpoint_subject}」已过期，需评估风险是否消除",
+            ),
         }
     )

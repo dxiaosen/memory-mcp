@@ -12,6 +12,7 @@ from memory_mcp.core.ports.capture import (
 )
 from memory_mcp.core.ports.embedding import EmbeddingProvider, embed_single
 from memory_mcp.core.ports.profiles import (
+    MemoryExpiryDerivation,
     MemoryMetadataPolicy,
     MemoryProfile,
     MemoryRelationPolicy,
@@ -34,6 +35,7 @@ __all__ = [
     "DuplicateEvidenceWrite",
     "EmbeddingProvider",
     "ExtractionRequest",
+    "MemoryExpiryDerivation",
     "MemoryMetadataPolicy",
     "MemoryProfile",
     "MemoryRelationPolicy",

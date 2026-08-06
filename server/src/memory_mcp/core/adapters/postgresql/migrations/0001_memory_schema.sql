@@ -188,7 +188,7 @@ CREATE TABLE memory_evidence (
     CONSTRAINT memory_evidence_tool_role
         CHECK (source_tool_name IS NULL OR source_role = 'tool'),
     CONSTRAINT memory_evidence_source_type
-        CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
+        CHECK (source_type IN ('conversation', 'tool', 'document', 'web', 'system')),
     CONSTRAINT memory_evidence_revision_identity
         UNIQUE (evidence_id, revision_id, memory_id, owner_id)
 );
@@ -414,7 +414,7 @@ CREATE TABLE memory_reviews (
     CONSTRAINT memory_reviews_valid_window
         CHECK (valid_until IS NULL OR valid_until > valid_from),
     CONSTRAINT memory_reviews_source_type
-        CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
+        CHECK (source_type IN ('conversation', 'tool', 'document', 'web', 'system')),
     CONSTRAINT memory_reviews_candidate_unique
         UNIQUE (candidate_id),
     CONSTRAINT memory_reviews_owner_identity

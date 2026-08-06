@@ -12,6 +12,7 @@ from memory_mcp.core import (
     ExpressionBasis,
     ExtractionRequest,
     LifecycleStatus,
+    MemoryExpiryDerivation,
     MemoryMetadataPolicy,
     MemoryRelationPolicy,
     RelationExtractionRequest,
@@ -53,6 +54,10 @@ class TestMemoryProfile:
             for memory_type in ("preference", "ongoing_item", "stable_context")
         }
     )
+    timeline_relation_types: frozenset[str] = field(default_factory=frozenset)
+    expiry_derivations: dict[str, MemoryExpiryDerivation] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +84,10 @@ class AlternateMemoryProfile:
             memory_type: MemoryMetadataPolicy()
             for memory_type in ("note", "commitment")
         }
+    )
+    timeline_relation_types: frozenset[str] = field(default_factory=frozenset)
+    expiry_derivations: dict[str, MemoryExpiryDerivation] = field(
+        default_factory=dict
     )
 
 

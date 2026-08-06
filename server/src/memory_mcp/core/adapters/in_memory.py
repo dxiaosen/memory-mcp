@@ -16,6 +16,7 @@ from memory_mcp.core.domain import (
     Evidence,
     EvidenceDocument,
     EvidenceSourceType,
+    ExpiredRelationContext,
     ExpressionBasis,
     LifecycleStatus,
     MaintenanceResult,
@@ -182,6 +183,41 @@ class InMemoryMemoryRepository:
         )
         return tuple(ordered[:limit] if limit is not None else ordered)
 
+    def find_semantically_similar(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> MemoryRecord | None:
+        """按余弦相似度在同 profile+type 活动记忆中找首条超阈值的命中。"""
+
+        query = tuple(embedding)
+        owner_ids = principal.visible_owner_ids
+        best: tuple[float, MemoryRecord] | None = None
+        for record in self._records.values():
+            if (
+                record.item.owner_id not in owner_ids
+                or record.item.profile_id != profile_id
+                or record.item.memory_type != memory_type
+                or record.current_revision.lifecycle_status
+                is not LifecycleStatus.ACTIVE
+                or not _is_effective(record.current_revision, effective_at)
+            ):
+                continue
+            similarity = _cosine_similarity(
+                record.current_revision.embedding,
+                query,
+            )
+            if similarity >= threshold and (
+                best is None or similarity > best[0]
+            ):
+                best = (similarity, record)
+        return best[1] if best is not None else None
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,
@@ -347,6 +383,7 @@ class InMemoryMemoryRepository:
             )
 
         stale_relation_count = 0
+        relation_contexts: list[ExpiredRelationContext] = []
         with self._relation_lock:
             for relation_id, relation in tuple(self._relations.items()):
                 if relation.status is not RelationStatus.ACTIVE:
@@ -366,6 +403,11 @@ class InMemoryMemoryRepository:
                     stale_reason="endpoint_expired",
                 )
                 stale_relation_count += 1
+                context = self._build_expired_relation_context(
+                    relation, expired_keys
+                )
+                if context is not None:
+                    relation_contexts.append(context)
 
         review_targets = tuple(
             sorted(
@@ -402,6 +444,44 @@ class InMemoryMemoryRepository:
                 len(memory_targets) == memory_limit
                 or (review_limit > 0 and len(review_targets) == review_limit)
             ),
+            expired_relation_contexts=tuple(relation_contexts),
+        )
+
+    def _build_expired_relation_context(
+        self,
+        relation: MemoryRelation,
+        expired_keys: set[tuple[str, UUID]],
+    ) -> ExpiredRelationContext | None:
+        """为一条失效关系构造双端上下文：过期端为 expired_*，另一端为 focus_*。
+
+        端点记忆须仍存在于 ``_records``（已被置为 expired 但未被移除）；找不到
+        任一端点时返回 None（数据不一致，跳过该关系的提醒派生）。
+        """
+
+        source_record = self._records.get(relation.source_memory_id)
+        target_record = self._records.get(relation.target_memory_id)
+        if source_record is None or target_record is None:
+            return None
+        source_expired = (
+            relation.owner_id,
+            relation.source_memory_id,
+        ) in expired_keys
+        if source_expired:
+            expired_item = source_record.item
+            focus_item = target_record.item
+        else:
+            expired_item = target_record.item
+            focus_item = source_record.item
+        return ExpiredRelationContext(
+            owner_id=relation.owner_id,
+            profile_id=relation.profile_id,
+            relation_type=relation.relation_type,
+            expired_memory_id=expired_item.memory_id,
+            expired_subject=expired_item.subject,
+            expired_memory_type=expired_item.memory_type,
+            focus_memory_id=focus_item.memory_id,
+            focus_subject=focus_item.subject,
+            focus_memory_type=focus_item.memory_type,
         )
 
     def extract_team_common_memories(

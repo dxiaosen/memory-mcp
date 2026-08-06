@@ -23,12 +23,48 @@ class MemoryMetadataPolicy:
 
     sensitivity_level: SensitivityLevel = SensitivityLevel.CONFIDENTIAL
     validity_days: int | None = None
+    # 语义去重阈值（余弦相似度下界，>= 该值视为同一条记忆）。None 表示该
+    # 类型不启用基于嵌入的语义去重；准入阶段仅在 threshold 非 None 且嵌入
+    # 可用时触发，避免字面不同但语义重复的候选造成记忆碎片化。
+    semantic_dedup_threshold: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.sensitivity_level, SensitivityLevel):
             raise ValueError("sensitivity_level must be a SensitivityLevel")
         if self.validity_days is not None and self.validity_days < 1:
             raise ValueError("validity_days must be positive")
+        if self.semantic_dedup_threshold is not None and not (
+            0.0 < self.semantic_dedup_threshold < 1.0
+        ):
+            raise ValueError("semantic_dedup_threshold must be within (0, 1)")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryExpiryDerivation:
+    """当某关系端点到期时派生一条提醒记忆的声明。
+
+    由 Profile 声明、维护循环消费：``trigger_relation_types`` 指明哪些关系类型
+    的端点到期会触发提醒；``reminder_memory_type`` 是派生记忆的类型；
+    ``reminder_template`` 支持占位符 ``{endpoint_subject}`` 和 ``{thesis_subject}``。
+    """
+
+    trigger_relation_types: frozenset[str]
+    reminder_memory_type: str
+    reminder_template: str
+
+    def __post_init__(self) -> None:
+        if not _contains_only_normalized_text(self.trigger_relation_types):
+            raise ValueError("trigger_relation_types must contain normalized text")
+        if not self.trigger_relation_types:
+            raise ValueError("trigger_relation_types must not be empty")
+        if not isinstance(self.reminder_memory_type, str) or not self.reminder_memory_type:
+            raise ValueError("reminder_memory_type must not be empty")
+        if (
+            not isinstance(self.reminder_template, str)
+            or not self.reminder_template
+            or self.reminder_template != self.reminder_template.strip()
+        ):
+            raise ValueError("reminder_template must be normalized non-empty text")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +149,18 @@ class MemoryProfile(Protocol):
     @property
     def metadata_policies(self) -> Mapping[str, MemoryMetadataPolicy]:
         """返回每种合法 memory type 的敏感和有效期默认规则。"""
+
+        ...
+
+    @property
+    def timeline_relation_types(self) -> frozenset[str]:
+        """返回时间线召回允许遍历的关系类型；空集合表示该 Profile 不启用时间线。"""
+
+        ...
+
+    @property
+    def expiry_derivations(self) -> Mapping[str, MemoryExpiryDerivation]:
+        """返回关系类型到到期派生规则的映射；空映射表示不启用到期提醒。"""
 
         ...
 
@@ -203,6 +251,8 @@ class ProfileRegistry:
                 raise InvalidMemoryProfileError(
                     f"relation policy {relation_type} references unknown memory types"
                 )
+        _validate_optional_timeline(profile)
+        _validate_optional_expiry_derivations(profile)
         if profile_id in self._profiles:
             raise ProfileAlreadyRegisteredError(
                 f"profile_id already registered: {profile_id}"
@@ -290,16 +340,34 @@ class ProfileRegistry:
         return frozenset(self._profiles)
 
 
+def _expiry_derivations_payload(profile: MemoryProfile) -> dict[str, dict[str, object]]:
+    """把 expiry_derivations（可能未声明）序列化为可哈希的稳定结构。"""
+
+    derivations = getattr(profile, "expiry_derivations", {})
+    if not derivations:
+        return {}
+    return {
+        key: {
+            "reminder_memory_type": derivation.reminder_memory_type,
+            "reminder_template": derivation.reminder_template,
+            "trigger_relation_types": sorted(derivation.trigger_relation_types),
+        }
+        for key, derivation in sorted(derivations.items())
+    }
+
+
 def profile_fingerprint(profile: MemoryProfile) -> str:
     """为会影响记忆行为的 Profile 声明生成稳定 SHA-256 指纹。"""
 
     payload = {
         "business_progress_values": sorted(profile.business_progress_values),
         "capture_guidance": profile.capture_guidance,
+        "expiry_derivations": _expiry_derivations_payload(profile),
         "memory_types": sorted(profile.memory_types),
         "metadata_policies": {
             memory_type: {
                 "sensitivity_level": policy.sensitivity_level.value,
+                "semantic_dedup_threshold": policy.semantic_dedup_threshold,
                 "validity_days": policy.validity_days,
             }
             for memory_type, policy in sorted(profile.metadata_policies.items())
@@ -319,6 +387,9 @@ def profile_fingerprint(profile: MemoryProfile) -> str:
             }
             for relation_type, policy in sorted(profile.relation_policies.items())
         },
+        "timeline_relation_types": sorted(
+            getattr(profile, "timeline_relation_types", frozenset()) or frozenset()
+        ),
     }
     canonical = json.dumps(
         payload,
@@ -334,3 +405,58 @@ def _contains_only_normalized_text(values: frozenset[str]) -> bool:
         isinstance(value, str) and bool(value) and value == value.strip()
         for value in values
     )
+
+
+def _validate_optional_timeline(profile: MemoryProfile) -> None:
+    """校验 timeline_relation_types 可选属性：存在时须是已声明的关系类型子集。"""
+
+    timeline = getattr(profile, "timeline_relation_types", frozenset())
+    if timeline is None:
+        return
+    if not isinstance(timeline, frozenset):
+        raise InvalidMemoryProfileError(
+            "timeline_relation_types must be a frozenset"
+        )
+    if not _contains_only_normalized_text(timeline):
+        raise InvalidMemoryProfileError(
+            "timeline_relation_types must contain normalized text"
+        )
+    unknown = set(timeline) - set(profile.relation_policies)
+    if unknown:
+        raise InvalidMemoryProfileError(
+            "timeline_relation_types must be a subset of relation_policies"
+        )
+
+
+def _validate_optional_expiry_derivations(profile: MemoryProfile) -> None:
+    """校验 expiry_derivations 可选属性：触发关系类型须在 relation_policies 内，
+    派生记忆类型须在 memory_types 内。"""
+
+    derivations = getattr(profile, "expiry_derivations", {})
+    if not derivations:
+        return
+    if not isinstance(derivations, Mapping):
+        raise InvalidMemoryProfileError(
+            "expiry_derivations must be a Mapping"
+        )
+    for key, derivation in derivations.items():
+        if not isinstance(derivation, MemoryExpiryDerivation):
+            raise InvalidMemoryProfileError(
+                "expiry_derivations must contain MemoryExpiryDerivation values"
+            )
+        if not isinstance(key, str) or not key:
+            raise InvalidMemoryProfileError(
+                "expiry_derivations keys must be non-empty strings"
+            )
+        unknown_relations = set(derivation.trigger_relation_types) - set(
+            profile.relation_policies
+        )
+        if unknown_relations:
+            raise InvalidMemoryProfileError(
+                "expiry_derivations trigger_relation_types must be a subset "
+                "of relation_policies"
+            )
+        if derivation.reminder_memory_type not in profile.memory_types:
+            raise InvalidMemoryProfileError(
+                "expiry_derivations reminder_memory_type must be a known memory type"
+            )

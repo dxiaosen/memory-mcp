@@ -65,6 +65,7 @@ class EvidenceSourceType(StrEnum):
     TOOL = "tool"
     DOCUMENT = "document"
     WEB = "web"
+    SYSTEM = "system"
 
 
 class LifecycleStatus(StrEnum):

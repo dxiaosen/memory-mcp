@@ -260,6 +260,7 @@ class CaptureService:
                         allowed_memory_types=profile.memory_types,
                         capture_guidance=profile.capture_guidance,
                         profile_version=profile.profile_version,
+                        business_progress_values=profile.business_progress_values,
                         subject_hint=(
                             subject_hint_inspection.redacted_text
                             if turn.subject_hint is not None

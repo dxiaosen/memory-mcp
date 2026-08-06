@@ -24,8 +24,10 @@ from memory_mcp.core import (
     MemoryRelation,
     MemoryRelationSummary,
     MessageRole,
+    RecalledMemory,
     RecallResult,
     ReviewItem,
+    TimelineResult,
     TurnEnvelope,
     TurnMessage,
 )
@@ -539,58 +541,109 @@ class RecallReceipt(StrictDto):
         return cls(
             request_id=request_id,
             items=tuple(
-                RecalledMemoryView(
-                    memory_id=item.memory_id,
-                    revision_id=item.revision_id,
-                    owner_id=item.owner_id,
-                    profile_id=item.profile_id,
-                    subject=item.subject,
-                    memory_type=item.memory_type,
-                    content=item.content,
-                    assertion_kind=item.assertion_kind.value,
-                    observed_at=item.observed_at,
-                    extraction_confidence=item.extraction_confidence,
-                    verification_status=item.verification_status.value,
-                    sensitivity_level=item.sensitivity_level.value,
-                    valid_from=item.valid_from,
-                    valid_until=item.valid_until,
-                    sources=tuple(
-                        RecallSourceView(
-                            conversation_id=source.conversation_id,
-                            source_turn_id=source.source_turn_id,
-                            source_expression=source.source_expression,
-                            observed_at=source.observed_at,
-                            source_role=source.source_role,
-                            source_type=source.source_type,
-                            document=(
-                                EvidenceDocumentView(
-                                    source_uri=source.document.source_uri,
-                                    source_title=source.document.source_title,
-                                    source_publisher=source.document.source_publisher,
-                                    published_at=source.document.published_at,
-                                    retrieved_at=source.document.retrieved_at,
-                                    content_hash=source.document.content_hash,
-                                    citation_locator=source.document.citation_locator,
-                                )
-                                if source.document is not None
-                                else None
-                            ),
-                        )
-                        for source in item.sources
-                    ),
-                    relations=tuple(
-                        MemoryRelationSummaryView.from_summary(summary)
-                        for summary in item.relations
-                    ),
-                    relevance_score=item.relevance_score,
-                )
-                for item in result.items
+                _to_recalled_memory_view(item) for item in result.items
             ),
             rendered_context=result.rendered_context,
             estimated_tokens=result.estimated_tokens,
             token_budget=result.token_budget,
             truncated=result.truncated,
         )
+
+
+class TimelineHopView(StrictDto):
+    """时间线演进链中的一跳：端点记忆 + 连接关系信息。"""
+
+    memory: RecalledMemoryView
+    relation_type: str
+    direction: str
+    depth: int
+
+
+class TimelineReceipt(StrictDto):
+    """时间线召回的返回凭证：焦点记忆 + 按 observed_at 升序的演进跳。"""
+
+    ok: Literal[True] = True
+    request_id: str
+    focus: RecalledMemoryView | None
+    hops: tuple[TimelineHopView, ...]
+    rendered_context: str
+    estimated_tokens: int
+    token_budget: int
+    truncated: bool
+
+    @classmethod
+    def from_result(cls, request_id: str, result: TimelineResult) -> Self:
+        focus_view = (
+            _to_recalled_memory_view(result.focus) if result.focus is not None else None
+        )
+        hops = tuple(
+            TimelineHopView(
+                memory=_to_recalled_memory_view(hop.memory),
+                relation_type=hop.relation_type,
+                direction=hop.direction.value,
+                depth=hop.depth,
+            )
+            for hop in result.hops
+        )
+        return cls(
+            request_id=request_id,
+            focus=focus_view,
+            hops=hops,
+            rendered_context=result.rendered_context,
+            estimated_tokens=result.estimated_tokens,
+            token_budget=result.token_budget,
+            truncated=result.truncated,
+        )
+
+
+def _to_recalled_memory_view(item: RecalledMemory) -> RecalledMemoryView:
+    """把 RecalledMemory 领域对象转换为对外暴露的视图（复用于召回与时间线）。"""
+
+    return RecalledMemoryView(
+        memory_id=item.memory_id,
+        revision_id=item.revision_id,
+        owner_id=item.owner_id,
+        profile_id=item.profile_id,
+        subject=item.subject,
+        memory_type=item.memory_type,
+        content=item.content,
+        assertion_kind=item.assertion_kind.value,
+        observed_at=item.observed_at,
+        extraction_confidence=item.extraction_confidence,
+        verification_status=item.verification_status.value,
+        sensitivity_level=item.sensitivity_level.value,
+        valid_from=item.valid_from,
+        valid_until=item.valid_until,
+        sources=tuple(
+            RecallSourceView(
+                conversation_id=source.conversation_id,
+                source_turn_id=source.source_turn_id,
+                source_expression=source.source_expression,
+                observed_at=source.observed_at,
+                source_role=source.source_role,
+                source_type=source.source_type,
+                document=(
+                    EvidenceDocumentView(
+                        source_uri=source.document.source_uri,
+                        source_title=source.document.source_title,
+                        source_publisher=source.document.source_publisher,
+                        published_at=source.document.published_at,
+                        retrieved_at=source.document.retrieved_at,
+                        content_hash=source.document.content_hash,
+                        citation_locator=source.document.citation_locator,
+                    )
+                    if source.document is not None
+                    else None
+                ),
+            )
+            for source in item.sources
+        ),
+        relations=tuple(
+            MemoryRelationSummaryView.from_summary(summary)
+            for summary in item.relations
+        ),
+        relevance_score=item.relevance_score,
+    )
 
 
 class PendingReviewView(StrictDto):

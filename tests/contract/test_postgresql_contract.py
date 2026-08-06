@@ -121,6 +121,8 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "list",
         "find_current",
         "find_recall_candidates",
+        "find_recall_candidates_by_ids",
+        "find_semantically_similar",
         "load_recall_evidence",
         "maintain",
         "revoke",
@@ -276,6 +278,113 @@ def test_real_postgresql_owner_transaction_and_restart_contract(
         assert reopened_service.get_memory(owner_a, created.item.memory_id) == created
     finally:
         reopened.close()
+
+
+def test_real_postgresql_find_semantically_similar_respects_threshold_and_owner(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """``find_semantically_similar`` 按余弦相似度返回同 owner/profile/type 最近活动记忆。"""
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=3)
+    repository = PostgreSQLMemoryRepository(pool)
+    repository.register_profile(TestMemoryProfile())
+    owner_a = PrincipalContext("owner-a")
+    owner_b = PrincipalContext("owner-b")
+    effective_at = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    # pgvector 列为 vector(1024)，用 1024 维向量构造近/远样本。
+    near_embedding = tuple([1.0] + [0.0] * 1023)
+    far_embedding = tuple([0.0, 1.0] + [0.0] * 1022)
+    query = tuple([1.0, 0.01] + [0.0] * 1022)
+
+    def _record(owner: str, subject: str, embedding: tuple[float, ...]) -> None:
+        from memory_mcp.core import (
+            AssertionKind,
+            Evidence,
+            EvidenceSourceType,
+            LifecycleStatus,
+            MemoryItem,
+            MemoryRecord,
+            MemoryRevision,
+            MessageRole,
+            SensitivityLevel,
+            VerificationStatus,
+        )
+
+        memory_id = uuid4()
+        revision_id = uuid4()
+        repository.add(
+            PrincipalContext(owner),
+            MemoryRecord(
+                item=MemoryItem(
+                    memory_id=memory_id,
+                    owner_id=owner,
+                    profile_id="project-work",
+                    subject=subject,
+                    memory_type="preference",
+                    created_at=effective_at,
+                ),
+                current_revision=MemoryRevision(
+                    revision_id=revision_id,
+                    memory_id=memory_id,
+                    owner_id=owner,
+                    revision_number=1,
+                    content=subject,
+                    assertion_kind=AssertionKind.USER_VIEW,
+                    lifecycle_status=LifecycleStatus.ACTIVE,
+                    business_progress=None,
+                    save_rationale="测试",
+                    observed_at=effective_at,
+                    created_at=effective_at,
+                    extraction_confidence=0.9,
+                    verification_status=VerificationStatus.USER_ASSERTED,
+                    sensitivity_level=SensitivityLevel.CONFIDENTIAL,
+                    valid_from=effective_at,
+                    valid_until=None,
+                    embedding=embedding,
+                ),
+                evidence=(
+                    Evidence(
+                        evidence_id=uuid4(),
+                        memory_id=memory_id,
+                        revision_id=revision_id,
+                        owner_id=owner,
+                        source_turn_id="turn-1",
+                        source_expression=subject,
+                        observed_at=effective_at,
+                        created_at=effective_at,
+                        source_role=MessageRole.USER,
+                        source_type=EvidenceSourceType.CONVERSATION,
+                    ),
+                ),
+            ),
+        )
+
+    _record("owner-a", "near-subject", near_embedding)
+    _record("owner-a", "far-subject", far_embedding)
+    _record("owner-b", "other-owner-near", near_embedding)
+
+    hit = repository.find_semantically_similar(
+        owner_a,
+        profile_id="project-work",
+        memory_type="preference",
+        embedding=query,
+        threshold=0.95,
+        effective_at=effective_at,
+    )
+    assert hit is not None
+    assert hit.item.subject == "near-subject"
+    assert hit.item.owner_id == "owner-a"
+
+    miss = repository.find_semantically_similar(
+        owner_b,
+        profile_id="project-work",
+        memory_type="preference",
+        embedding=far_embedding,
+        threshold=0.95,
+        effective_at=effective_at,
+    )
+    assert miss is None
+    repository.close()
 
 
 def test_real_postgresql_relation_idempotency_history_and_restart(

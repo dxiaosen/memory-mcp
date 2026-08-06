@@ -26,6 +26,9 @@ from memory_mcp.core.adapters.postgresql.recall import (
     find_recall_candidates as query_recall_candidates,
 )
 from memory_mcp.core.adapters.postgresql.recall import (
+    find_recall_candidates_by_ids as query_recall_candidates_by_ids,
+)
+from memory_mcp.core.adapters.postgresql.recall import (
     load_recall_evidence as query_recall_evidence,
 )
 from memory_mcp.core.adapters.postgresql.schema import validate_schema
@@ -40,6 +43,7 @@ from memory_mcp.core.domain import (
     ExpressionBasis,
     MaintenanceResult,
     MemoryHistoryEntry,
+    MemoryRecallCandidate,
     MemoryRecord,
     MemoryRelation,
     MemoryRelationSummary,
@@ -255,6 +259,79 @@ class PostgreSQLMemoryRepository:
             if normalize_memory_text(record.item.subject) == subject_key
         )
 
+    def find_semantically_similar(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> MemoryRecord | None:
+        """按嵌入余弦相似度在同 profile+type 活动记忆中找首条超阈值命中。
+
+        复用 pgvector 余弦距离算子 ``<=>``：``1 - distance`` 即余弦相似度。
+        SQL 侧按距离升序取前若干条候选，Python 侧再以 ``similarity >= threshold``
+        过滤，兼顾精度与对 collation 无关的稳定判定。
+        """
+
+        vector = list(embedding)
+        vector_literal = str(vector).replace("'", "''")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.memory_id, i.owner_id, i.profile_id, i.subject,
+                       i.memory_type, i.created_at AS item_created_at,
+                       r.revision_id, r.revision_number, r.content,
+                       r.assertion_kind, r.lifecycle_status, r.business_progress,
+                       r.save_rationale,
+                       r.observed_at AS revision_observed_at,
+                       r.created_at AS revision_created_at, r.is_current,
+                       r.original_time_expression, r.normalized_time,
+                       r.extraction_confidence, r.verification_status,
+                       r.sensitivity_level, r.valid_from, r.valid_until,
+                       (r.embedding <=> %s::vector) AS embedding_distance
+                FROM memory_items AS i
+                JOIN memory_revisions AS r
+                  ON r.memory_id = i.memory_id
+                 AND r.owner_id = i.owner_id
+                 AND r.is_current
+                WHERE i.owner_id = ANY(%s)
+                  AND i.profile_id = %s
+                  AND i.memory_type = %s
+                  AND r.lifecycle_status = 'active'
+                  AND r.valid_from <= %s
+                  AND (r.valid_until IS NULL OR r.valid_until > %s)
+                  AND r.embedding IS NOT NULL
+                ORDER BY r.embedding <=> %s::vector
+                LIMIT 5
+                """,
+                (
+                    vector_literal,
+                    list(principal.visible_owner_ids),
+                    profile_id,
+                    memory_type,
+                    effective_at,
+                    effective_at,
+                    vector_literal,
+                ),
+            ).fetchall()
+            if not rows:
+                return None
+            best: tuple[float, MemoryRecord] | None = None
+            for row in rows:
+                distance = row["embedding_distance"]
+                similarity = 1.0 - float(distance)
+                if similarity < threshold:
+                    continue
+                if best is None or similarity > best[0]:
+                    best = (
+                        similarity,
+                        to_record(connection, row, row["owner_id"]),
+                    )
+            return best[1] if best is not None else None
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,
@@ -278,6 +355,23 @@ class PostgreSQLMemoryRepository:
                 effective_at=effective_at,
                 limit=limit,
                 query_embedding=query_embedding,
+            )
+
+    def find_recall_candidates_by_ids(
+        self,
+        principal: PrincipalContext,
+        *,
+        memory_ids: Sequence[UUID],
+        effective_at: datetime,
+    ) -> tuple[MemoryRecallCandidate, ...]:
+        """按 memory_id 集合加载可见的当前活动候选（关系感知召回补漏用）。"""
+
+        with self._pool.connection() as connection:
+            return query_recall_candidates_by_ids(
+                connection,
+                principal,
+                memory_ids=memory_ids,
+                effective_at=effective_at,
             )
 
     def maintain(

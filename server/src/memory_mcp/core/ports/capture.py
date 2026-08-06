@@ -27,6 +27,9 @@ class ExtractionRequest:
     allowed_memory_types: frozenset[str]
     capture_guidance: str
     profile_version: str
+    # 该 Profile 允许的业务进展值；空集合表示该 Profile 不使用 business_progress，
+    # 模型必须留空该字段。透传给模型 prompt，避免其凭空编造不在白名单内的值。
+    business_progress_values: frozenset[str] = frozenset()
     subject_hint: str | None = None
 
 

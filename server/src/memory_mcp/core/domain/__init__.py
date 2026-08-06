@@ -22,7 +22,10 @@ from memory_mcp.core.domain.lifecycle import (
     normalize_memory_text,
     tokenize_memory_text,
 )
-from memory_mcp.core.domain.maintenance import MaintenanceResult
+from memory_mcp.core.domain.maintenance import (
+    ExpiredRelationContext,
+    MaintenanceResult,
+)
 from memory_mcp.core.domain.models import (
     AssertionKind,
     Evidence,
@@ -43,6 +46,9 @@ from memory_mcp.core.domain.recall import (
     RecallQuery,
     RecallResult,
     RecallSourceSummary,
+    TimelineHop,
+    TimelineQuery,
+    TimelineResult,
 )
 from memory_mcp.core.domain.relations import (
     MemoryRelation,
@@ -69,6 +75,7 @@ __all__ = [
     "Evidence",
     "EvidenceDocument",
     "EvidenceSourceType",
+    "ExpiredRelationContext",
     "ExpressionBasis",
     "ExtractionMetadata",
     "LifecycleStatus",
@@ -99,6 +106,9 @@ __all__ = [
     "SensitivityLevel",
     "SimpleTokenizer",
     "TeamExtractionResult",
+    "TimelineHop",
+    "TimelineQuery",
+    "TimelineResult",
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",

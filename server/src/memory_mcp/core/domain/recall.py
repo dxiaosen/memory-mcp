@@ -14,7 +14,7 @@ from memory_mcp.core.domain.models import (
     SensitivityLevel,
     VerificationStatus,
 )
-from memory_mcp.core.domain.relations import MemoryRelationSummary
+from memory_mcp.core.domain.relations import MemoryRelationSummary, RelationDirection
 
 
 def _required_text(value: str, field_name: str) -> str:
@@ -114,6 +114,56 @@ class RecallResult:
     """召回结果集合与服务端预渲染的安全上下文块，可直接注入 Agent。"""
 
     items: tuple[RecalledMemory, ...]
+    rendered_context: str
+    estimated_tokens: int
+    token_budget: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineQuery:
+    """时间线召回请求：以一条记忆为焦点，沿关系展开演进链。
+
+    owner 由独立的可信 PrincipalContext 提供。``focus_memory_id`` 是演进链的
+    起点（通常为一条 thesis）；``max_hops`` 限制一跳关系端点的数量上限；
+    ``token_budget`` 裁剪渲染上下文的 token 占用。
+    """
+
+    profile_id: str
+    focus_memory_id: UUID
+    max_hops: int = 20
+    token_budget: int = 600
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "profile_id",
+            _required_text(self.profile_id, "profile_id"),
+        )
+        if not isinstance(self.focus_memory_id, UUID):
+            raise ValueError("focus_memory_id must be a UUID")
+        if not 1 <= self.max_hops <= 50:
+            raise ValueError("max_hops must be between 1 and 50")
+        if self.token_budget < 1:
+            raise ValueError("token_budget must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineHop:
+    """时间线演进链中的一跳：端点记忆 + 连接它的关系信息。"""
+
+    memory: RecalledMemory
+    relation_type: str
+    direction: RelationDirection
+    depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineResult:
+    """时间线召回结果：焦点记忆 + 按 observed_at 升序排列的演进跳。"""
+
+    focus: RecalledMemory | None
+    hops: tuple[TimelineHop, ...]
     rendered_context: str
     estimated_tokens: int
     token_budget: int

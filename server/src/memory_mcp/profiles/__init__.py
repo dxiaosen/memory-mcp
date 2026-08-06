@@ -10,10 +10,10 @@ from memory_mcp.profiles.investment_research import InvestmentResearchProfile
 
 _BUILT_IN_POLICY_FINGERPRINTS = {
     ("general-work", "v1"): (
-        "3daa04b3e3aa75ed0ce128fd35138976369001f88f1af5e4042dbb2dc13a4983"
+        "059cc7aec27384deae273124ed1fae862bd275fca29dc7a65e16eb2b744b69ac"
     ),
     ("investment-research", "v1"): (
-        "0add9b7b6391507944f05d492f119823661cb4a23d5ba32f20b090d19245cb45"
+        "794b5f54d875d140e7b3c10c24d3066fca443eee59e988ebe80502d4e0e28a5e"
     ),
 }
 
