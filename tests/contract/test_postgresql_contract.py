@@ -67,9 +67,6 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     sql = migrations[0].sql
     # 核心表和索引存在。
     for required_fragment in (
-        "memory_profiles",
-        "memory_profile_types",
-        "memory_profile_relations",
         "memory_items",
         "memory_revisions",
         "memory_evidence",
@@ -175,7 +172,7 @@ def test_real_postgresql_migration_checksum_and_pool_close(
             connection.execute(
                 """
                 SELECT version, checksum
-                FROM memory_schema_migrations
+                FROM schema_migrations
                 ORDER BY version
                 """
             ).fetchall()
@@ -778,10 +775,7 @@ def _truncate_memory_tables(database_url: str) -> None:
                             memory_evidence,
                             memory_revisions,
                             memory_items,
-                            memory_profile_relations,
-                            memory_profile_types,
-                            memory_profiles,
-                            memory_capture_runs
+                            memory_capture_runs, memory_team_runs
             """
         )
 

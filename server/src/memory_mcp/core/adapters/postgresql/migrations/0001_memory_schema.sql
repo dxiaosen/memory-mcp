@@ -6,28 +6,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE memory_profiles (
-    profile_id TEXT PRIMARY KEY,
-    CONSTRAINT memory_profiles_non_empty
-        CHECK (length(btrim(profile_id)) > 0)
-);
-
-CREATE TABLE memory_profile_types (
-    profile_id TEXT NOT NULL,
-    memory_type TEXT NOT NULL,
-    PRIMARY KEY (profile_id, memory_type),
-    CONSTRAINT memory_profile_types_non_empty
-        CHECK (length(btrim(memory_type)) > 0)
-);
-
-CREATE TABLE memory_profile_relations (
-    profile_id TEXT NOT NULL,
-    relation_type TEXT NOT NULL,
-    PRIMARY KEY (profile_id, relation_type),
-    CONSTRAINT memory_profile_relations_type_non_empty
-        CHECK (length(btrim(relation_type)) > 0)
-);
-
 CREATE TABLE memory_items (
     memory_id UUID PRIMARY KEY,
     owner_id TEXT NOT NULL,
@@ -682,7 +660,7 @@ CREATE TABLE memory_capture_outcomes (
 CREATE INDEX memory_capture_outcomes_owner_decision_idx
     ON memory_capture_outcomes (owner_id, decision);
 
-CREATE TABLE memory_team_extraction_runs (
+CREATE TABLE memory_team_runs (
     run_id UUID PRIMARY KEY,
     team_owner_id TEXT NOT NULL,
     profile_id TEXT NOT NULL,
@@ -691,8 +669,7 @@ CREATE TABLE memory_team_extraction_runs (
     memory_count INTEGER NOT NULL DEFAULT 0,
     cluster_count INTEGER NOT NULL DEFAULT 0,
     candidate_count INTEGER NOT NULL DEFAULT 0,
-    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at TIMESTAMPTZ,
-    CONSTRAINT memory_team_extraction_runs_team_profile_completed_unique
+    CONSTRAINT memory_team_runs_team_profile_completed_unique
         UNIQUE (team_owner_id, profile_id, completed_at)
 );

@@ -118,64 +118,8 @@ class PostgreSQLMemoryRepository:
             validate_schema(connection)
 
     def register_profile(self, profile: MemoryProfile) -> None:
-        """幂等注册 profile 及其 memory_type/relation_type 集合。"""
+        """注册 profile 到进程内 ProfileRegistry；DB 表已删除，Profile 是代码定义的。"""
 
-        with self._pool.connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO memory_profiles (profile_id)
-                VALUES (%s)
-                ON CONFLICT (profile_id) DO NOTHING
-                """,
-                (profile.profile_id,),
-            )
-            _executemany(
-                connection,
-                """
-                INSERT INTO memory_profile_types (profile_id, memory_type)
-                VALUES (%s, %s)
-                ON CONFLICT (profile_id, memory_type) DO NOTHING
-                """,
-                [
-                    (profile.profile_id, memory_type)
-                    for memory_type in sorted(profile.memory_types)
-                ],
-            )
-            _executemany(
-                connection,
-                """
-                INSERT INTO memory_profile_relations (profile_id, relation_type)
-                VALUES (%s, %s)
-                ON CONFLICT (profile_id, relation_type) DO NOTHING
-                """,
-                [
-                    (profile.profile_id, relation_type)
-                    for relation_type in sorted(profile.relation_policies)
-                ],
-            )
-            registered_types = {
-                row["memory_type"]
-                for row in connection.execute(
-                    """
-                    SELECT memory_type
-                    FROM memory_profile_types
-                    WHERE profile_id = %s
-                    """,
-                    (profile.profile_id,),
-                ).fetchall()
-            }
-            removed_types = registered_types - profile.memory_types
-            _executemany(
-                connection,
-                """
-                DELETE FROM memory_profile_types
-                WHERE profile_id = %s AND memory_type = %s
-                """,
-                [
-                    (profile.profile_id, memory_type)
-                    for memory_type in sorted(removed_types)
-                ],
-            )
         self._profiles[profile.profile_id] = profile
         log_event(
             _LOGGER,
@@ -1779,7 +1723,7 @@ def _extract_team_common(
     # run 级幂等：同 (team, profile, completed_at) 已运行则直接返回既有计数。
     inserted = connection.execute(
         """
-        INSERT INTO memory_team_extraction_runs (
+        INSERT INTO memory_team_runs (
             run_id, team_owner_id, profile_id, status, completed_at
         ) VALUES (%s, %s, %s, 'completed', %s)
         ON CONFLICT (team_owner_id, profile_id, completed_at) DO NOTHING
@@ -1791,7 +1735,7 @@ def _extract_team_common(
         existing = connection.execute(
             """
             SELECT member_count, memory_count, cluster_count, candidate_count
-            FROM memory_team_extraction_runs
+            FROM memory_team_runs
             WHERE team_owner_id = %s AND profile_id = %s AND completed_at = %s
             """,
             (team_owner_id, profile_id, effective_at),
@@ -2068,12 +2012,11 @@ def _update_extraction_run_counts(
 
     connection.execute(
         """
-        UPDATE memory_team_extraction_runs
+        UPDATE memory_team_runs
         SET member_count = %s,
             memory_count = %s,
             cluster_count = %s,
-            candidate_count = %s,
-            started_at = completed_at
+            candidate_count = %s
         WHERE run_id = %s
         """,
         (

@@ -51,7 +51,7 @@ flowchart LR
 | 幂等 | event 级幂等、payload conflict、失败重处理 |
 | MCP Server | Bearer Token 认证与 scope |
 | 工具与 DTO | 十个 MCP 工具、严格 DTO、稳定错误码 |
-| 记忆配置 | `GeneralWorkProfile`（general-work-v2）与 `InvestmentResearchProfile`（investment-research-v2） |
+| 记忆配置 | `GeneralWorkProfile`（general-work-v1）与 `InvestmentResearchProfile`（investment-research-v1） |
 | Revision | confidence/verification/sensitivity/validity、结构化引用来源 |
 | 生命周期 | owner-scoped 幂等 revoke、读取时失效过滤、服务端周期到期物化 |
 | 关系 | owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效与一跳关系感知召回 |
@@ -331,8 +331,8 @@ model_id/prompt/schema_version）。schema 用 `memory_relations_provenance_stat
 
 | Profile | profile_id | 版本 | memory_types |
 | --- | --- | --- | --- |
-| `GeneralWorkProfile` | `general-work` | `general-work-v2` | preference/stable_context/ongoing_item/decision |
-| `InvestmentResearchProfile` | `investment-research` | `investment-research-v2` | research_preference/research_question/thesis/evidence_claim/risk/catalyst/ongoing_research/research_decision |
+| `GeneralWorkProfile` | `general-work` | `general-work-v1` | preference/stable_context/ongoing_item/decision |
+| `InvestmentResearchProfile` | `investment-research` | `investment-research-v1` | research_preference/research_question/thesis/evidence_claim/risk/catalyst/ongoing_research/research_decision |
 
 `profile_fingerprint` 对影响行为的 Profile 字段生成 SHA-256 指纹，捕获幂等记录它，跨版本
 冲突可检测。Token 未传 profile_id 时用认证主体的 `default_profile_id` 路由（默认 general-work）。

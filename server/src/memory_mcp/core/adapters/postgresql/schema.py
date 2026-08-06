@@ -16,10 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 _MIGRATION_LOCK_NAME = "memory-mcp-schema-migrations-v1"
 _REQUIRED_TABLES = frozenset(
     {
-        "memory_schema_migrations",
-        "memory_profiles",
-        "memory_profile_relations",
-        "memory_profile_types",
+        "schema_migrations",
         "memory_items",
         "memory_revisions",
         "memory_evidence",
@@ -29,7 +26,7 @@ _REQUIRED_TABLES = frozenset(
         "memory_review_item_documents",
         "memory_relations",
         "memory_capture_outcomes",
-        "memory_team_extraction_runs",
+        "memory_team_runs",
     }
 )
 _REQUIRED_EXTENSIONS = frozenset({"pg_trgm", "vector"})
@@ -89,7 +86,7 @@ def apply_migrations(
     with psycopg.connect(database_url, row_factory=dict_row) as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS memory_schema_migrations (
+            CREATE TABLE IF NOT EXISTS schema_migrations (
                 version TEXT PRIMARY KEY,
                 checksum TEXT NOT NULL,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -107,7 +104,7 @@ def apply_migrations(
                 for row in connection.execute(
                     """
                     SELECT version, checksum
-                    FROM memory_schema_migrations
+                    FROM schema_migrations
                     ORDER BY version
                     """
                 ).fetchall()
@@ -131,7 +128,7 @@ def apply_migrations(
                     connection.execute("CREATE SCHEMA public")
                     connection.execute(
                         """
-                        TRUNCATE memory_schema_migrations
+                        TRUNCATE schema_migrations
                         """
                     )
                     connection.commit()
@@ -155,7 +152,7 @@ def apply_migrations(
                     connection.execute(migration.sql, prepare=False)
                     connection.execute(
                         """
-                        INSERT INTO memory_schema_migrations (version, checksum)
+                        INSERT INTO schema_migrations (version, checksum)
                         VALUES (%s, %s)
                         """,
                         (migration.version, migration.checksum),
@@ -208,7 +205,7 @@ def validate_schema(connection) -> None:
             for row in cursor.execute(
                 """
                 SELECT version, checksum
-                FROM memory_schema_migrations
+                FROM schema_migrations
                 ORDER BY version
                 """
             ).fetchall()

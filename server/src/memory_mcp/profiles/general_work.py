@@ -18,7 +18,7 @@ class GeneralWorkProfile:
         "Capture explicit durable user preferences, stable context, ongoing "
         "items, and decisions. Keep ambiguous or inferred changes pending."
     )
-    profile_version: str = "general-work-v2"
+    profile_version: str = "general-work-v1"
     relation_policies: dict[str, MemoryRelationPolicy] = field(default_factory=dict)
     recall_priorities: dict[str, int] = field(
         default_factory=lambda: {
