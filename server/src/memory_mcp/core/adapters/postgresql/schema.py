@@ -21,12 +21,12 @@ _REQUIRED_TABLES = frozenset(
         "memory_revisions",
         "memory_evidence",
         "memory_evidence_documents",
-        "memory_capture_runs",
-        "memory_review_items",
-        "memory_review_item_documents",
+        "memory_captures",
+        "memory_reviews",
+        "memory_review_documents",
         "memory_relations",
         "memory_capture_outcomes",
-        "memory_team_runs",
+        "memory_team_extractions",
     }
 )
 _REQUIRED_EXTENSIONS = frozenset({"pg_trgm", "vector"})
@@ -37,7 +37,7 @@ _REQUIRED_INDEXES = frozenset(
         "memory_revisions_recall_content_trgm_idx",
         "memory_revisions_embedding_idx",
         "memory_revisions_maintenance_expiry_idx",
-        "memory_review_items_maintenance_idx",
+        "memory_reviews_maintenance_idx",
     }
 )
 

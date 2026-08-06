@@ -115,7 +115,7 @@ def test_investment_research_profile_declares_complete_built_in_contract() -> No
     profile = InvestmentResearchProfile()
 
     assert profile.profile_id == "investment-research"
-    assert profile.profile_version == "investment-research-v1"
+    assert profile.profile_version == "v1"
     assert profile.memory_types == {
         "research_preference",
         "research_question",

@@ -14,6 +14,7 @@ CREATE TABLE memory_items (
     memory_type TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     lifecycle_status TEXT NOT NULL DEFAULT 'active',
+    capture_id UUID,
     CONSTRAINT memory_items_owner_non_empty
         CHECK (length(btrim(owner_id)) > 0),
     CONSTRAINT memory_items_subject_non_empty
@@ -216,7 +217,7 @@ CREATE TABLE memory_evidence_documents (
         CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0)
 );
 
-CREATE TABLE memory_capture_runs (
+CREATE TABLE memory_captures (
     capture_id UUID PRIMARY KEY,
     owner_id TEXT NOT NULL,
     profile_id TEXT NOT NULL,
@@ -234,27 +235,27 @@ CREATE TABLE memory_capture_runs (
     event_id TEXT,
     contract_version TEXT,
     payload_fingerprint TEXT,
-    CONSTRAINT memory_capture_runs_owner_non_empty
+    CONSTRAINT memory_captures_owner_non_empty
         CHECK (length(btrim(owner_id)) > 0),
-    CONSTRAINT memory_capture_runs_conversation_non_empty
+    CONSTRAINT memory_captures_conversation_non_empty
         CHECK (length(btrim(conversation_id)) > 0),
-    CONSTRAINT memory_capture_runs_turn_non_empty
+    CONSTRAINT memory_captures_turn_non_empty
         CHECK (length(btrim(source_turn_id)) > 0),
-    CONSTRAINT memory_capture_runs_profile_version_non_empty
+    CONSTRAINT memory_captures_profile_version_non_empty
         CHECK (length(btrim(profile_version)) > 0),
-    CONSTRAINT memory_capture_runs_profile_fingerprint_non_empty
+    CONSTRAINT memory_captures_profile_fingerprint_non_empty
         CHECK (length(btrim(profile_fingerprint)) > 0),
-    CONSTRAINT memory_capture_runs_prompt_non_empty
+    CONSTRAINT memory_captures_prompt_non_empty
         CHECK (length(btrim(prompt_version)) > 0),
-    CONSTRAINT memory_capture_runs_schema_non_empty
+    CONSTRAINT memory_captures_schema_non_empty
         CHECK (length(btrim(schema_version)) > 0),
-    CONSTRAINT memory_capture_runs_model_non_empty
+    CONSTRAINT memory_captures_model_non_empty
         CHECK (length(btrim(model_id)) > 0),
-    CONSTRAINT memory_capture_runs_status
+    CONSTRAINT memory_captures_status
         CHECK (
             status IN ('completed', 'failed', 'reprocess_required')
         ),
-    CONSTRAINT memory_capture_runs_failure_state
+    CONSTRAINT memory_captures_failure_state
         CHECK (
             (status = 'completed' AND failure_code IS NULL)
             OR
@@ -263,7 +264,7 @@ CREATE TABLE memory_capture_runs (
                 AND length(btrim(failure_code)) > 0
             )
         ),
-    CONSTRAINT memory_capture_runs_event_shape
+    CONSTRAINT memory_captures_event_shape
         CHECK (
             (
                 event_id IS NULL
@@ -277,12 +278,12 @@ CREATE TABLE memory_capture_runs (
                 AND length(btrim(payload_fingerprint)) > 0
             )
         ),
-    CONSTRAINT memory_capture_runs_owner_identity
+    CONSTRAINT memory_captures_owner_identity
         UNIQUE (capture_id, owner_id)
 );
 
-CREATE UNIQUE INDEX memory_capture_runs_source_unique
-    ON memory_capture_runs (
+CREATE UNIQUE INDEX memory_captures_source_unique
+    ON memory_captures (
         owner_id,
         profile_id,
         conversation_id,
@@ -290,14 +291,14 @@ CREATE UNIQUE INDEX memory_capture_runs_source_unique
     )
     WHERE event_id IS NULL;
 
-CREATE UNIQUE INDEX memory_capture_runs_event_unique
-    ON memory_capture_runs (owner_id, event_id)
+CREATE UNIQUE INDEX memory_captures_event_unique
+    ON memory_captures (owner_id, event_id)
     WHERE event_id IS NOT NULL;
 
-CREATE INDEX memory_capture_runs_owner_status_idx
-    ON memory_capture_runs (owner_id, status, completed_at);
+CREATE INDEX memory_captures_owner_status_idx
+    ON memory_captures (owner_id, status, completed_at);
 
-CREATE TABLE memory_review_items (
+CREATE TABLE memory_reviews (
     review_id UUID PRIMARY KEY,
     candidate_id UUID NOT NULL,
     capture_id UUID,
@@ -332,15 +333,15 @@ CREATE TABLE memory_review_items (
     valid_until TIMESTAMPTZ,
     source_type TEXT NOT NULL DEFAULT 'conversation',
     embedding vector(1024),
-    CONSTRAINT memory_review_items_content_non_empty
+    CONSTRAINT memory_reviews_content_non_empty
         CHECK (length(btrim(content)) > 0),
-    CONSTRAINT memory_review_items_source_non_empty
+    CONSTRAINT memory_reviews_source_non_empty
         CHECK (length(btrim(source_expression)) > 0),
-    CONSTRAINT memory_review_items_rationale_non_empty
+    CONSTRAINT memory_reviews_rationale_non_empty
         CHECK (length(btrim(save_rationale)) > 0),
-    CONSTRAINT memory_review_items_confidence
+    CONSTRAINT memory_reviews_confidence
         CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    CONSTRAINT memory_review_items_assertion_kind
+    CONSTRAINT memory_reviews_assertion_kind
         CHECK (
             assertion_kind IN (
                 'user_view',
@@ -349,30 +350,30 @@ CREATE TABLE memory_review_items (
                 'system_inference'
             )
         ),
-    CONSTRAINT memory_review_items_durability
+    CONSTRAINT memory_reviews_durability
         CHECK (durability IN ('durable', 'uncertain', 'temporary')),
-    CONSTRAINT memory_review_items_expression_basis
+    CONSTRAINT memory_reviews_expression_basis
         CHECK (expression_basis IN ('explicit', 'inferred', 'ambiguous')),
-    CONSTRAINT memory_review_items_source_role
+    CONSTRAINT memory_reviews_source_role
         CHECK (
             source_role IS NULL
             OR source_role IN ('user', 'assistant', 'tool')
         ),
-    CONSTRAINT memory_review_items_source_message_non_empty
+    CONSTRAINT memory_reviews_source_message_non_empty
         CHECK (
             source_message_id IS NULL
             OR length(btrim(source_message_id)) > 0
         ),
-    CONSTRAINT memory_review_items_source_tool_non_empty
+    CONSTRAINT memory_reviews_source_tool_non_empty
         CHECK (
             source_tool_name IS NULL
             OR length(btrim(source_tool_name)) > 0
         ),
-    CONSTRAINT memory_review_items_tool_role
+    CONSTRAINT memory_reviews_tool_role
         CHECK (source_tool_name IS NULL OR source_role = 'tool'),
-    CONSTRAINT memory_review_items_status
+    CONSTRAINT memory_reviews_status
         CHECK (status IN ('pending', 'confirmed', 'rejected', 'expired')),
-    CONSTRAINT memory_review_items_decision_state
+    CONSTRAINT memory_reviews_decision_state
         CHECK (
             (
                 status = 'pending'
@@ -392,7 +393,7 @@ CREATE TABLE memory_review_items (
                 AND resolved_memory_id IS NULL
             )
         ),
-    CONSTRAINT memory_review_items_verification_status
+    CONSTRAINT memory_reviews_verification_status
         CHECK (
             verification_status IN (
                 'unverified',
@@ -401,7 +402,7 @@ CREATE TABLE memory_review_items (
                 'source_verified'
             )
         ),
-    CONSTRAINT memory_review_items_sensitivity_level
+    CONSTRAINT memory_reviews_sensitivity_level
         CHECK (
             sensitivity_level IN (
                 'public',
@@ -410,34 +411,34 @@ CREATE TABLE memory_review_items (
                 'restricted'
             )
         ),
-    CONSTRAINT memory_review_items_valid_window
+    CONSTRAINT memory_reviews_valid_window
         CHECK (valid_until IS NULL OR valid_until > valid_from),
-    CONSTRAINT memory_review_items_source_type
+    CONSTRAINT memory_reviews_source_type
         CHECK (source_type IN ('conversation', 'tool', 'document', 'web')),
-    CONSTRAINT memory_review_items_candidate_unique
+    CONSTRAINT memory_reviews_candidate_unique
         UNIQUE (candidate_id),
-    CONSTRAINT memory_review_items_owner_identity
+    CONSTRAINT memory_reviews_owner_identity
         UNIQUE (review_id, owner_id)
 );
 
-CREATE INDEX memory_review_items_owner_status_idx
-    ON memory_review_items (owner_id, status, created_at);
+CREATE INDEX memory_reviews_owner_status_idx
+    ON memory_reviews (owner_id, status, created_at);
 
-CREATE INDEX memory_review_items_resolved_memory_idx
-    ON memory_review_items (owner_id, resolved_memory_id)
+CREATE INDEX memory_reviews_resolved_memory_idx
+    ON memory_reviews (owner_id, resolved_memory_id)
     WHERE resolved_memory_id IS NOT NULL;
 
 -- pending review 语义去重：按 owner+type 检索有 embedding 的 pending 候选，
 -- 用余弦相似度判断是否与待建候选语义重复（< 0.05 距离 ≈ >0.95 相似）。
-CREATE INDEX memory_review_items_pending_embedding_idx
-    ON memory_review_items (owner_id, memory_type)
+CREATE INDEX memory_reviews_pending_embedding_idx
+    ON memory_reviews (owner_id, memory_type)
     WHERE status = 'pending' AND embedding IS NOT NULL;
 
-CREATE INDEX memory_review_items_maintenance_idx
-    ON memory_review_items (valid_until, created_at, owner_id, review_id)
+CREATE INDEX memory_reviews_maintenance_idx
+    ON memory_reviews (valid_until, created_at, owner_id, review_id)
     WHERE status = 'pending';
 
-CREATE TABLE memory_review_item_documents (
+CREATE TABLE memory_review_documents (
     review_id UUID PRIMARY KEY,
     source_uri TEXT,
     source_title TEXT,
@@ -446,15 +447,15 @@ CREATE TABLE memory_review_item_documents (
     retrieved_at TIMESTAMPTZ,
     content_hash TEXT,
     citation_locator TEXT,
-    CONSTRAINT memory_review_item_documents_uri_non_empty
+    CONSTRAINT memory_review_documents_uri_non_empty
         CHECK (source_uri IS NULL OR length(btrim(source_uri)) > 0),
-    CONSTRAINT memory_review_item_documents_title_non_empty
+    CONSTRAINT memory_review_documents_title_non_empty
         CHECK (source_title IS NULL OR length(btrim(source_title)) > 0),
-    CONSTRAINT memory_review_item_documents_publisher_non_empty
+    CONSTRAINT memory_review_documents_publisher_non_empty
         CHECK (source_publisher IS NULL OR length(btrim(source_publisher)) > 0),
-    CONSTRAINT memory_review_item_documents_hash_non_empty
+    CONSTRAINT memory_review_documents_hash_non_empty
         CHECK (content_hash IS NULL OR length(btrim(content_hash)) > 0),
-    CONSTRAINT memory_review_item_documents_locator_non_empty
+    CONSTRAINT memory_review_documents_locator_non_empty
         CHECK (citation_locator IS NULL OR length(btrim(citation_locator)) > 0)
 );
 
@@ -660,7 +661,7 @@ CREATE TABLE memory_capture_outcomes (
 CREATE INDEX memory_capture_outcomes_owner_decision_idx
     ON memory_capture_outcomes (owner_id, decision);
 
-CREATE TABLE memory_team_runs (
+CREATE TABLE memory_team_extractions (
     run_id UUID PRIMARY KEY,
     team_owner_id TEXT NOT NULL,
     profile_id TEXT NOT NULL,
@@ -670,6 +671,6 @@ CREATE TABLE memory_team_runs (
     cluster_count INTEGER NOT NULL DEFAULT 0,
     candidate_count INTEGER NOT NULL DEFAULT 0,
     completed_at TIMESTAMPTZ,
-    CONSTRAINT memory_team_runs_team_profile_completed_unique
+    CONSTRAINT memory_team_extractions_team_profile_completed_unique
         UNIQUE (team_owner_id, profile_id, completed_at)
 );

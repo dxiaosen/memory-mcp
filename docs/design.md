@@ -51,7 +51,7 @@ flowchart LR
 | 幂等 | event 级幂等、payload conflict、失败重处理 |
 | MCP Server | Bearer Token 认证与 scope |
 | 工具与 DTO | 十个 MCP 工具、严格 DTO、稳定错误码 |
-| 记忆配置 | `GeneralWorkProfile`（general-work-v1）与 `InvestmentResearchProfile`（investment-research-v1） |
+| 记忆配置 | `GeneralWorkProfile`（v1）与 `InvestmentResearchProfile`（v1） |
 | Revision | confidence/verification/sensitivity/validity、结构化引用来源 |
 | 生命周期 | owner-scoped 幂等 revoke、读取时失效过滤、服务端周期到期物化 |
 | 关系 | owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效与一跳关系感知召回 |
@@ -331,8 +331,8 @@ model_id/prompt/schema_version）。schema 用 `memory_relations_provenance_stat
 
 | Profile | profile_id | 版本 | memory_types |
 | --- | --- | --- | --- |
-| `GeneralWorkProfile` | `general-work` | `general-work-v1` | preference/stable_context/ongoing_item/decision |
-| `InvestmentResearchProfile` | `investment-research` | `investment-research-v1` | research_preference/research_question/thesis/evidence_claim/risk/catalyst/ongoing_research/research_decision |
+| `GeneralWorkProfile` | `general-work` | `v1` | preference/stable_context/ongoing_item/decision |
+| `InvestmentResearchProfile` | `investment-research` | `v1` | research_preference/research_question/thesis/evidence_claim/risk/catalyst/ongoing_research/research_decision |
 
 `profile_fingerprint` 对影响行为的 Profile 字段生成 SHA-256 指纹，捕获幂等记录它，跨版本
 冲突可检测。Token 未传 profile_id 时用认证主体的 `default_profile_id` 路由（默认 general-work）。
@@ -879,9 +879,9 @@ schema 用 CHECK 约束强制状态机与幂等（与代码互证）：
 | `memory_revisions_valid_window` | valid_until > valid_from |
 | `memory_revisions_one_current_idx` | 每 memory_id 至多一个 is_current（部分唯一索引） |
 | `memory_items_one_active_scope_idx` | 同 owner/profile 的每个 (subject, memory_type) 至多一条活动记忆（部分唯一索引），防止并发 auto_save 双写 |
-| `memory_capture_runs_failure_state` | completed 无 failure_code；failed/reprocess 必有 |
-| `memory_capture_runs_event_shape` | event_id/contract_version/payload_fingerprint 三者同有或同无 |
-| `memory_review_items_decision_state` | pending 无 decided/resolved；confirmed 有两者；rejected/expired 有 decided 无 resolved |
+| `memory_captures_failure_state` | completed 无 failure_code；failed/reprocess 必有 |
+| `memory_captures_event_shape` | event_id/contract_version/payload_fingerprint 三者同有或同无 |
+| `memory_reviews_decision_state` | pending 无 decided/resolved；confirmed 有两者；rejected/expired 有 decided 无 resolved |
 | `memory_relations_provenance_state` | origin+scope 组合的字段完整性（legacy/manual/automatic 三态） |
 | `memory_relations_terminal_state` | active/stale/revoked 三态字段完整性 |
 | `memory_relations_one_active_idx` | 同 owner/source/target/type 至多一条 active（部分唯一索引） |
@@ -913,7 +913,7 @@ last_success_at/last_error_type）。`MaintenanceHealth` observe_success/observe
 | 项 | 值 |
 | --- | --- |
 | 扩展 | `pg_trgm`、`vector`（pgvector） |
-| 必需索引 | `memory_items_recall_subject_trgm_idx`、`memory_items_one_active_scope_idx`、`memory_revisions_recall_content_trgm_idx`、`memory_revisions_embedding_idx`、`memory_revisions_maintenance_expiry_idx`、`memory_review_items_maintenance_idx` |
+| 必需索引 | `memory_items_recall_subject_trgm_idx`、`memory_items_one_active_scope_idx`、`memory_revisions_recall_content_trgm_idx`、`memory_revisions_embedding_idx`、`memory_revisions_maintenance_expiry_idx`、`memory_reviews_maintenance_idx` |
 
 `schema.py` 的 `_REQUIRED_INDEXES`/`_REQUIRED_EXTENSIONS` 与 `health` 强制校验。
 

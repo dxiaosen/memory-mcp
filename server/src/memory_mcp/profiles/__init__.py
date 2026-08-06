@@ -9,10 +9,10 @@ from memory_mcp.profiles.general_work import GeneralWorkProfile
 from memory_mcp.profiles.investment_research import InvestmentResearchProfile
 
 _BUILT_IN_POLICY_FINGERPRINTS = {
-    ("general-work", "general-work-v1"): (
+    ("general-work", "v1"): (
         "3daa04b3e3aa75ed0ce128fd35138976369001f88f1af5e4042dbb2dc13a4983"
     ),
-    ("investment-research", "investment-research-v1"): (
+    ("investment-research", "v1"): (
         "0add9b7b6391507944f05d492f119823661cb4a23d5ba32f20b090d19245cb45"
     ),
 }

@@ -191,7 +191,7 @@ def _relation_request(
         profile_id="investment-research",
         content="证据明确支持论点",
         observed_at=datetime(2026, 7, 29, tzinfo=UTC),
-        profile_version="investment-research-v1",
+        profile_version="v1",
         relation_policies={
             "supports": MemoryRelationPolicy(
                 source_memory_types=frozenset({"evidence_claim"}),

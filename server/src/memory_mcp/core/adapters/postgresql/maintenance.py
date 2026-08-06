@@ -78,7 +78,7 @@ def run_maintenance(
         ),
         review_targets AS (
             SELECT review_id, owner_id
-            FROM memory_review_items
+            FROM memory_reviews
             WHERE status = 'pending'
               AND (
                   (valid_until IS NOT NULL AND valid_until <= %s)
@@ -89,7 +89,7 @@ def run_maintenance(
             FOR UPDATE SKIP LOCKED
         ),
         expired_reviews AS (
-            UPDATE memory_review_items AS review
+            UPDATE memory_reviews AS review
             SET status = 'expired', decided_at = %s
             FROM review_targets AS target
             WHERE review.review_id = target.review_id

@@ -656,7 +656,7 @@ class PostgreSQLMemoryRepository:
                        prompt_version, schema_version, model_id, status, failure_code,
                        created_at, completed_at, event_id,
                        contract_version, payload_fingerprint
-                FROM memory_capture_runs
+                FROM memory_captures
                 WHERE {where_clause}
                 """,
                 parameters,
@@ -722,7 +722,7 @@ class PostgreSQLMemoryRepository:
                        prompt_version, schema_version, model_id, status, failure_code,
                        created_at, completed_at, event_id,
                        contract_version, payload_fingerprint
-                FROM memory_capture_runs
+                FROM memory_captures
                 WHERE {where_clause}
                 FOR UPDATE
                 """,
@@ -763,7 +763,7 @@ class PostgreSQLMemoryRepository:
                 )
                 connection.execute(
                     """
-                    UPDATE memory_capture_runs
+                    UPDATE memory_captures
                     SET profile_version = %s,
                         profile_fingerprint = %s,
                         prompt_version = %s,
@@ -788,7 +788,9 @@ class PostgreSQLMemoryRepository:
                     ),
                 )
             for record in write.memories:
-                self._insert_record(connection, record)
+                self._insert_record(
+                    connection, record, capture_id=result.capture_id
+                )
             for duplicate in write.duplicate_evidence:
                 target = connection.execute(
                     """
@@ -950,7 +952,7 @@ class PostgreSQLMemoryRepository:
             if row is not None:
                 # 锁主表行
                 connection.execute(
-                    "SELECT 1 FROM memory_review_items "
+                    "SELECT 1 FROM memory_reviews "
                     "WHERE owner_id = ANY(%s) AND review_id = %s FOR UPDATE",
                     (list(principal.visible_owner_ids), review_id),
                 ).fetchone()
@@ -971,7 +973,9 @@ class PostgreSQLMemoryRepository:
                     raise ValueError("confirmed review requires one memory write")
                 if memory is not None:
                     validate_review_memory(review, memory)
-                    self._insert_record(connection, memory)
+                    self._insert_record(
+                        connection, memory, capture_id=review.capture_id
+                    )
                 elif duplicate_evidence is not None:
                     target = connection.execute(
                         """
@@ -1045,7 +1049,7 @@ class PostgreSQLMemoryRepository:
             )
             cursor = connection.execute(
                 """
-                UPDATE memory_review_items
+                UPDATE memory_reviews
                 SET status = %s, decided_at = %s, resolved_memory_id = %s
                 WHERE owner_id = ANY(%s)
                   AND review_id = %s
@@ -1079,7 +1083,7 @@ class PostgreSQLMemoryRepository:
 
         connection.execute(
             """
-            INSERT INTO memory_capture_runs (
+            INSERT INTO memory_captures (
                 capture_id, owner_id, profile_id, conversation_id,
                 source_turn_id, profile_version, profile_fingerprint, prompt_version,
                 schema_version, model_id, status, failure_code,
@@ -1113,7 +1117,13 @@ class PostgreSQLMemoryRepository:
         )
 
     @classmethod
-    def _insert_record(cls, connection, record: MemoryRecord) -> None:
+    def _insert_record(
+        cls,
+        connection,
+        record: MemoryRecord,
+        *,
+        capture_id: UUID | None = None,
+    ) -> None:
         """插入 memory_item 及其当前 revision 和 evidence。"""
 
         item = record.item
@@ -1122,9 +1132,9 @@ class PostgreSQLMemoryRepository:
             """
             INSERT INTO memory_items (
                 memory_id, owner_id, profile_id, subject, memory_type, created_at,
-                lifecycle_status
+                lifecycle_status, capture_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 item.memory_id,
@@ -1134,6 +1144,7 @@ class PostgreSQLMemoryRepository:
                 item.memory_type,
                 item.created_at,
                 revision.lifecycle_status.value,
+                capture_id,
             ),
         )
         cls._insert_revision(connection, revision, record.evidence)
@@ -1267,12 +1278,12 @@ class PostgreSQLMemoryRepository:
         capture_id: UUID,
         review: ReviewItem,
     ) -> None:
-        """插入 review_item 行，有文档来源的再写 review_item_documents 子表。"""
+        """插入 review 行，有文档来源的再写 review_documents 子表。"""
 
         candidate = review.candidate
         connection.execute(
             """
-            INSERT INTO memory_review_items (
+            INSERT INTO memory_reviews (
                 review_id, candidate_id, capture_id, owner_id, profile_id,
                 subject, memory_type, content, assertion_kind,
                 business_progress, conversation_id, source_turn_id,
@@ -1345,7 +1356,7 @@ class PostgreSQLMemoryRepository:
         if has_document:
             connection.execute(
                 """
-                INSERT INTO memory_review_item_documents (
+                INSERT INTO memory_review_documents (
                     review_id, source_uri, source_title, source_publisher,
                     published_at, retrieved_at, content_hash, citation_locator
                 )
@@ -1495,7 +1506,7 @@ def _insert_relation(
         capture = connection.execute(
             """
             SELECT 1
-            FROM memory_capture_runs
+            FROM memory_captures
             WHERE capture_id = %s
               AND owner_id = %s
               AND profile_id = %s
@@ -1625,8 +1636,8 @@ SELECT ri.review_id, ri.candidate_id, ri.owner_id, ri.profile_id,
        rd.retrieved_at AS doc_retrieved_at,
        rd.content_hash AS doc_content_hash,
        rd.citation_locator AS doc_citation_locator
-FROM memory_review_items AS ri
-LEFT JOIN memory_review_item_documents AS rd
+FROM memory_reviews AS ri
+LEFT JOIN memory_review_documents AS rd
   ON rd.review_id = ri.review_id
 """
 
@@ -1640,7 +1651,7 @@ SELECT review_id, candidate_id, owner_id, profile_id, subject, memory_type,
        decided_at, resolved_memory_id, source_role, source_message_id,
        source_tool_name, verification_status, sensitivity_level,
        valid_from, valid_until, source_type
-FROM memory_review_items
+FROM memory_reviews
 """
 
 _SELECT_RELATION = """
@@ -1723,7 +1734,7 @@ def _extract_team_common(
     # run 级幂等：同 (team, profile, completed_at) 已运行则直接返回既有计数。
     inserted = connection.execute(
         """
-        INSERT INTO memory_team_runs (
+        INSERT INTO memory_team_extractions (
             run_id, team_owner_id, profile_id, status, completed_at
         ) VALUES (%s, %s, %s, 'completed', %s)
         ON CONFLICT (team_owner_id, profile_id, completed_at) DO NOTHING
@@ -1735,7 +1746,7 @@ def _extract_team_common(
         existing = connection.execute(
             """
             SELECT member_count, memory_count, cluster_count, candidate_count
-            FROM memory_team_runs
+            FROM memory_team_extractions
             WHERE team_owner_id = %s AND profile_id = %s AND completed_at = %s
             """,
             (team_owner_id, profile_id, effective_at),
@@ -1845,7 +1856,7 @@ def _extract_team_common(
         cluster_embedding = cluster[0]["embedding"]
         existing = connection.execute(
             """
-            SELECT 1 FROM memory_review_items
+            SELECT 1 FROM memory_reviews
             WHERE owner_id = %s AND memory_type = %s AND status = 'pending'
               AND (
                   subject = %s
@@ -1881,7 +1892,7 @@ def _extract_team_common(
 
         connection.execute(
             """
-            INSERT INTO memory_review_items (
+            INSERT INTO memory_reviews (
                 review_id, candidate_id, capture_id, owner_id, profile_id,
                 subject, memory_type, content, assertion_kind,
                 business_progress, conversation_id, source_turn_id,
@@ -2012,7 +2023,7 @@ def _update_extraction_run_counts(
 
     connection.execute(
         """
-        UPDATE memory_team_runs
+        UPDATE memory_team_extractions
         SET member_count = %s,
             memory_count = %s,
             cluster_count = %s,

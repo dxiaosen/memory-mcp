@@ -70,17 +70,17 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
         "memory_items",
         "memory_revisions",
         "memory_evidence",
-        "memory_capture_runs",
-        "memory_review_items",
+        "memory_captures",
+        "memory_reviews",
         "memory_relations",
         "memory_capture_outcomes",
-        "memory_capture_runs_event_unique",
+        "memory_captures_event_unique",
         "memory_revisions_one_current_idx",
         "memory_relations_one_active_idx",
         "memory_items_recall_subject_trgm_idx",
         "memory_revisions_recall_content_trgm_idx",
         "memory_revisions_maintenance_expiry_idx",
-        "memory_review_items_maintenance_idx",
+        "memory_reviews_maintenance_idx",
         "CREATE EXTENSION IF NOT EXISTS pg_trgm",
         "TIMESTAMPTZ",
         "UUID",
@@ -108,7 +108,7 @@ def test_postgresql_migration_preserves_authoritative_invariants() -> None:
     assert "REFERENCES" not in sql
     # 中间迁移步骤（ALTER/RENAME）在合并后不再存在。
     assert "RENAME COLUMN scenario TO profile_id" not in sql
-    assert "DROP CONSTRAINT memory_capture_runs_source_unique" not in sql
+    assert "DROP CONSTRAINT memory_captures_source_unique" not in sql
     # valid_from 默认值在 CREATE TABLE 里直接声明，不再用 ALTER。
     assert "valid_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" in sql
 
@@ -769,13 +769,13 @@ def _truncate_memory_tables(database_url: str) -> None:
             """
             TRUNCATE TABLE memory_capture_outcomes,
                             memory_relations,
-                            memory_review_item_documents,
-                            memory_review_items,
+                            memory_review_documents,
+                            memory_reviews,
                             memory_evidence_documents,
                             memory_evidence,
                             memory_revisions,
                             memory_items,
-                            memory_capture_runs, memory_team_runs
+                            memory_captures, memory_team_extractions
             """
         )
 

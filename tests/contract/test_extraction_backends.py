@@ -39,7 +39,7 @@ def _request(content: str) -> ExtractionRequest:
         observed_at=datetime(2026, 7, 30, tzinfo=UTC),
         allowed_memory_types=frozenset({"preference", "decision"}),
         capture_guidance="capture explicit durable preferences",
-        profile_version="general-work-v1",
+        profile_version="v1",
     )
 
 
@@ -182,7 +182,7 @@ def _relation_request(
         profile_id="investment-research",
         content="证据明确支持论点",
         observed_at=datetime(2026, 7, 30, tzinfo=UTC),
-        profile_version="investment-research-v1",
+        profile_version="v1",
         relation_policies={
             "supports": MemoryRelationPolicy(
                 frozenset({"evidence_claim"}),
