@@ -192,7 +192,8 @@ Core 读取内容模式事件：
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
 | `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
 | `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts` |
-| `agent_hook.pending_retry.failed` / `agent_hook.failed` | ERROR | `run_ref`, `attempts`, `warning_code` / `error_type` |
+| `agent_hook.pending_retry.failed` | ERROR | `run_ref`, `attempts`, `warning_code` |
+| `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`（仅记录异常类名，不含消息/正文） |
 
 Agent Hook 事件不记录 prompt、最终回复、Token 或本地状态内容。
 

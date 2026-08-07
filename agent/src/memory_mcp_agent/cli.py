@@ -11,7 +11,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from pydantic import ValidationError
 
@@ -83,10 +83,17 @@ async def _run(stream: TextIO) -> HookOutput:
             ).handle(event)
             return render_command_hook_output(outcome)
     except (AgentHookInputError, TurnStateError) as exc:
-        _log_failure(hook_input.hook_event_name, str(exc))
+        _log_failure(hook_input.hook_event_name, str(exc), error=exc)
         return _warning_output(str(exc))
-    except Exception:
-        _log_failure(hook_input.hook_event_name, "unexpected_error")
+    except Exception as exc:
+        # 兜底路径此前只记 unexpected_error 一个码，真实异常被吞，
+        # 排查只能靠手动复现。这里补记异常类型名（不含正文/栈帧变量，
+        # 遵守 Agent 包不记内容、不记 Secret 的约束），让日志可直接定位。
+        _log_failure(
+            hook_input.hook_event_name,
+            "unexpected_error",
+            error=exc,
+        )
         return _warning_output("unexpected_error")
 
 
@@ -120,11 +127,15 @@ def _warning_output(code: str) -> HookOutput:
     return render_command_hook_output(AgentHookOutcome(warning_code=code))
 
 
-def _log_failure(hook_event: str, code: str) -> None:
-    log_event(
-        _LOGGER,
-        logging.ERROR,
-        "agent_hook.failed",
-        error_code=code,
-        hook_event=hook_event,
-    )
+def _log_failure(
+    hook_event: str,
+    code: str,
+    *,
+    error: BaseException | None = None,
+) -> None:
+    """记录一次 hook 失败。error 传入时只记异常类型名，不记正文/栈帧变量。"""
+
+    fields: dict[str, Any] = {"error_code": code, "hook_event": hook_event}
+    if error is not None:
+        fields["error_type"] = type(error).__name__
+    log_event(_LOGGER, logging.ERROR, "agent_hook.failed", **fields)
