@@ -75,6 +75,7 @@ from memory_mcp.core.exceptions import (
     ProfileNotRegisteredError,
     ReviewNotFoundError,
     SensitiveContentBlockedError,
+    SubjectScopeConflictError,
 )
 from memory_mcp.core.ports import (
     MAX_RELATION_ENDPOINTS,
@@ -181,6 +182,7 @@ __all__ = [
     "SensitiveInspection",
     "SensitivityLevel",
     "SimpleTokenizer",
+    "SubjectScopeConflictError",
     "TeamExtractionResult",
     "TimelineHop",
     "TimelineQuery",

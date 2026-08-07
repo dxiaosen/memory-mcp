@@ -18,6 +18,7 @@ class ErrorCode(StrEnum):
     RELATION_UNAVAILABLE = "relation_unavailable"
     REVIEW_UNAVAILABLE = "review_unavailable"
     CAPTURE_NOT_CONFIGURED = "capture_not_configured"
+    SUBJECT_SCOPE_CONFLICT = "subject_scope_conflict"
     TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
 
 

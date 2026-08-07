@@ -8,7 +8,9 @@
     "recall_at_k": 0.8,
     "safety_pass_rate": 1.0,
     "isolation_pass_rate": 1.0,
-    "lifecycle_pass_rate": 1.0
+    "lifecycle_pass_rate": 1.0,
+    "precision_at_k": 0.7,
+    "mrr": 0.6
   },
   "cases": [
     {

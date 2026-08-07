@@ -322,8 +322,22 @@ def evaluate_dataset(
                     _skipped[case.id] = "no embedding prediction available"
                     should_evaluate = False
             # deterministic and live-extraction evaluate recall directly
-        elif isinstance(case, SafetyCase | IsolationCase | LifecycleCase):
-            pass  # always evaluate in all modes
+        elif isinstance(case, SafetyCase):
+            pass  # Safety 在所有模式都评估（RegexSensitiveContentGuard）
+        elif isinstance(case, IsolationCase):
+            # owner 隔离需要真实 PrincipalContext + Repository 跨 owner 验证，
+            # 当前三种模式均无此能力，诚实跳过而非假评估。
+            should_evaluate = False
+            _skipped[case.id] = (
+                "isolation requires live owner-scoped repository verification"
+            )
+        elif isinstance(case, LifecycleCase):
+            # 生命周期状态转换需真实 capture 流转（duplicate/replacement/ambiguous/
+            # revoke/expire），当前三种模式均无此能力，诚实跳过。
+            should_evaluate = False
+            _skipped[case.id] = (
+                "lifecycle requires live capture flow for state transitions"
+            )
 
         if not should_evaluate:
             continue
@@ -372,14 +386,8 @@ def evaluate_dataset(
                 safety_passed += 1
             else:
                 failed.append(case.id)
-        elif isinstance(case, IsolationCase):
-            isolation_total += 1
-            # isolation cases are always blocked by default
-            isolation_passed += 1
-        elif isinstance(case, LifecycleCase):
-            lifecycle_total += 1
-            # lifecycle cases evaluate via production capture flow
-            lifecycle_passed += 1
+        # IsolationCase / LifecycleCase 在上方按模式跳过，不在此评估；
+        # 真实 owner 隔离与生命周期流转需专门 live 模式，当前诚实跳过。
 
     candidate = (
         aggregate_precision_recall(candidate_pairs) if candidate_pairs else None
@@ -411,10 +419,20 @@ def evaluate_dataset(
     thresholds = dataset.thresholds
     threshold_checks = [
         avg_recall_at_k >= thresholds.recall_at_k,
+        avg_precision_at_k >= thresholds.precision_at_k,
+        avg_mrr >= thresholds.mrr,
         safety_pass_rate >= thresholds.safety_pass_rate,
-        isolation_pass_rate >= thresholds.isolation_pass_rate,
-        lifecycle_pass_rate >= thresholds.lifecycle_pass_rate,
     ]
+    # isolation/lifecycle 仅在确有评估 case 时才门禁；无评估 case 时跳过该检查，
+    # 避免恒真的假绿门禁掩盖回归。
+    if isolation_total:
+        threshold_checks.append(
+            isolation_pass_rate >= thresholds.isolation_pass_rate
+        )
+    if lifecycle_total:
+        threshold_checks.append(
+            lifecycle_pass_rate >= thresholds.lifecycle_pass_rate
+        )
     if candidate is not None:
         threshold_checks.extend(
             (

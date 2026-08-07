@@ -57,3 +57,13 @@ class ReviewNotFoundError(MemoryCoreError):
 
 class SensitiveContentBlockedError(MemoryCoreError):
     """禁止内容被长期记忆持久化边界拦截。"""
+
+
+class SubjectScopeConflictError(MemoryCoreError):
+    """同一 (owner, profile, subject, memory_type) 已有活动记忆，新建撞唯一索引。
+
+    根因是 ``find_current`` 与写入跨事务的 TOCTOU：并发 confirm/capture 或
+    过期未物化的活动记忆使 ``find_current`` 漏判，导致新建分支在唯一索引
+    ``memory_items_one_active_scope_idx`` 上撞键。属可预期的边界状态而非
+    临时故障——调用方应改 subject 或走 replacement。
+    """

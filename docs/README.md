@@ -36,8 +36,9 @@ Python 3.11+）。生产独立安装，开发环境可同一仓库 `uv sync --al
 运行时设置；场景差异通过 `MemoryProfile` 协议注入，通用 Core 不含业务词义。详见
 [design.md §3](design.md)。
 
-十个 MCP 工具：`capture_completed_turn`、`recall_memory`、`list_memories`、`get_memory`、
-`list_pending_reviews`、`confirm_pending_memory`、`reject_pending_memory`、`revoke_memory`、
-`link_memories`、`revoke_memory_relation`（见 [design.md §6.2](design.md)）。
+十三个 MCP 工具：`capture_completed_turn`、`recall_memory`、`list_memories`、`get_memory`、
+`search_memories`、`list_pending_reviews`、`confirm_pending_memory`、`reject_pending_memory`、
+`batch_confirm_pending`、`revoke_memory`、`link_memories`、`revoke_memory_relation`、
+`get_memory_stats`（见 [design.md §6.2](design.md)）。
 
 OpenSpec 管变更历史与规范，不作为使用手册：[OpenSpec 导航](../openspec/README.md)。

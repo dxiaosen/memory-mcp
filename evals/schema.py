@@ -160,6 +160,8 @@ class EvaluationThresholds(BaseModel):
     relation_precision: float = Field(default=0.0, ge=0.0, le=1.0)
     relation_recall: float = Field(default=0.0, ge=0.0, le=1.0)
     recall_at_k: float = Field(default=0.0, ge=0.0, le=1.0)
+    precision_at_k: float = Field(default=0.0, ge=0.0, le=1.0)
+    mrr: float = Field(default=0.0, ge=0.0, le=1.0)
     safety_pass_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     isolation_pass_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     lifecycle_pass_rate: float = Field(default=1.0, ge=0.0, le=1.0)

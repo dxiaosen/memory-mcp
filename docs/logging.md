@@ -129,6 +129,8 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.recall.candidates` | DEBUG | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded` |
 | `memory.recall.embedding_failed` | WARNING | `error_type` |
 | `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded` |
+| `memory.recall.timeline.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `focus_memory_id`, `max_hops`, `token_budget` |
+| `memory.recall.timeline.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `hop_count`, `estimated_tokens`, `token_budget`, `truncated` |
 
 Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 
@@ -137,6 +139,7 @@ Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.recall.input` | 脱敏查询、subject、task_intent |
 | `memory.recall.ranked` | 排序记录 |
 | `memory.recall.output` | 召回输出、rendered_context |
+| `memory.recall.timeline.output` | 时间线焦点记忆、hops、rendered_context |
 
 ### Core 操作与状态变化
 
@@ -148,10 +151,14 @@ Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.create.blocked` | WARNING | `blocked_categories`, `owner_ref`, `profile_id` |
 | `memory.get.completed` / `.unavailable` | INFO | `owner_ref`, `memory_id`/`error_code` |
 | `memory.list.completed` | INFO | `include_inactive`, `owner_ref`, `result_count` |
+| `memory.search.started` | DEBUG | `owner_ref`, `profile_id`, `memory_type`, `limit` |
+| `memory.search.completed` | INFO | `owner_ref`, `result_count` |
+| `memory.stats.completed` | INFO | `owner_ref`, `total_memories`, `pending_count` |
 | `memory.revoke.completed` | INFO | `lifecycle_status`, `memory_id`, `owner_ref` |
 | `memory.relation.linked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type`, `source_memory_id`, `target_memory_id` |
 | `memory.relation.revoked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type` |
 | `memory.review.confirmed` / `.rejected` | INFO | `review_id`, `owner_ref`, `promoted_to_team` |
+| `memory.review.batch_confirmed` | INFO | `owner_ref`, `confirmed_count`, `failed_count` |
 | `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `expired_relation_context_count`, `reminder_count`, `has_more` / `error_type` |
 | `memory.maintenance.reminder_written` | INFO | `owner_ref`, `profile_id`, `relation_type`, `focus_memory_id`, `reminder_memory_type` |
 | `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
@@ -162,7 +169,7 @@ Core 读取内容模式事件：
 | 事件名 | 记录内容 |
 | --- | --- |
 | `memory.create.input` / `.persisted` | 创建输入与持久化结构 |
-| `memory.read.get` / `.history` / `.list` | 读取记录 |
+| `memory.read.get` / `.history` / `.list` / `.search` | 读取记录（get/history/list/关键词检索） |
 | `memory.review.list` / `.get` / `.confirmed` / `.rejected` | 评审记录 |
 
 ### 持久化与运维

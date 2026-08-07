@@ -429,7 +429,7 @@ Streamable HTTP（`stateless_http=true` 默认），JSON response 模式。默�
 `http://127.0.0.1:8765/mcp`，健康检查 `/health`。认证用 MCP SDK 的 `AuthSettings`，
 `StaticTokenVerifier` 提供 Token 校验。
 
-### 6.2 十个工具
+### 6.2 十三个工具
 
 | 工具 | Scope | 作用 | annotations |
 | --- | --- | --- | --- |
@@ -437,12 +437,15 @@ Streamable HTTP（`stateless_http=true` 默认），JSON response 模式。默�
 | `recall_memory` | read | BeforeRun 主动召回（`mode=timeline` 展开演进链） | 只读/幂等 |
 | `list_memories` | read | 列出当前活动记忆 | 只读/幂等 |
 | `get_memory` | read | 查看当前详情和可选 history | 只读/幂等 |
+| `search_memories` | read | 关键词检索当前活动记忆 | 只读/幂等 |
 | `list_pending_reviews` | review | 查看待确认候选 | 只读/幂等 |
 | `confirm_pending_memory` | review | 确认 pending（可 `promote_to_team`） | 非只读/非破坏/幂等 |
 | `reject_pending_memory` | review | 拒绝 pending | 非只读/破坏/幂等 |
+| `batch_confirm_pending` | review | 批量确认 pending，返回成功与失败 review_id | 非只读/非破坏/幂等 |
 | `revoke_memory` | review | 幂等撤销当前记忆并保留历史和来源 | 非只读/破坏/幂等 |
 | `link_memories` | write | 按 Profile 策略幂等建立有向关系 | 非只读/非破坏/幂等 |
 | `revoke_memory_relation` | review | 幂等撤销关系并保留审计历史 | 非只读/破坏/幂等 |
+| `get_memory_stats` | read | 记忆统计（按 type/profile 聚合 + pending 计数） | 只读/幂等 |
 
 `enforce_strict_tool_arguments` 拒绝所有未声明字段（含 owner 参数）。工具参数不接受 owner；
 capture/recall 未传 profile_id 时由认证主体默认值路由。
@@ -484,6 +487,7 @@ capture/recall 未传 profile_id 时由认证主体默认值路由。
 | `memory_unavailable` / `relation_unavailable` / `review_unavailable` | 不存在或跨 owner | 否 |
 | `invalid_relation` | 关系无效 | 否 |
 | `capture_not_configured` | extractor 未配置（保护自定义注入或旧实例） | 否 |
+| `subject_scope_conflict` | 同一 (owner, profile, subject, memory_type) 已有活动记忆，confirm/capture 新建撞唯一索引（find_current 与写入跨事务的 TOCTOU） | 否（调用方应改 subject 或走 replacement） |
 | `temporarily_unavailable` | 临时不可用 | OSError/TimeoutError → 是；未知异常 → 否 |
 
 异常基类分三层：`core.support.exceptions.MemoryMcpError`（Core 自包含根）、

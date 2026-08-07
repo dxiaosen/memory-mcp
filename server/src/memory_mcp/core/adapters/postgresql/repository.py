@@ -10,6 +10,7 @@ from math import ceil
 from typing import Any
 from uuid import UUID
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -59,7 +60,10 @@ from memory_mcp.core.domain import (
     TeamExtractionResult,
     normalize_memory_text,
 )
-from memory_mcp.core.exceptions import IdempotencyConflictError
+from memory_mcp.core.exceptions import (
+    IdempotencyConflictError,
+    SubjectScopeConflictError,
+)
 from memory_mcp.core.ports import (
     CaptureWrite,
     DuplicateEvidenceWrite,
@@ -1220,25 +1224,33 @@ class PostgreSQLMemoryRepository:
 
         item = record.item
         revision = record.current_revision
-        connection.execute(
-            """
-            INSERT INTO memory_items (
-                memory_id, owner_id, profile_id, subject, memory_type, created_at,
-                lifecycle_status, capture_id
+        try:
+            connection.execute(
+                """
+                INSERT INTO memory_items (
+                    memory_id, owner_id, profile_id, subject, memory_type, created_at,
+                    lifecycle_status, capture_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    item.memory_id,
+                    item.owner_id,
+                    item.profile_id,
+                    item.subject,
+                    item.memory_type,
+                    item.created_at,
+                    revision.lifecycle_status.value,
+                    capture_id,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                item.memory_id,
-                item.owner_id,
-                item.profile_id,
-                item.subject,
-                item.memory_type,
-                item.created_at,
-                revision.lifecycle_status.value,
-                capture_id,
-            ),
-        )
+        except UniqueViolation as exc:
+            # find_current 与写入跨事务的 TOCTOU：同 (owner, profile, subject,
+            # memory_type) 已有活动记忆。转抛为 Core 语义异常，供工具层映射成
+            # 明确的 subject_scope_conflict 而非泛泛 temporarily_unavailable。
+            raise SubjectScopeConflictError(
+                "active memory already occupies this subject and memory_type"
+            ) from exc
         cls._insert_revision(connection, revision, record.evidence)
 
     @classmethod

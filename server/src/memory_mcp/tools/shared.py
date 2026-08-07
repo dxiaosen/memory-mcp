@@ -24,6 +24,7 @@ from memory_mcp.core import (
     MemoryService,
     ProfileNotRegisteredError,
     ReviewNotFoundError,
+    SubjectScopeConflictError,
 )
 from memory_mcp.errors import ErrorCode, MemoryMcpBoundaryError
 from memory_mcp.logging import log_event, stable_reference
@@ -208,6 +209,12 @@ def _map_error(error: Exception) -> tuple[ErrorCode, str, bool]:
         )
     if isinstance(error, ReviewNotFoundError):
         return ErrorCode.REVIEW_UNAVAILABLE, "Review is unavailable.", False
+    if isinstance(error, SubjectScopeConflictError):
+        return (
+            ErrorCode.SUBJECT_SCOPE_CONFLICT,
+            "An active memory already occupies this subject and memory_type.",
+            False,
+        )
     if isinstance(error, CaptureNotConfiguredError):
         return (
             ErrorCode.CAPTURE_NOT_CONFIGURED,
