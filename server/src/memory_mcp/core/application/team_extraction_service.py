@@ -45,15 +45,33 @@ class TeamExtractionService:
         started_at = perf_counter()
         effective_at = self._clock()
         results: list[TeamExtractionResult] = []
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.team_extraction.batch_started",
+            team_count=len(self._team_configs),
+        )
         for team_owner_id, member_owner_ids, profile_id in self._team_configs:
-            result = self._repository.extract_team_common_memories(
-                team_owner_id=team_owner_id,
-                member_owner_ids=member_owner_ids,
-                profile_id=profile_id,
-                effective_at=effective_at,
-                similarity_threshold=self._similarity_threshold,
-                min_cluster_size=self._min_cluster_size,
-            )
+            try:
+                result = self._repository.extract_team_common_memories(
+                    team_owner_id=team_owner_id,
+                    member_owner_ids=member_owner_ids,
+                    profile_id=profile_id,
+                    effective_at=effective_at,
+                    similarity_threshold=self._similarity_threshold,
+                    min_cluster_size=self._min_cluster_size,
+                )
+            except Exception as exc:
+                log_event(
+                    _LOGGER,
+                    logging.ERROR,
+                    "memory.team_extraction.team_failed",
+                    team_owner_ref=stable_reference(team_owner_id),
+                    profile_id=profile_id,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                continue
             results.append(result)
             log_event(
                 _LOGGER,

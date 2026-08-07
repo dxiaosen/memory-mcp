@@ -414,7 +414,16 @@ class MemoryService:
                     team_owner_ids=team_owner_ids,
                 )
                 confirmed.append(record)
-            except Exception:
+            except Exception as exc:
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "memory.review.confirm_failed",
+                    owner_ref=stable_reference(principal.owner_id),
+                    review_id=str(review_id),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
                 failed.append(review_id)
         log_event(
             _LOGGER,

@@ -37,13 +37,16 @@ def test_logging_writes_structured_event_and_redacts_sensitive_fields() -> None:
             "test.completed",
             count=2,
             query="private question",
+            api_key="replace-with-the-agent-token",
         )
 
         output = log_path.read_text(encoding="utf-8")
         assert 'event="test.completed"' in output
         assert "count=2" in output
-        assert 'query="[REDACTED]"' in output
-        assert "private question" not in output
+        # 开发阶段：内容字段（query）不脱敏以便排障；凭据字段（api_key）仍脱敏。
+        assert 'query="private question"' in output
+        assert 'api_key="[REDACTED]"' in output
+        assert "replace-with-the-agent-token" not in output
     finally:
         _restore_logging(root_logger, original_handlers, original_level)
         log_path.unlink(missing_ok=True)

@@ -135,6 +135,12 @@ Agent 包要求 Python 3.11+（Server 的 Python 3.14 不传递）。共享 `.ve
 
 宿主支持"事件 JSON 写入 stdin，命令 JSON 从 stdout 返回"时，直接映射到以下标准输入：
 
+> **编码约定**：宿主按 UTF-8 把事件 JSON 写入 stdin，hook 也按 UTF-8 把结果
+> 写到 stdout。Windows 中文系统默认 stdin/stdout 编码是 GBK/CP936，直接用
+> 文本 stdin 会让 UTF-8 字节被按 GBK 解码（轻则中文乱码，重则
+> `stdin_decode_error`）。`memory-mcp-hook` 入口已强制用 UTF-8 读写二进制
+> 缓冲绕开系统默认编码，宿主只需保证发 UTF-8 即可。
+
 | 事件 | 标准输入 JSON |
 | --- | --- |
 | BeforeRun | `{"hook_event_name":"BeforeRun","conversation_id":"...","run_id":"...","cwd":"/abs/path","user_input":"本轮用户原始输入"}` |

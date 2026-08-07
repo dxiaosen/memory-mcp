@@ -11,18 +11,16 @@ from pathlib import Path
 from typing import Any
 
 _MANAGED_HANDLER_ATTRIBUTE = "_memory_mcp_agent_managed"
-# 命中即整体脱敏的字段名；覆盖常见内容与凭证字段，避免日志泄露 prompt/answer。
+# 命中即整体脱敏的字段名。只保留真正的凭证字段；内容字段（prompt/query/
+# answer/content 等）不再脱敏——排障优先，需要在失败日志里看到实际输入。
+# 命中 _*_api_key / _*_password / _*_secret 后缀的字段同样脱敏。
 _SENSITIVE_FIELD_NAMES = {
-    "answer",
     "api_key",
-    "content",
     "password",
-    "prompt",
-    "query",
     "secret",
-    "source_expression",
+    "token",
 }
-_SENSITIVE_FIELD_SUFFIXES = ("_api_key", "_password", "_secret")
+_SENSITIVE_FIELD_SUFFIXES = ("_api_key", "_password", "_secret", "_token")
 
 
 def configure_logging(
@@ -33,10 +31,13 @@ def configure_logging(
     backup_count: int = 5,
     content: bool = False,
 ) -> None:
-    """幂等配置 stderr 和可选滚动文件；Agent 包不记录内容日志。"""
+    """幂等配置 stderr 和可选滚动文件。
 
-    if content:
-        raise ValueError("Agent Hook does not support content logging")
+    content 参数保留向后兼容，但不再有实际作用——内容字段（prompt/query/
+    answer/content）已从脱敏集移除，排障时直接记录，不再拒绝内容日志模式。
+    """
+
+    del content
     numeric_level = logging.getLevelNamesMapping().get(level.upper())
     if not isinstance(numeric_level, int):
         raise ValueError(f"unsupported log level: {level}")

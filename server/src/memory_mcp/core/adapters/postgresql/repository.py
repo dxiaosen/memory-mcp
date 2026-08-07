@@ -98,7 +98,24 @@ def create_pool(
         name="memory-mcp",
         open=False,
     )
-    pool.open(wait=True, timeout=timeout)
+    try:
+        pool.open(wait=True, timeout=timeout)
+    except Exception as exc:
+        log_event(
+            _LOGGER,
+            logging.ERROR,
+            "memory.postgresql.pool_open_failed",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
+    log_event(
+        _LOGGER,
+        logging.INFO,
+        "memory.postgresql.pool_opened",
+        min_size=min_size,
+        max_size=max_size,
+    )
     return pool  # type: ignore[return-value]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Callable
@@ -12,9 +13,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_STATE_SCHEMA_VERSION = "2"
-# 同时支持 schema v1（旧版无 capture 字段）与 v2（当前版本），保证本地状态平滑升级。
-_SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({"1", _STATE_SCHEMA_VERSION})
+from memory_mcp_agent.logging import log_event
+
+_LOGGER = logging.getLogger(__name__)
+
+_STATE_SCHEMA_VERSION = "1"
+# 开发阶段：重置为首个 schema 版本。仍保留 "2" 在支持集合内，保证本地残留的
+# 旧版本状态文件在 24h TTL 内可被平滑读出而不报错；新写入一律标 "1"。
+_SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({_STATE_SCHEMA_VERSION, "2"})
 _DEFAULT_TTL = timedelta(hours=24)
 
 
@@ -156,7 +162,25 @@ class TurnStateStore:
         for path in self._root.glob("*.json"):
             try:
                 state = TurnState.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            except OSError as exc:
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "turn_state.read_failed",
+                    path=str(path),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                continue
+            except ValueError as exc:
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "turn_state.invalid",
+                    path=str(path),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
                 continue
             if not state.capture_pending:
                 continue
@@ -183,7 +207,10 @@ class TurnStateStore:
         )
         temporary_path = Path(temporary_name)
         try:
-            os.fchmod(descriptor, 0o600)
+            # os.fchmod 在 Windows 不存在（AttributeError）；mkstemp 在所有平台
+            # 都按 0600 创建文件描述符，POSIX 上再显式收紧一次。
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 descriptor = -1
                 json.dump(
@@ -196,7 +223,8 @@ class TurnStateStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_path, path)
-            os.chmod(path, 0o600)
+            if hasattr(os, "chmod"):
+                os.chmod(path, 0o600)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -227,7 +255,7 @@ class TurnStateStore:
         self._path(session_id, turn_id).unlink(missing_ok=True)
 
     def cleanup_expired(self) -> int:
-        """清除过期或损坏状态，不读取或记录其 prompt。"""
+        """清除过期或损坏状态；损坏文件记日志后清理，不单独记录其 prompt。"""
 
         if not self._root.exists():
             return 0
@@ -237,7 +265,16 @@ class TurnStateStore:
             try:
                 state = TurnState.model_validate_json(path.read_text(encoding="utf-8"))
                 expired = state.created_at < cutoff
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                # 损坏文件当过期处理删除，但必须留痕，否则捕获静默丢失。
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "turn_state.cleanup_corrupt",
+                    path=str(path),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
                 expired = True
             if expired:
                 try:
@@ -249,7 +286,10 @@ class TurnStateStore:
 
     def _ensure_root(self) -> None:
         self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self._root, 0o700)
+        # Windows 无 POSIX 权限位，os.chmod 对 mode 的设置无效果但可调用；
+        # 仍守卫一下避免极少数受限环境抛错。
+        if hasattr(os, "chmod"):
+            os.chmod(self._root, 0o700)
 
     def _path(self, session_id: str, turn_id: str) -> Path:
         """用 session_id/turn_id 的摘要作为文件名，避免原始标识泄露到文件系统。"""

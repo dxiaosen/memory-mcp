@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,7 +17,10 @@ from memory_mcp_agent.client import (
     MemoryHookClientError,
 )
 from memory_mcp_agent.context import HookContext
+from memory_mcp_agent.logging import log_event
 from memory_mcp_agent.settings import MemoryHookSettings
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +184,19 @@ class MemoryHookBridge:
         except MemoryHookClientError as exc:
             if not self._settings.fail_open:
                 raise
+            # fail-open 降级为 warning 前必须记全异常链，否则召回失败原因丢失。
+            cause = exc.__cause__
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "agent_hook.recall.fail_open",
+                error_code=exc.code,
+                retryable=exc.retryable,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                cause_type=type(cause).__name__ if cause else None,
+                cause_message=str(cause) if cause else None,
+            )
             return BeforeRunResult(
                 memory_context=None,
                 recalled_count=0,
@@ -234,12 +251,47 @@ class MemoryHookBridge:
             except MemoryHookClientError as exc:
                 final_error = exc
                 if exc.retryable and attempt < self._settings.capture_max_attempts:
+                    # 每次重试前记全：第几次、错误码、是否可重试、异常链。
+                    cause = exc.__cause__
+                    log_event(
+                        _LOGGER,
+                        logging.WARNING,
+                        "agent_hook.capture.retry",
+                        attempt=attempt,
+                        error_code=exc.code,
+                        retryable=exc.retryable,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        cause_type=type(cause).__name__ if cause else None,
+                        cause_message=str(cause) if cause else None,
+                    )
                     await asyncio.sleep(self._settings.capture_retry_delay_seconds)
                     continue
+                # 重试耗尽：记最终失败码与原因，再决定抛出还是降级。
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "agent_hook.capture.exhausted",
+                    attempt=attempt,
+                    error_code=exc.code,
+                    retryable=exc.retryable,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
                 break
         assert final_error is not None
         if not self._settings.fail_open:
             raise final_error
+        # fail-open 吞掉最终错误前记全，否则捕获失败原因丢失。
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "agent_hook.capture.fail_open",
+            attempts=attempts,
+            error_code=final_error.code,
+            error_type=type(final_error).__name__,
+            error_message=str(final_error),
+        )
         return AfterRunResult(
             event_id=event_id,
             status="warning",

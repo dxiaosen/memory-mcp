@@ -26,7 +26,7 @@ from memory_mcp.core.ports import (
 
 PROMPT_VERSION = "general-memory-extraction-v1"
 SCHEMA_VERSION = "candidate-v1"
-RELATION_PROMPT_VERSION = "memory-relation-extraction-v3"
+RELATION_PROMPT_VERSION = "memory-relation-extraction-v1"
 RELATION_SCHEMA_VERSION = "relation-v1"
 MAX_CANDIDATES = 20
 

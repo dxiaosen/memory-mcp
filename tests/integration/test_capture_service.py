@@ -461,15 +461,16 @@ def test_tool_document_source_is_preserved_after_user_confirmation() -> None:
     assert source.document.citation_locator == "p.42"
 
 
-def test_backend_exception_message_is_not_logged(
+def test_backend_exception_message_is_logged_for_debugging(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    secret = "backend-exception-secret"
+    # 开发阶段：后端异常的类型与消息均需记录以便排障（用户已明确放开安全约束）。
+    marker = "backend-exception-marker"
 
     class FailingExtractor(FakeCandidateExtractor):
         def extract(self, request):
             self.requests.append(request)
-            raise RuntimeError(f"backend included {secret}")
+            raise RuntimeError(f"backend included {marker}")
 
     service = create_memory_service(
         InMemoryMemoryRepository(),
@@ -484,8 +485,10 @@ def test_backend_exception_message_is_not_logged(
         )
 
     assert result.status is CaptureStatus.REPROCESS_REQUIRED
+    assert result.failure_code == "processing_interrupted"
+    assert 'event="memory.capture.processing_failed"' in caplog.text
     assert 'error_type="RuntimeError"' in caplog.text
-    assert secret not in caplog.text
+    assert f'error_message="backend included {marker}"' in caplog.text
 
 
 def test_retryable_failure_is_reprocessed_without_duplicates() -> None:

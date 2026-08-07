@@ -145,6 +145,9 @@ class ToolSupport:
             "memory.mcp.tool.failed",
             error_code=code.value,
             error_type=type(error).__name__,
+            error_message=str(error),
+            cause_type=type(error.__cause__).__name__ if error.__cause__ else None,
+            cause_message=str(error.__cause__) if error.__cause__ else None,
             request_id=request_id,
             tool_name=tool_name,
         )

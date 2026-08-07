@@ -45,6 +45,7 @@ from memory_mcp.core.ports import (
     SensitiveContentGuard,
     embed_single,
 )
+from memory_mcp.core.support import log_event
 
 _EXPLICIT_REPLACEMENT = re.compile(
     r"(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
@@ -52,6 +53,8 @@ _EXPLICIT_REPLACEMENT = re.compile(
     r"\bchange\b.+\bto\b)",
     re.IGNORECASE,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,10 +212,12 @@ class CandidateMaterializer:
         try:
             return embed_single(self._embedding_provider, content)
         except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "embedding computation failed: %s: %s",
-                type(exc).__name__,
-                exc,
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.embedding.computation_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
         return None
 

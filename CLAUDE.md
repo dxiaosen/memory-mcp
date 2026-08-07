@@ -88,7 +88,10 @@ Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF
 - 加了环境变量 → 同步 `settings.py`、`.env.example`、`docs/config.md`。
 - 改了记忆领域字段 → 同步 `0001_memory_schema.sql` CHECK 约束、`mapping.py`、`schemas.py` DTO。
 - 改了日志事件/字段 → 同步 `docs/logging.md` 事件表、`tests/unit/test_logging_events.py`。
-  日志约束：默认模式不记正文/Token/Secret；Agent 包不支持内容日志；同一错误只记一次。
+  日志约束（**当前为开发阶段，已临时放开**）：Token/Secret 仍脱敏；正文字段
+  （prompt/query/answer/content/source_expression）在开发阶段不脱敏，失败日志
+  直接记录实际输入以便排障。上线前需恢复完整脱敏集并重置 `_SENSITIVE_FIELD_NAMES`。
+  同一错误只记一次；`log_event` 的 `error_type`/`error_message` 应尽量带上异常类型与消息。
 
 ## OpenSpec 工作流
 

@@ -45,29 +45,35 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 | `client_ref` / `agent_ref` | 调用方稳定假名引用 | `expired_memory_count` / `expired_review_count` | 维护状态转换计数 |
 | `capture_id` / `memory_id` / `revision_id` | 技术记录 ID | `result_count` / `duration_ms` | 结果数量 / 操作耗时 |
 | `recall_ref` | 召回稳定关联标识（仅日志，不改 MCP 返回契约） | `auto_saved_count` / `pending_count` / `discarded_count` / `blocked_count` | 准入四类计数 |
-| `status` / `error_code` | 稳定状态 | `error_type` | 异常类型名，不是异常消息 |
+| `status` / `error_code` | 稳定状态 | `error_type` | 异常类型名 |
+| `error_message` | 异常消息（开发阶段记录，上线前恢复为仅 `error_type`） | `cause_type` / `cause_message` | 被 `raise ... from` 包装的原始异常类型与消息 |
 
 `stable_reference()` 使用截断 SHA-256 避免直接输出 identifier，但不是匿名化机制；
 低熵 identifier 仍可能被枚举，日志访问权限仍需受控。
 
 ## 3. 两种日志模式
 
-| | 默认 `false` | 内容 `true` |
+> **当前为开发阶段，已临时放开**：默认模式下也记录异常消息（`error_message`）与
+> 被包装异常的 cause 链，正文字段（`query`/`content`/`source_expression` 等）不再自动
+> 脱敏，以便排障。上线前需恢复完整脱敏集（见 §9 收尾步骤）。
+
+| | 默认 `false`（开发阶段已放开） | 内容 `true` |
 | --- | --- | --- |
 | 运行元数据（阶段、引用、数量、状态、错误码、耗时） | ✅ | ✅ |
+| 异常类型 `error_type` 与消息 `error_message`、cause 链 | ✅（开发阶段） | ✅ |
 | SensitiveGuard 脱敏后的本轮输入和 subject hint | ❌ | ✅ |
 | 通过敏感检查的候选及 source expression | ❌ | ✅ |
 | 准入结果、持久化 memory/review/evidence 结构 | ❌ | ✅ |
 | 当前 owner 范围内的召回查询、排序记录和输出内容 | ❌ | ✅ |
-| Bearer Token / DSN / 密码 / API Key / backend 异常消息 / 敏感规则命中的原文 | ❌ | ❌ |
+| Bearer Token / DSN / 密码 / API Key / 敏感规则命中的原文 | ❌ | ❌ |
 
 自动遮盖与边界约束：
 
 | 机制 | 说明 |
 | --- | --- |
-| `log_event()` 自动遮盖 | `query`/`prompt`/`answer`/`content`/`source_expression`/`api_key`/`password`/`secret` 及常见 secret 后缀（最后防线） |
+| `log_event()` 自动遮盖 | 凭据字段 `api_key`/`password`/`secret`/`token` 及 secret 后缀（最后防线）；开发阶段正文/异常消息字段不脱敏，上线前需恢复 `query`/`prompt`/`answer`/`content`/`source_expression` |
 | 调用方约束 | 不能把完整对象塞进 `payload`/`details` 等未受保护字段 |
-| backend 异常 | 只记录 `type(exc).__name__`，不调用附带异常正文的 `logger.exception()` |
+| backend 异常 | 开发阶段记录 `error_type` + `error_message` + cause 链以便排障；上线前恢复为仅 `error_type`，且 backend 异常消息不得含可还原 Secret |
 | `log_content_event()` | 只接受已通过敏感边界的对象，不替代 SensitiveGuard |
 
 ## 4. 链路关联
@@ -97,7 +103,7 @@ Agent Hook (run_ref)
 | `memory.mcp.server.stopped` | INFO | `reason` |
 | `memory.mcp.tool.started` | INFO | `request_id`, `client_ref`, `owner_ref`, `tool_name` |
 | `memory.mcp.tool.completed` | INFO | `request_id`, `duration_ms`, `status`, `result_count`, `tool_name` |
-| `memory.mcp.tool.failed` | ERROR/WARNING | `request_id`, `error_code`, `error_type`, `tool_name` |
+| `memory.mcp.tool.failed` | ERROR/WARNING | `request_id`, `error_code`, `error_type`, `error_message`, `cause_type`, `cause_message`, `tool_name` |
 
 ### Capture 阶段
 
@@ -108,7 +114,8 @@ Agent Hook (run_ref)
 | `memory.capture.idempotency_conflict` | WARNING | `capture_id`, `owner_ref`, `event_id` |
 | `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code` |
 | `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
-| `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `owner_ref` |
+| `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `error_message`, `cause_type`, `cause_message`, `owner_ref` |
+| `memory.capture.invalid_output` | WARNING | `capture_id`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 经 `__cause__` 链解析的「字段: 原因」摘要）, `cause_type`, `cause_message`, `owner_ref` |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
 
 Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
@@ -127,7 +134,7 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | --- | --- | --- |
 | `memory.recall.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `embedding_enabled`, `max_items`, `token_budget` |
 | `memory.recall.candidates` | DEBUG | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded` |
-| `memory.recall.embedding_failed` | WARNING | `error_type` |
+| `memory.recall.embedding_failed` | WARNING | `error_type`, `error_message` |
 | `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded` |
 | `memory.recall.timeline.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `focus_memory_id`, `max_hops`, `token_budget` |
 | `memory.recall.timeline.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `hop_count`, `estimated_tokens`, `token_budget`, `truncated` |
@@ -159,10 +166,15 @@ Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.relation.revoked` | INFO | `relation_id`, `relation_origin`, `relation_scope`, `relation_type` |
 | `memory.review.confirmed` / `.rejected` | INFO | `review_id`, `owner_ref`, `promoted_to_team` |
 | `memory.review.batch_confirmed` | INFO | `owner_ref`, `confirmed_count`, `failed_count` |
-| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `expired_relation_context_count`, `reminder_count`, `has_more` / `error_type` |
+| `memory.review.confirm_failed` | WARNING | `owner_ref`, `review_id`, `error_type`, `error_message` |
+| `memory.maintenance.completed` / `.failed` | INFO/ERROR | `duration_ms`, 状态转换计数, `expired_relation_context_count`, `reminder_count`, `has_more` / `error_type`, `error_message` |
 | `memory.maintenance.reminder_written` | INFO | `owner_ref`, `profile_id`, `relation_type`, `focus_memory_id`, `reminder_memory_type` |
-| `memory.team_extraction.completed` / `.batch_completed` / `.failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms` / `error_type` |
+| `memory.maintenance.reminder_skipped` | WARNING | `error_type`, `error_message`, `profile_id`, `relation_type`, `focus_memory_id` |
+| `memory.team_extraction.completed` / `.batch_completed` / `.failed` / `.batch_started` / `.team_failed` | INFO/ERROR | `team_owner_ref`, `member/memory/cluster/candidate_count`, `duration_ms`, `team_count` / `error_type`, `error_message` |
 | `memory.embedding.completed` | DEBUG | — |
+| `memory.embedding.computation_failed` | WARNING | `error_type`, `error_message` |
+| `memory.embedding.batch_failed` | WARNING | `attempt`, `max_attempts`, `batch_size`, `error_type`, `error_message`, `model_id` |
+| `memory.embedding.provider_disabled` | WARNING | `error_type`, `error_message`, `reason`（`embedding_settings_invalid` / `provider_construction_failed`） |
 
 Core 读取内容模式事件：
 
@@ -181,8 +193,18 @@ Core 读取内容模式事件：
 | `memory.postgresql.relation_linked` | INFO | `relation_count` |
 | `memory.postgresql.capture_committed` | INFO | `capture_id`, `stale_relation_count` |
 | `memory.postgresql.capture_replayed` | INFO | `capture_id` |
-| `memory.postgresql.migration.started` / `.applied` / `.rebuild` | INFO | — |
+| `memory.postgresql.migration.started` / `.applied` / `.rebuild` / `.failed` | INFO/ERROR | `version` / `error_type`, `error_message`（`.failed` rollback 后记录再 raise） |
 | `memory.postgresql.health_check.completed` | INFO | `status` |
+| `memory.postgresql.health_check.failed` | ERROR | `error_type`, `error_message` |
+| `memory.postgresql.pool_opened` | INFO | `min_size`, `max_size` |
+| `memory.postgresql.pool_open_failed` | ERROR | `error_type`, `error_message` |
+
+### 认证
+
+| 事件名 | 级别 | 字段 |
+| --- | --- | --- |
+| `memory.auth.owner_key_derivation_failed` | WARNING | `error_type`, `error_message`（记后以 `from None` 抑制链并转 `UnauthenticatedError`） |
+| `memory.auth.team_owner_key_derivation_failed` | WARNING | `error_type`, `error_message`（同上，逐 team_id 记录） |
 
 ### Agent Host
 
@@ -190,12 +212,25 @@ Core 读取内容模式事件：
 | --- | --- | --- |
 | `agent_hook.started` | INFO | `run_ref` |
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
+| `agent_hook.recall.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
 | `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
-| `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts` |
-| `agent_hook.pending_retry.failed` | ERROR | `run_ref`, `attempts`, `warning_code` |
-| `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`（仅记录异常类名，不含消息/正文） |
+| `agent_hook.capture.retry` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
+| `agent_hook.capture.exhausted` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message` |
+| `agent_hook.capture.fail_open` | WARNING | `attempts`, `error_code`, `error_type`, `error_message` |
+| `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts`, `status`, `warning_code` |
+| `agent_hook.pending_retry.failed` | ERROR | `run_ref`, `error_type`, `error_message`, `cause_type`, `cause_message` |
+| `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 的「字段: 原因」摘要）, `error_cause_type`, `error_cause_message`, `encoding`/`byte_position`（仅 `stdin_decode_error`）, `raw_head`/`raw_len`（stdin 解析失败时的原始输入前缀） |
+| `turn_state.read_failed` / `.invalid` | WARNING | `path`, `error_type`, `error_message` |
+| `turn_state.cleanup_corrupt` | WARNING | `path`, `error_type`, `error_message` |
+| `mcp_client.http_status_error` | WARNING | `tool`, `status_code`, `error_type`, `error_message` |
+| `mcp_client.http_error` | WARNING | `tool`, `error_type`, `error_message` |
+| `mcp_client.unexpected_error` | ERROR | `tool`, `error_type`, `error_message` |
+| `mcp_client.tool_error` | WARNING | `tool`, `error_code`, `retryable` |
+| `mcp_client.session_close_failed` | DEBUG | `session_id`, `error_type`, `error_message` |
+| `mcp_client.unsupported_response_type` / `.invalid_response_*` / `.response_id_mismatch` / `.protocol_error` / `.invalid_result_shape` | WARNING | `status_code`, 对应 shape/type/mismatch 字段 |
+| `mcp_client.invalid_initialize_response` | WARNING | `protocol_version` |
 
-Agent Hook 事件不记录 prompt、最终回复、Token 或本地状态内容。
+Agent Hook 事件默认记录 prompt/最终回复等内容字段以便排障；`api_key`/`password`/`secret`/`token` 仍脱敏。
 
 ## 6. 日志级别
 
@@ -213,7 +248,9 @@ pending、discard、blocked 和 zero-result 本身不属于异常，不记 WARNI
 ```python
 from time import perf_counter
 from memory_mcp.core.support import log_event
-# started → try 业务逻辑 → except: log_event(..., error_type=type(exc).__name__) raise
+# started → try 业务逻辑 → except: log_event(..., error_type=type(exc).__name__,
+#   error_message=str(exc), cause_type=type(exc.__cause__).__name__ if exc.__cause__ else None,
+#   cause_message=str(exc.__cause__) if exc.__cause__ else None) → raise
 # → log_event(..., duration_ms=round((perf_counter()-started_at)*1000, 3))
 ```
 
@@ -221,9 +258,10 @@ from memory_mcp.core.support import log_event
 | --- | --- |
 | 事件名 | 使用 `领域.对象.动作`；已发布事件名和字段名保持稳定 |
 | 内容日志 | 必须用 `log_content_event()`，确保数据已通过身份限定和敏感检查 |
-| 禁止传入 | settings、HTTP headers、异常对象、数据库连接参数、未经 SensitiveGuard 检查的原始 payload |
-| Agent 包 | 从 `memory_mcp_agent.logging` 导入 `log_event`，永远不接受 `content=True`，不得反向依赖 `memory_mcp.logging` |
-| 同一错误 | 只在最有业务上下文的一层记录一次 |
+| 禁止传入 | settings、HTTP headers、数据库连接参数、未经 SensitiveGuard 检查的原始 payload |
+| 失败路径 | 每个 `except` 必须记 `error_type` + `error_message`；被包装异常经 `raise ... from exc` 时，在边界层补 `cause_type`/`cause_message` 与 pydantic `error_detail`（field: reason）；不可静默吞异常 |
+| Agent 包 | 从 `memory_mcp_agent.logging` 导入 `log_event`，不得反向依赖 `memory_mcp.logging` |
+| 同一错误 | 只在最有业务上下文的一层记录一次（如模型输出校验失败只在 `capture_service` 边界记一次，不在 `backends`/`structured_model` 再记） |
 
 ## 8. 常用 grep 示例
 
@@ -258,8 +296,9 @@ journalctl -u memory-mcp.service -f
 | 联调收尾步骤 | 说明 |
 | --- | --- |
 | 1. 关闭内容模式 | 将 `MEMORY_MCP_LOG_CONTENT` 恢复为 `false` |
-| 2. 重启并确认 | 重启服务并确认 `logging.configured` 的 `content_logging=false` |
-| 3. 处理内容日志 | 按数据管理要求删除或归档内容日志 |
-| 4. 处理 Secret 泄漏 | 若日志意外包含 Secret，停止服务并轮换对应凭据，不能只删除文件 |
+| 2. 恢复脱敏集 | 在 `server`/`agent` 的 `logging.py` 把 `query`/`prompt`/`answer`/`content`/`source_expression` 加回 `_SENSITIVE_FIELD_NAMES`；同步恢复 CLAUDE.md 铁律为仅记 `error_type` |
+| 3. 重启并确认 | 重启服务并确认 `logging.configured` 的 `content_logging=false`、异常消息字段不再出现 |
+| 4. 处理内容日志 | 按数据管理要求删除或归档内容日志 |
+| 5. 处理 Secret 泄漏 | 开发阶段日志可能含 backend 异常消息，若其中夹带 Secret，停止服务并轮换对应凭据，不能只删除文件 |
 
 内容日志是诊断能力，不是记忆存储、审计账本或长期业务数据出口。

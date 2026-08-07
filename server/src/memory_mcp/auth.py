@@ -1,5 +1,6 @@
 """静态 Bearer 认证与可信请求主体构造。"""
 
+import logging
 from enum import StrEnum
 from hashlib import sha256
 
@@ -12,11 +13,14 @@ from memory_mcp.errors import (
     PermissionDeniedError,
     UnauthenticatedError,
 )
+from memory_mcp.logging import log_event
 from memory_mcp.settings import (
     ConfiguredPrincipal,
     derive_owner_key,
     derive_team_owner_key,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MemoryScope(StrEnum):
@@ -92,7 +96,14 @@ def current_request_principal() -> RequestPrincipal:
         raise UnauthenticatedError
     try:
         owner_key = derive_owner_key(tenant_id, subject_id)
-    except ValueError:
+    except ValueError as exc:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "memory.auth.owner_key_derivation_failed",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         raise UnauthenticatedError from None
     raw_team_ids = claims.get("team_ids", ())
     if not isinstance(raw_team_ids, (list, tuple)):
@@ -103,7 +114,14 @@ def current_request_principal() -> RequestPrincipal:
             raise UnauthenticatedError
         try:
             team_owner_ids.add(derive_team_owner_key(tenant_id, team_id))
-        except ValueError:
+        except ValueError as exc:
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.auth.team_owner_key_derivation_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
             raise UnauthenticatedError from None
     return RequestPrincipal(
         owner_key=owner_key,

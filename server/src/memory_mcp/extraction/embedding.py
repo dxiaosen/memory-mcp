@@ -88,6 +88,17 @@ class QwenEmbeddingProvider:
                 return [tuple(item["embedding"]) for item in data]
             except (httpx.HTTPError, KeyError, ValueError) as exc:
                 last_error = exc
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "memory.embedding.batch_failed",
+                    attempt=attempt,
+                    max_attempts=self._max_retries + 1,
+                    batch_size=len(texts),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    model_id=self.model_id,
+                )
                 if attempt <= self._max_retries:
                     continue
         raise EmbeddingError(

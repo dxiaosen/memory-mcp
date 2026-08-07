@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+import traceback
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -284,12 +286,22 @@ class AgentHookAdapter:
                 warning_code=warning_code,
             )
         except Exception as exc:
+            cause = exc.__cause__
             log_event(
                 _LOGGER,
                 logging.ERROR,
                 "agent_hook.pending_retry.failed",
                 error_type=type(exc).__name__,
+                error_message=str(exc),
                 run_reference=run_reference,
+                cause_type=type(cause).__name__ if cause else None,
+                cause_message=str(cause) if cause else None,
+            )
+            traceback.print_exception(
+                type(exc),
+                exc,
+                exc.__traceback__,
+                file=sys.stderr,
             )
 
     async def _deliver_staged(self, state: TurnState) -> AfterRunResult:

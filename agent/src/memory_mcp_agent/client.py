@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -11,7 +12,10 @@ from typing import Any, Literal, Protocol, Self
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from memory_mcp_agent.logging import log_event
 from memory_mcp_agent.settings import MemoryHookSettings
+
+_LOGGER = logging.getLogger(__name__)
 
 _MCP_PROTOCOL_VERSION = "2025-11-25"
 _MCP_SESSION_HEADER = "mcp-session-id"
@@ -220,21 +224,58 @@ class MemoryMcpClient:
         except MemoryHookClientError:
             raise
         except httpx.HTTPStatusError as exc:
+            # HTTP 状态码映射为稳定错误码前，先记全：状态码、异常类型、消息。
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "mcp_client.http_status_error",
+                tool=name,
+                status_code=exc.response.status_code,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
             raise _http_status_error(exc.response.status_code) from exc
         except httpx.HTTPError as exc:
+            # 连接级错误（DNS/超时/TLS/重置）——具体子类决定根因，必须记。
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "mcp_client.http_error",
+                tool=name,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
             raise MemoryHookClientError(
                 "memory_mcp_unavailable",
                 retryable=True,
             ) from exc
         except Exception as exc:
+            # 非预期异常（如服务端响应畸形导致 pydantic 校验失败）：兜底记全。
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "mcp_client.unexpected_error",
+                tool=name,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
             raise MemoryHookClientError(
                 "memory_mcp_client_error",
             ) from exc
 
         payload = _structured_payload(result.get("structuredContent"))
         if result.get("isError") is True or payload.get("ok") is False:
+            error_code = str(payload.get("error_code", "memory_mcp_tool_error"))
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "mcp_client.tool_error",
+                tool=name,
+                error_code=error_code,
+                retryable=bool(payload.get("retryable", False)),
+            )
             raise MemoryHookClientError(
-                str(payload.get("error_code", "memory_mcp_tool_error")),
+                error_code,
                 retryable=bool(payload.get("retryable", False)),
             )
         return payload
@@ -285,6 +326,12 @@ class _JsonMcpSession:
         )
         protocol_version = result.get("protocolVersion")
         if not isinstance(protocol_version, str) or not protocol_version:
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "mcp_client.invalid_initialize_response",
+                protocol_version=protocol_version,
+            )
             raise MemoryHookClientError("invalid_mcp_initialize_response")
         self._protocol_version = protocol_version
         await self._notify("notifications/initialized")
@@ -296,6 +343,7 @@ class _JsonMcpSession:
         exc_value: object,
         traceback: object,
     ) -> None:
+        del exc_type, exc_value, traceback
         if self._session_id is None:
             return
         try:
@@ -303,8 +351,16 @@ class _JsonMcpSession:
                 self._url,
                 headers=self._headers(),
             )
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as exc:
+            # session teardown 失败非致命，但必须留痕，否则连接问题无从诊断。
+            log_event(
+                _LOGGER,
+                logging.DEBUG,
+                "mcp_client.session_close_failed",
+                session_id=self._session_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
 
     async def call_tool(
         self,
@@ -376,19 +432,64 @@ def _json_rpc_result(
 
     content_type = response.headers.get("content-type", "").casefold()
     if not content_type.startswith("application/json"):
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.unsupported_response_type",
+            status_code=response.status_code,
+            content_type=content_type,
+        )
         raise MemoryHookClientError("unsupported_mcp_response_type")
     try:
         payload = response.json()
     except ValueError as exc:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.invalid_response_json",
+            status_code=response.status_code,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         raise MemoryHookClientError("invalid_mcp_response") from exc
     if not isinstance(payload, dict):
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.invalid_response_shape",
+            status_code=response.status_code,
+            payload_type=type(payload).__name__,
+        )
         raise MemoryHookClientError("invalid_mcp_response")
     if payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.response_id_mismatch",
+            status_code=response.status_code,
+            expected_id=request_id,
+            actual_id=payload.get("id"),
+        )
         raise MemoryHookClientError("invalid_mcp_response")
     if "error" in payload:
+        error_obj = payload.get("error")
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.protocol_error",
+            status_code=response.status_code,
+            error_obj=error_obj,
+        )
         raise MemoryHookClientError("memory_mcp_protocol_error")
     result = payload.get("result")
     if not isinstance(result, dict):
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "mcp_client.invalid_result_shape",
+            status_code=response.status_code,
+            result_type=type(result).__name__,
+        )
         raise MemoryHookClientError("invalid_mcp_response")
     return {str(key): value for key, value in result.items()}
 

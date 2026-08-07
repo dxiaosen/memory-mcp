@@ -82,7 +82,7 @@ def test_staged_capture_is_stable_and_legacy_prompt_state_still_loads(
     )
 
     assert replayed == staged
-    assert replayed.schema_version == "2"
+    assert replayed.schema_version == "1"
     assert replayed.capture_observed_at == observed_at
 
     legacy = TurnState.model_validate(

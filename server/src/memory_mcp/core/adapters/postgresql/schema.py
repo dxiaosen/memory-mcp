@@ -162,8 +162,16 @@ def apply_migrations(
                         (migration.version, migration.checksum),
                     )
                     connection.commit()
-                except Exception:
+                except Exception as exc:
                     connection.rollback()
+                    log_event(
+                        _LOGGER,
+                        logging.ERROR,
+                        "memory.postgresql.migration.failed",
+                        version=migration.version,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     raise
                 applied_now.append(migration.version)
                 log_event(

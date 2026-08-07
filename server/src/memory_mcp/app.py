@@ -296,7 +296,14 @@ def create_memory_mcp_server(
             RuntimeError,
             PostgreSQLError,
             PoolTimeout,
-        ):
+        ) as exc:
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "memory.postgresql.health_check.failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
             return JSONResponse(
                 {
                     "status": "unhealthy",
@@ -359,6 +366,7 @@ async def _run_maintenance_loop(
                 logging.ERROR,
                 "memory.maintenance.failed",
                 error_type=type(exc).__name__,
+                error_message=str(exc),
             )
             delay = interval_seconds
         if stop_event.is_set():
@@ -389,6 +397,7 @@ async def _run_team_extraction_loop(
                 logging.ERROR,
                 "memory.team_extraction.failed",
                 error_type=type(exc).__name__,
+                error_message=str(exc),
             )
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
@@ -450,11 +459,27 @@ def _create_embedding_provider(
 
     try:
         settings = EmbeddingSettings()
-    except ValueError:
+    except ValueError as exc:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "memory.embedding.provider_disabled",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            reason="embedding_settings_invalid",
+        )
         return None
     try:
         return QwenEmbeddingProvider(settings)
-    except ValueError, EmbeddingError:
+    except (ValueError, EmbeddingError) as exc:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "memory.embedding.provider_disabled",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            reason="provider_construction_failed",
+        )
         return None
 
 

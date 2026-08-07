@@ -95,7 +95,17 @@ class MemoryMaintenanceService:
         for context in result.expired_relation_contexts:
             try:
                 profile = self._profile_registry.get(context.profile_id)
-            except Exception:
+            except Exception as exc:
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "memory.maintenance.reminder_skipped",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    profile_id=context.profile_id,
+                    relation_type=context.relation_type,
+                    focus_memory_id=str(context.focus_memory_id),
+                )
                 continue
             derivation = _match_derivation(profile.expiry_derivations, context.relation_type)
             if derivation is None:

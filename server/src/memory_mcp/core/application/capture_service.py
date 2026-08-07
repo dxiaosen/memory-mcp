@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 from threading import Lock
 from time import perf_counter
+from typing import Any
 from uuid import UUID
 
 from memory_mcp.core.application.admission import ConservativeAdmissionPolicy
@@ -347,7 +348,19 @@ class CaptureService:
             InvalidModelOutputError,
             InvalidProfileProgressError,
             ValueError,
-        ):
+        ) as exc:
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.capture.invalid_output",
+                capture_id=capture_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_detail=_validation_errors(exc),
+                cause_type=type(exc.__cause__).__name__ if exc.__cause__ else None,
+                cause_message=str(exc.__cause__) if exc.__cause__ else None,
+                owner_ref=stable_reference(principal.owner_id),
+            )
             return self._commit_capture_failure(
                 principal,
                 turn,
@@ -366,6 +379,11 @@ class CaptureService:
                 "memory.capture.processing_failed",
                 capture_id=capture_id,
                 error_type=type(exc).__name__,
+                error_message=str(exc),
+                cause_type=(
+                    type(exc.__cause__).__name__ if exc.__cause__ else None
+                ),
+                cause_message=str(exc.__cause__) if exc.__cause__ else None,
                 owner_ref=stable_reference(principal.owner_id),
             )
             return self._commit_capture_failure(
@@ -570,6 +588,35 @@ def _has_processable_content(value: str) -> bool:
     """去掉脱敏标记后判断是否还剩可处理内容，避免对空文本调用模型抽取。"""
     without_markers = _REDACTION_MARKER.sub("", value)
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
+
+
+def _validation_errors(exc: BaseException) -> str | None:
+    """从异常及其 ``__cause__`` 链提取 pydantic 校验摘要（field: reason）。
+
+    模型输出校验失败时，``InvalidModelOutputError`` 经 ``raise ... from exc``
+    包装，原始 pydantic ``ValidationError`` 位于 ``__cause__``；遍历整条链
+    以在开发阶段暴露具体失败字段（如 confidence=1.5、normalized_time 非法）。
+    """
+
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        errors = getattr(current, "errors", None)
+        if callable(errors):
+            try:
+                items: list[dict[str, Any]] = list(errors())
+            except Exception:  # 防御性：不阻断日志主路径
+                items = []
+            if items:
+                summary = " | ".join(
+                    f"{'.'.join(str(part) for part in item.get('loc', ()) or '<root>')}: "
+                    f"{str(item.get('msg', '')).strip()}"
+                    for item in items[:5]
+                )
+                return summary or None
+        current = current.__cause__
+    return None
 
 
 def _relation_endpoint_records(

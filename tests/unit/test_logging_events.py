@@ -4,9 +4,8 @@
 - Capture 阶段聚合日志（decision/reason/lifecycle counts、duration_ms、replayed）；
 - Recall 阶段聚合日志（recall_ref、candidates counts、embedding_degraded、zero_result）；
 - 关联字段（capture_id、recall_ref、owner_ref）可在同一流程内串联；
-- 默认模式不记录正文/Token/API Key；
+- 开发阶段：正文字段（prompt/query/answer/content）不脱敏，Token/API Key 仍脱敏；
 - 内容模式只能通过 log_content_event 写入；
-- Agent 包不支持内容日志；
 - duration_ms 非负。
 """
 
@@ -324,7 +323,10 @@ def test_recall_embedding_degraded_logs_true(
 
 
 def test_log_event_redacts_sensitive_field_names() -> None:
-    """log_event 按字段名脱敏敏感字段。"""
+    """log_event 按字段名脱敏敏感字段。
+
+    开发阶段：内容字段（content/query）不脱敏以便排障；凭证字段（api_key）仍脱敏。
+    """
     logger = logging.getLogger("test.redact")
     import io
     stream = io.StringIO()
@@ -337,15 +339,17 @@ def test_log_event_redacts_sensitive_field_names() -> None:
         logger,
         logging.INFO,
         "test.redaction",
-        content="should not appear",
-        query="also sensitive",
+        content="now visible in dev",
+        query="also visible in dev",
         api_key="sk-secret",
         owner_ref="safe-value",
     )
 
     output = stream.getvalue()
-    assert "should not appear" not in output
-    assert "also sensitive" not in output
+    # 开发阶段内容字段可见
+    assert "now visible in dev" in output
+    assert "also visible in dev" in output
+    # 凭证字段仍脱敏
     assert "sk-secret" not in output
     assert "safe-value" in output
     assert "[REDACTED]" in output
@@ -360,12 +364,12 @@ def test_default_mode_does_not_log_content_events(
     # content logger is "memory_mcp.content" — not captured by caplog on root logger
 
 
-def test_agent_logging_rejects_content_mode() -> None:
-    """Agent 包不支持内容日志。"""
+def test_agent_logging_accepts_content_mode() -> None:
+    """Agent 包不再拒绝内容日志模式；内容字段直接记录便于排障。"""
     from memory_mcp_agent.logging import configure_logging
 
-    with pytest.raises(ValueError, match="content logging"):
-        configure_logging(content=True)
+    # 不应抛出；content 参数静默忽略
+    configure_logging(content=True)
 
 
 def test_stable_reference_does_not_expose_original() -> None:

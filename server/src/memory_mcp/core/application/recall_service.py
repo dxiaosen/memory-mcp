@@ -614,6 +614,7 @@ class RecallService:
                 logging.WARNING,
                 "memory.recall.embedding_failed",
                 error_type=type(exc).__name__,
+                error_message=str(exc),
             )
         return None
 

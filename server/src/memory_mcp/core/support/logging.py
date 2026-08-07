@@ -19,17 +19,16 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 _MANAGED_HANDLER_ATTRIBUTE = "_memory_mcp_managed"
 _CONTENT_LOGGER = logging.getLogger("memory_mcp.content")
 _content_logging_enabled = False
+# 开发阶段：内容字段（prompt/query/answer/content/source_expression）不再
+# 脱敏，失败日志需要看到实际输入以便排障。只保留真正的凭证字段。
+# 上线前需恢复完整脱敏集（见 CLAUDE.md 日志铁律）。
 _SENSITIVE_FIELD_NAMES = {
-    "answer",
     "api_key",
-    "content",
     "password",
-    "prompt",
-    "query",
     "secret",
-    "source_expression",
+    "token",
 }
-_SENSITIVE_FIELD_SUFFIXES = ("_api_key", "_password", "_secret")
+_SENSITIVE_FIELD_SUFFIXES = ("_api_key", "_password", "_secret", "_token")
 
 
 class LoggingConfiguration(Protocol):
