@@ -5,7 +5,6 @@
 的稳定别名委托到这里。
 """
 
-import hashlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -175,17 +174,17 @@ def content_logging_enabled() -> bool:
 
 
 def stable_reference(value: str) -> str:
-    """返回稳定的 12 位短引用，用于日志中关联身份而不泄露原始值。
+    """返回稳定身份引用，用于日志中关联同一流程的 owner/team。
 
-    使用 SHA-256 的前 12 个十六进制字符，同一输入恒定不变；截断后
-    不具备抗碰撞强度，仅用于审计关联而非安全索引。
+    开发阶段已临时放开：直接返回原值，便于在日志里看出是哪个 owner/team，
+    而不是一串无意义的哈希。同一输入仍恒定不变。上线前需恢复为截断
+    SHA-256（12 位十六进制），避免在日志中泄露原始标识。
     """
 
     normalized = value.strip()
     if not normalized:
         raise ValueError("identifier must not be empty")
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return digest[:12]
+    return normalized
 
 
 def _remove_managed_handlers(logger: logging.Logger) -> None:

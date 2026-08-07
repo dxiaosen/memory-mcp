@@ -41,15 +41,16 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 | --- | --- | --- | --- |
 | `event` | 稳定事件名 | `relation_origin` / `relation_scope` | 关系来源和 item/revision 作用域 |
 | `request_id` | MCP request id | `relation_count` / `stale_relation_count` | 新建关系和失效关系数量 |
-| `owner_ref` | owner 的稳定假名引用 | `candidate_count` / `lexical_count` / `vector_count` / `recent_count` | 召回候选计数 |
+| `owner_ref` | owner 引用（开发阶段为原值，上线前恢复为稳定假名） | `candidate_count` / `lexical_count` / `vector_count` / `recent_count` | 召回候选计数 |
 | `client_ref` / `agent_ref` | 调用方稳定假名引用 | `expired_memory_count` / `expired_review_count` | 维护状态转换计数 |
 | `capture_id` / `memory_id` / `revision_id` | 技术记录 ID | `result_count` / `duration_ms` | 结果数量 / 操作耗时 |
 | `recall_ref` | 召回稳定关联标识（仅日志，不改 MCP 返回契约） | `auto_saved_count` / `pending_count` / `discarded_count` / `blocked_count` | 准入四类计数 |
 | `status` / `error_code` | 稳定状态 | `error_type` | 异常类型名 |
 | `error_message` | 异常消息（开发阶段记录，上线前恢复为仅 `error_type`） | `cause_type` / `cause_message` | 被 `raise ... from` 包装的原始异常类型与消息 |
 
-`stable_reference()` 使用截断 SHA-256 避免直接输出 identifier，但不是匿名化机制；
-低熵 identifier 仍可能被枚举，日志访问权限仍需受控。
+`stable_reference()` 在开发阶段直接返回原值，便于在日志中识别是哪个 owner/team；
+上线前需恢复为截断 SHA-256（12 位十六进制），避免直接输出 identifier。无论哪种模式
+都不是匿名化机制，低熵 identifier 仍可能被枚举，日志访问权限仍需受控。
 
 ## 3. 两种日志模式
 
@@ -91,7 +92,7 @@ Agent Hook (run_ref)
 - `request_id`：MCP 工具调用标识；
 - `capture_id`：捕获事务标识，贯穿 Capture started→completed→PostgreSQL commit；
 - `recall_ref`：召回的稳定关联标识（仅日志，不改 MCP 返回契约），贯穿 recall started→completed；
-- `owner_ref`：owner 稳定假名，跨所有层关联。
+- `owner_ref`：owner 引用（开发阶段为原值，上线前恢复为稳定假名），跨所有层关联。
 
 ## 5. 事件表
 

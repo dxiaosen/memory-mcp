@@ -147,13 +147,13 @@ def test_content_logging_is_explicit_and_traces_capture_and_recall(
         _restore_logging(root_logger, original_handlers, original_level)
 
 
-def test_stable_reference_is_deterministic_without_exposing_identifier() -> None:
+def test_stable_reference_is_deterministic_in_dev_phase() -> None:
     first = stable_reference("analyst-a")
     second = stable_reference("analyst-a")
 
     assert first == second
-    assert len(first) == 12
-    assert "analyst-a" not in first
+    # 开发阶段直接返回原值，便于日志识别身份。
+    assert first == "analyst-a"
 
 
 def _restore_logging(

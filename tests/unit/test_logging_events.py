@@ -372,9 +372,8 @@ def test_agent_logging_accepts_content_mode() -> None:
     configure_logging(content=True)
 
 
-def test_stable_reference_does_not_expose_original() -> None:
-    """stable_reference 不泄露原始标识。"""
+def test_stable_reference_is_identity_in_dev_phase() -> None:
+    """开发阶段：stable_reference 直接返回原值，便于日志识别 owner/team。"""
     ref = stable_reference("analyst-secret-id")
-    assert ref != "analyst-secret-id"
-    assert len(ref) == 12
+    assert ref == "analyst-secret-id"
     assert ref == stable_reference("analyst-secret-id")
