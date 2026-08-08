@@ -1,143 +1,337 @@
-# Memory MCP 本轮修复任务
+# Memory MCP 本轮修复任务（二）
 
-请基于当前实现做小范围修复，不要重构整体架构，也不要修改现有 Admission / Lifecycle 核心规则。
+请基于当前实现做小范围修复，优先解决本轮联调日志中暴露出的 Turn 边界、Source 选择和 `source_expression` 校验问题。不要重构整体架构，也不要修改现有 Admission / Lifecycle 核心规则。
 
-## 1. 修正 Candidate 计数语义
+## 1. P0：CompletedTurnEvent 只包含当前 Turn
 
-当前出现：
+当前第二轮请求虽然用户只提交了新的长期研究判断，但 `capture_completed_turn` 中仍然重复包含了上一轮读取的 9 个 tool/document 消息。
 
-- candidate_count=11
-- pending_count=11
-- discarded_count=1
-- 实际 outcome_count=12
+请修复 Claude Code Host Adapter 的 Turn 截取逻辑。
 
-请统一计数语义。
-
-建议明确区分：
-
-- `extracted_candidate_count`：模型原始抽取数量
-- `validated_candidate_count`：通过前置校验的数量
-- `outcome_count`：最终产生 decision 的数量
-- `pending_count`
-- `discarded_count`
-
-要求各统计字段能够互相对上。
-
-同时，开发日志中要能看到被 `invalid_source_expression` 等原因提前拒绝的完整 Candidate，便于调试。
-
-## 2. 加强 Candidate 原子化和 Evidence 覆盖
-
-一个 Candidate 不要混合：
-
-- 外部事实
-- 计算结果
-- 研究判断
-- 推断
-
-例如：
-
-“2025 Capex 720、2026计划900，因此投资回报验证窗口在2026H2-2027”
-
-应该拆成：
-
-1. `evidence_claim + external_fact`
-   - 2025 Capex 720
-   - 2026计划900
-
-2. `risk/thesis + system_inference`
-   - 高资本开支导致产能回报仍需后续验证
-
-同时要求：
-
-`source_expression / Evidence` 必须能够支撑 Candidate 的完整 content。
-
-如果一个 Candidate 依赖多个来源，应允许绑定多个 Evidence，而不是用一条 source_expression 支撑整段内容。
-
-## 3. 保证 assertion_kind 与 expression_basis 一致
-
-避免出现：
+目标：
 
 ```text
-assertion_kind=external_fact
-expression_basis=inferred
+CompletedTurnEvent
+=
+当前 user prompt
++ 当前 prompt 之后产生的 tool calls / tool results
++ 当前 assistant response
 ```
 
-建议规则：
+不要发送整个 conversation transcript。
 
-- 明确来自 document/tool 的原始事实
-  → `external_fact + explicit`
-
-- Assistant 基于多个事实形成的分析、风险、thesis、research question
-  → `system_inference + inferred`
-
-不要把事实和推断塞进同一个 Candidate。
-
-## 4. source_uri 改成 workspace-relative
-
-当前：
+例如本轮没有新的 tool 调用时，应近似：
 
 ```text
-C:\Users\Sen\Desktop\user-1\materials\02_2025年报摘要.md
+message_count=2
+
+[user]
+当前长期研究判断
+
+[assistant]
+当前回复
 ```
 
-改为类似：
+要求：
+
+- Turn 边界由 Agent Host Adapter 负责；
+- Server 不感知 Claude Code transcript 结构；
+- 保持 `CompletedTurnEventV1` 通用契约不变；
+- 增加连续两轮测试，验证第二轮不会重复包含第一轮 tool message。
+
+---
+
+## 2. P0：用户原始表达优先于 Assistant 复述
+
+同一语义同时出现在多个来源时，优先级：
 
 ```text
-materials/02_2025年报摘要.md
+user explicit
+>
+tool/document original source
+>
+assistant paraphrase
 ```
 
-或者：
+尤其以下类型，只要用户原文中存在明确表达，应优先绑定用户原始消息：
+
+- research_preference
+- thesis
+- research_decision
+- risk
+- ongoing_research
+- 用户明确要求长期保存/作为基准的判断
+
+示例：
 
 ```text
-workspace://materials/02_2025年报摘要.md
+用户：
+我认为 AI 热管理材料收入占比提升会推动利润结构改善。
 ```
 
-避免长期记忆绑定某一台电脑的绝对路径。
-
-Host Adapter 负责把真实绝对路径转换为 workspace-relative URI。
-
-## 5. 增加 Capture 分阶段耗时
-
-参考 Recall 当前已有的分阶段耗时，给 Capture 增加：
-
-- `candidate_extraction_duration_ms`
-- `candidate_validation_duration_ms`
-- `admission_duration_ms`
-- `lifecycle_duration_ms`
-- `relation_duration_ms`
-- `persistence_duration_ms`
-
-最终：
+应得到：
 
 ```text
-memory.capture.completed
+source_role=user
+assertion_kind=user_view
+expression_basis=explicit
 ```
 
-中保留总 duration，同时输出这些阶段耗时，方便定位当前约 25 秒 Capture 的主要耗时来源。
-
-## 6. 调整开发日志事件顺序
-
-日志应尽量反映真实业务执行顺序：
+而不是绑定 Assistant 的复述为：
 
 ```text
-memory.capture.started
-memory.capture.input
-memory.capture.candidates
-memory.capture.validation
-memory.capture.admission
-memory.capture.relations_planned
-memory.capture.relation_candidates
-memory.capture.persisted
-memory.capture.completed
+source_role=assistant
+assertion_kind=system_inference
 ```
 
-如果当前实际执行顺序不是这样，请先确认业务逻辑，不要只为了日志顺序移动代码。
+符合现有 Admission 自动保存条件时，应正常进入 `auto_save`。
+
+---
+
+## 3. P0：`source_expression` 校验支持换行 / 空白归一化
+
+当前真实存在于用户原文中的表达，因为换行或空格不同被判定：
+
+```text
+invalid_source_expression
+```
+
+请将原文匹配改为：
+
+```text
+normalize(source_expression)
+in
+normalize(source_message)
+```
+
+normalize 只允许：
+
+- `\r\n` / `\r` / `\n` 统一为空格；
+- 连续 whitespace 压缩成单个空格；
+- trim 首尾空白。
+
+不要做模糊语义匹配，不要改写字符内容。
+
+目标：
+
+```text
+真实原文 + 仅格式差异
+→ valid
+
+模型自行拼接/改写多个独立句子
+→ invalid
+```
+
+---
+
+## 4. 保持对真正非法 source_expression 的严格拒绝
+
+不要因为第 3 条而放松整个校验。
+
+如果模型把多个独立 bullet 拼成新的句子，而原文没有这段连续表达，可以继续：
+
+```text
+invalid_source_expression
+```
+
+更推荐模型拆成多个原子 Candidate。
+
+---
+
+## 5. 加强 Candidate 原子化
+
+避免一个 Candidate 同时混合：
+
+- 多个外部来源；
+- 外部事实；
+- 研究推断；
+- 研究阈值；
+- 用户观点。
+
+如果一个 Candidate 不能由单个 source span 完整支撑，优先拆成多个 Candidate。
+
+暂时不要新增复杂多 Evidence 模型，优先通过 Prompt 和原子化解决。
+
+---
+
+## 6. 验证 research_preference 能正确保存
+
+下面这类用户明确偏好：
+
+```text
+以后分析公司时，请使用中文；
+按“事实—判断—风险—验证指标”结构输出；
+关键数字使用表格；
+管理层口径必须标记为待验证。
+```
+
+应抽取为：
+
+```text
+memory_type=research_preference
+source_role=user
+assertion_kind=user_view
+expression_basis=explicit
+durability=durable
+```
+
+如果 confidence 达到自动保存阈值，应进入：
+
+```text
+auto_save
+```
+
+不能再因为 Assistant 复述或换行问题变成 pending / discard。
+
+---
+
+## 7. 验证用户明确 thesis / risk / ongoing_research
+
+请针对以下用户表达补测试：
+
+```text
+这是我的长期研究基准……
+我认为……
+我暂时不认为……
+主要风险包括……
+未来两个季度重点跟踪……
+```
+
+预期：
+
+```text
+thesis
+→ user_view
+
+risk
+→ user_view
+
+ongoing_research
+→ user_view
+
+research_preference
+→ user_view
+```
+
+且优先绑定 user message。
+
+最终至少部分应满足：
+
+```text
+decision=auto_save
+```
+
+而不是全部被：
+
+```text
+invalid_source_expression
+system_inference
+non_user_source
+```
+
+挡掉。
+
+---
+
+## 8. 保留现有已修好的行为
+
+以下不要回退：
+
+- `extracted_candidate_count`
+- `validated_candidate_count`
+- `outcome_count`
+- validation rejected 完整日志
+- Capture 分阶段耗时
+- Recall 分阶段耗时
+- zero-result `rendered_context=""`
+- `memory.recall.candidates`
+- Capture timeout / retry 修复
+- workspace-relative `source_uri`
+- tool/document provenance
+- Assistant 推断使用 `system_inference + inferred`
+
+---
+
+## 9. 可顺手检查：Team Extraction 去重
+
+当前服务启动后出现：
+
+```text
+team_count=3
+```
+
+但连续三次：
+
+```text
+team_owner_ref="tenant-001:team:research-dept"
+```
+
+如果实际只有一个 team，请检查是否按成员重复产生同一个 team owner，并在 batch 前按 `team_owner_id` 去重。
+
+此项优先级低于前 3 项。
+
+---
+
+## 验收标准
+
+重新执行两轮测试。
+
+### 第一轮：读取材料
+
+允许：
+
+```text
+tool/document facts → pending
+assistant inference → pending
+```
+
+不要求 auto-save。
+
+### 第二轮：用户明确长期研究基准
+
+若本轮无工具调用，应看到近似：
+
+```text
+message_count=2
+```
+
+并应出现：
+
+```text
+source_role=user
+assertion_kind=user_view
+expression_basis=explicit
+```
+
+覆盖：
+
+- thesis
+- risk
+- ongoing_research
+- research_preference
+
+至少部分满足自动保存条件时：
+
+```text
+auto_saved_count > 0
+```
+
+同时：
+
+```text
+invalid_source_expression
+```
+
+不应再因为纯换行 / 空白差异误杀用户原文。
 
 ## 约束
 
-- 不修改当前开发阶段的完整内容日志策略。
-- 不做日志脱敏调整。
-- 不修改现有 Profile / Admission 的主要决策规则。
-- 不新增复杂 salience pruning 机制。
-- 保持现有 MCP 接口和 DTO 向后兼容。
-- 优先小改动，并补充对应单元测试。
+- 不修改当前开发阶段完整内容日志策略；
+- 不做日志脱敏调整；
+- 不修改 Admission 主规则；
+- 不修改 Lifecycle 主规则；
+- 不新增复杂 salience pruning；
+- 不让 Server 依赖 Claude Code transcript；
+- 保持 MCP 接口和 DTO 向后兼容；
+- 优先小改动；
+- 补充对应单元测试和至少一个两轮 E2E 测试。

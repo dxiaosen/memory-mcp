@@ -261,6 +261,145 @@ def test_transcript_path_surfaces_document_messages_in_capture(
     anyio.run(profile_id)
 
 
+def test_second_turn_excludes_first_turn_tool_messages(tmp_path: Path) -> None:
+    """两轮 E2E：第二轮不应重复包含第一轮 tool/document 消息（recommend.md §1）。
+
+    第一轮读文件（transcript 含 Read 工具调用），第二轮仅用户判断 + 回复（无工具调用）。
+    第二轮 Stop 时 transcript 已含两轮记录，但 capture 只应发送当前轮次--document_messages
+    为空（等价 message_count=2），不重复第一轮的文档。
+    """
+
+    async def profile_id() -> None:
+        import json
+
+        def _write_transcript(path: Path, entries: list[dict]) -> None:
+            path.write_text(
+                "\n".join(json.dumps(entry) for entry in entries) + "\n",
+                encoding="utf-8",
+            )
+
+        materials_dir = tmp_path / "materials"
+        materials_dir.mkdir()
+        file_path = str(materials_dir / "04_纪要.md")
+        transcript = tmp_path / "transcript.jsonl"
+
+        def _read(call_id: str, content: str) -> list[dict]:
+            return [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": call_id,
+                                "name": "Read",
+                                "input": {"file_path": file_path},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": call_id,
+                                "content": content,
+                            }
+                        ]
+                    },
+                },
+            ]
+
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "claude-code" / "hooks")
+        adapter = _adapter(client, state)
+
+        # 第一轮：读文件。
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="04 纪要里收入怎么样？",
+            )
+        )
+        _write_transcript(
+            transcript,
+            [
+                {"type": "user", "message": {"content": "04 纪要里收入怎么样？"}},
+                *_read("call-1", "收入同比增长 35%"),
+                {"type": "assistant", "message": {"content": "收入同比增长 35%。"}},
+            ],
+        )
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="收入同比增长 35%。",
+                transcript_path=str(transcript),
+            )
+        )
+        first_capture = client.capture_calls[0]
+        assert len(first_capture["document_messages"]) == 1
+        assert first_capture["document_messages"][0]["source_uri"] == (
+            "materials/04_纪要.md"
+        )
+
+        # 第二轮：仅用户长期研究判断，无工具调用；transcript 已累积两轮。
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-2",
+                prompt="这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。",
+            )
+        )
+        _write_transcript(
+            transcript,
+            [
+                {"type": "user", "message": {"content": "04 纪要里收入怎么样？"}},
+                *_read("call-1", "收入同比增长 35%"),
+                {"type": "assistant", "message": {"content": "收入同比增长 35%。"}},
+                {
+                    "type": "user",
+                    "message": {
+                        "content": (
+                            "这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。"
+                        )
+                    },
+                },
+                {"type": "assistant", "message": {"content": "已记录你的研究判断。"}},
+            ],
+        )
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-2",
+                last_assistant_message="已记录你的研究判断。",
+                transcript_path=str(transcript),
+            )
+        )
+
+        second_capture = client.capture_calls[1]
+        # 第二轮无工具调用 -> 不重复第一轮文档，document_messages 为空。
+        assert second_capture["document_messages"] == []
+        assert second_capture["turn_id"] == "turn-2"
+        assert (
+            second_capture["user_input"]
+            == "这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。"
+        )
+
+    anyio.run(profile_id)
+
+
 def test_no_memory_returns_strict_empty_json(tmp_path: Path) -> None:
     async def profile_id() -> None:
         client = _FakeClient(with_memory=False)

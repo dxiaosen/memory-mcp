@@ -654,6 +654,142 @@ def test_capture_counts_reconcile_across_stages() -> None:
     assert len(service.list_memories(principal)) == 1
 
 
+def test_source_expression_with_only_whitespace_difference_is_accepted() -> None:
+    """真实原文仅换行/空格差异的 source_expression 不应被误杀（recommend.md §3）。
+
+    原文跨行「优化\n保持」，模型 source_expression 用空格「优化 保持」。精确子串匹配会
+    误判 invalid_source_expression；空白归一化后应通过校验进入准入。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "并预计通过产品结构优化 保持毛利率稳定",
+                subject="margin-stability-guidance",
+                content="通过产品结构优化保持毛利率稳定",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("公司在年报中表示，并预计通过产品结构优化\n保持毛利率稳定。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.DISCARD not in decisions
+    assert AdmissionDecision.AUTO_SAVE in decisions
+    assert len(service.list_memories(principal)) == 1
+
+
+def test_spliced_bullet_source_expression_still_rejected() -> None:
+    """模型拼接多个独立 bullet（丢掉 bullet 标记）仍应判 invalid（recommend.md §4）。
+
+    归一化只放过「真实原文 + 仅空白差异」，不放过跨独立 bullet 的拼接改写。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "二期产线 2026Q1 平均产能利用率约 62%；综合良率约 78%，"
+                "内部目标为 2026Q3 提升至 85%",
+                subject="ai-line2-yield",
+                content="二期产线良率与产能利用率",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn(
+        "-二期产线 2026Q1 平均产能利用率约 62%；\n"
+        "-综合良率约 78%，内部目标为 2026Q3 提升至 85%；"
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    discard = [
+        outcome
+        for outcome in result.outcomes
+        if outcome.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "invalid_source_expression"
+    assert len(service.list_memories(principal)) == 0
+
+
+def test_user_original_expression_binds_to_user_and_auto_saves() -> None:
+    """用户明确长期判断优先绑定 user 原文并 auto_save（recommend.md §2/§6/§7）。
+
+    同一表达同时出现在 user 与 assistant 消息时，source 优先绑定 user；user_view +
+    explicit + 高 confidence 且来源为 user -> 不被 non_user_source 降级，直接 auto_save。
+    """
+
+    expression = "AI 热管理材料收入占比提升会推动利润结构改善"
+    user_text = f"我认为{expression}。"
+    assistant_text = f"用户认为{expression}，这是核心观点。"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                expression,
+                subject="ai-thermal-margin-thesis",
+                content=expression,
+                memory_type="preference",
+                assertion_kind=AssertionKind.USER_VIEW,
+                expression_basis=ExpressionBasis.EXPLICIT,
+                confidence=0.95,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-user-thesis",
+        content=f"[user]\n{user_text}\n[assistant]\n{assistant_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=user_text,
+                message_id="user-message",
+            ),
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_text,
+                message_id="assistant-message",
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.AUTO_SAVE in decisions
+    assert AdmissionDecision.DISCARD not in decisions
+    memories = service.list_memories(principal)
+    assert len(memories) == 1
+    evidence = memories[0].evidence
+    assert len(evidence) >= 1
+    assert evidence[0].source_role is MessageRole.USER
+    assert memories[0].current_revision.assertion_kind is AssertionKind.USER_VIEW
+
+
 def test_assistant_assertion_kind_is_normalized_to_system_inference() -> None:
     """模型把 Assistant 自己的分析标成 user_view/user_provided_fact 时应纠正。
 

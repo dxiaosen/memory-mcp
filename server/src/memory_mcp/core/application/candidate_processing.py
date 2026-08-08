@@ -56,6 +56,18 @@ _EXPLICIT_REPLACEMENT = re.compile(
 
 _LOGGER = logging.getLogger(__name__)
 
+# 仅用于 source_expression 匹配的空白归一化：\s+ 压成单空格 + trim。
+# recommend.md §3：\r\n / \r / \n 统一为空格，连续 whitespace 压缩成单个空格，trim 首尾。
+# 不做 NFKC/casefold 等改写字符的归一（区别于 normalize_memory_text），确保模型拼接独立
+# bullet 仍判 invalid（§4 严格性）。
+_SOURCE_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_source_text(value: str) -> str:
+    """归一化用于 source_expression 子串匹配的文本：仅统一空白，不改写字符内容。"""
+
+    return _SOURCE_WHITESPACE_RE.sub(" ", value).strip()
+
 
 @dataclass(frozen=True, slots=True)
 class RejectedProposal:
@@ -316,6 +328,9 @@ class CandidateProcessor:
         rejected: list[RejectedProposal] = []
         lifecycle_target_ids: set[UUID] = set()
         candidate_scopes: set[tuple[str, str]] = set()
+        # source_expression 校验采用空白归一化后的子串匹配（recommend.md §3）：
+        # 真实原文仅换行/空格差异 -> valid；模型拼接独立 bullet -> 仍 invalid（§4）。
+        normalized_source = _normalize_source_text(redacted_source)
         # 分阶段耗时累加（recommend.md §5）：校验/准入/lifecycle 三段在循环内累加。
         _validation_duration = 0.0
         _admission_duration = 0.0
@@ -324,7 +339,7 @@ class CandidateProcessor:
         for proposal in proposals:
             candidate_id = self._id_factory()
             _validation_started_at = perf_counter()
-            if proposal.source_expression not in redacted_source:
+            if _normalize_source_text(proposal.source_expression) not in normalized_source:
                 # 单条候选的 source_expression 不匹配脱敏后原文时，只丢弃该条，
                 # 不让一条坏候选拖垮整轮（recommend.md P0-B：用户研究基准不应因
                 # 模型一次编造 source_expression 而整轮丢失）。
@@ -731,6 +746,21 @@ class CandidateProcessor:
         )
 
 
+def _select_source_message(matching: list[TurnMessage]) -> TurnMessage:
+    """同一 source_expression 命中多条消息时按 recommend.md §2 优先级选择绑定来源。
+
+    优先级：user explicit > tool/document original source > assistant paraphrase。
+    模型对同一语义既出现在用户原文又出现在 assistant 复述时，优先绑定用户原始消息，
+    使 thesis/risk/ongoing_research/research_preference 等用户判断落到 user 来源。
+    """
+
+    for role in (MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT):
+        for message in matching:
+            if message.role is role:
+                return message
+    return matching[0]
+
+
 def _source_metadata(
     turn: TurnEnvelope,
     source_expression: str,
@@ -738,10 +768,11 @@ def _source_metadata(
 ) -> dict[str, Any]:
     """从可信消息块派生候选的来源身份（角色、消息 ID 等），不信任模型自报字段。"""
 
+    normalized_expression = _normalize_source_text(source_expression)
     matching: list[TurnMessage] = []
     for message in turn.messages:
         redacted = guard.inspect(message.content).redacted_text
-        if source_expression in redacted:
+        if normalized_expression in _normalize_source_text(redacted):
             matching.append(message)
     if not matching:
         return {
@@ -757,10 +788,7 @@ def _source_metadata(
             "content_hash": None,
             "citation_locator": None,
         }
-    selected = next(
-        (message for message in matching if message.role is MessageRole.USER),
-        matching[0],
-    )
+    selected = _select_source_message(matching)
     return {
         "source_role": selected.role,
         "source_message_id": selected.message_id,

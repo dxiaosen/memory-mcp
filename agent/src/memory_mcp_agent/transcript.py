@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ def extract_document_messages(
     transcript_path: str | os.PathLike[str] | None,
     *,
     cwd: str | os.PathLike[str] | None = None,
+    user_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """从 transcript 提取文件/文档来源消息，返回通用 RoleMessageV1 风格字典。
 
@@ -54,6 +56,10 @@ def extract_document_messages(
             "source_uri": "<绝对路径>",
             "source_title": "<文件名>",
         }
+
+    ``user_prompt`` 给出当前轮次的用户输入时，只提取**当前轮次**（最近一次该 prompt 之后）
+    产生的 tool/document 消息，不把历史轮次的文档重复纳入（recommend.md §1）。定位不到时
+    回退到最近一条用户文本消息之后；仍无则返回全部（保持旧行为）。
 
     解析失败或无文件读取工具调用时返回空列表，不抛出——provenance 增强是
     best-effort，不能阻断 capture 主流程。
@@ -76,10 +82,11 @@ def extract_document_messages(
         return []
     if not entries:
         return []
-    read_calls = _collect_read_tool_uses(entries)
+    turn_entries = _slice_current_turn(entries, user_prompt)
+    read_calls = _collect_read_tool_uses(turn_entries)
     if not read_calls:
         return []
-    results = _match_tool_results(entries, read_calls)
+    results = _match_tool_results(turn_entries, read_calls)
     messages: list[dict[str, Any]] = []
     for index, (tool_name, file_path, content) in enumerate(results):
         if not content or not content.strip():
@@ -120,6 +127,68 @@ def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
                 ) from exc
             if isinstance(entry, dict):
                 yield entry
+
+
+# 仅用于 turn 边界定位的空白归一化：\s+ 压成单空格 + trim，不改写字符内容。
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_ws(value: str) -> str:
+    return _WHITESPACE_RE.sub(" ", value).strip()
+
+
+def _user_text(entry: dict[str, Any]) -> str | None:
+    """从 ``type=="user"`` 条目取用户文本输入；tool_result 条目返回 None。"""
+
+    message = entry.get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            # tool_result 块说明这条 user 条目是工具回执，不是用户 prompt 文本。
+            if block.get("type") == "tool_result":
+                return None
+            if block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+        if texts:
+            return "\n".join(texts)
+    return None
+
+
+def _slice_current_turn(
+    entries: Sequence[dict[str, Any]],
+    user_prompt: str | None,
+) -> list[dict[str, Any]]:
+    """返回当前轮次（最近一次用户文本输入之后）的 transcript 条目。
+
+    定位最近一条「用户文本消息」（非 tool_result）作为当前轮次边界，只保留其后的条目
+    （含本轮 tool_use / tool_result / assistant 回复），避免把历史轮次的文档重复纳入
+    （recommend.md §1）。``user_prompt`` 提供时优先按内容匹配定位边界；找不到则回退到
+    最近一条用户文本消息；都没有则返回全部条目（保持旧行为）。
+    """
+
+    user_text_indices = [
+        index
+        for index, entry in enumerate(entries)
+        if entry.get("type") == "user" and _user_text(entry) is not None
+    ]
+    if not user_text_indices:
+        return list(entries)
+    boundary = user_text_indices[-1]
+    if user_prompt:
+        normalized_prompt = _normalize_ws(user_prompt)
+        if normalized_prompt:
+            for index in reversed(user_text_indices):
+                if normalized_prompt in _normalize_ws(_user_text(entries[index]) or ""):
+                    boundary = index
+                    break
+    return list(entries[boundary + 1 :])
 
 
 def _collect_read_tool_uses(

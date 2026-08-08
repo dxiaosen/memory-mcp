@@ -373,6 +373,56 @@ def test_team_extraction_service_run_once_collects_results() -> None:
     assert results[0].candidate_count == 1
 
 
+def test_duplicate_team_owner_configs_are_deduped_with_member_union() -> None:
+    """同一 team_owner_id 按成员重复配置时去重并合并成员（recommend.md §9）。
+
+    三条配置指向同一 team 但成员不同（模拟按成员展开产生同一 team owner）。去重后只跑一次，
+    成员取并集，使两成员的相似记忆能满足 min_cluster_size=2 聚成一簇。
+    """
+
+    from memory_mcp.core.application.team_extraction_service import (
+        TeamExtractionService,
+    )
+
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMBEDDING_SEMANTIC_A,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[2]),
+        _member_record(
+            owner_id=_MEMBERS[2],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMBEDDING_SEMANTIC_A_DRIFT,
+        ),
+    )
+    service = TeamExtractionService(
+        repository,
+        _profile_registry_with_test_profile(),
+        clock=lambda: _NOW,
+        team_configs=(
+            (_TEAM_OWNER, (_MEMBERS[1],), "project-work"),
+            (_TEAM_OWNER, (_MEMBERS[2],), "project-work"),
+            (_TEAM_OWNER, (_MEMBERS[1], _MEMBERS[2]), "project-work"),
+        ),
+    )
+    results = service.run_once()
+
+    # 去重后同一 team 只跑一次（而非 team_count=3 重复同一 team_owner_ref）。
+    assert len(results) == 1
+    assert results[0].team_owner_id == _TEAM_OWNER
+    # 成员取并集（member-y + member-z），两成员相似记忆聚成一簇 -> 1 candidate。
+    # 若未合并成员（只保留首个配置的 member-y），min_cluster_size=2 不满足 -> 0 candidate。
+    assert results[0].candidate_count == 1
+
+
 def _profile_registry_with_test_profile():
     from memory_mcp.core.ports import ProfileRegistry
 

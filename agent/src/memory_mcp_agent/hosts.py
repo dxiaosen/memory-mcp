@@ -243,6 +243,7 @@ class AgentHookAdapter:
         document_messages = extract_document_messages(
             event.transcript_path,
             cwd=event.cwd,
+            user_prompt=saved.prompt,
         )
         staged = self._state.stage_capture(
             event.conversation_id,

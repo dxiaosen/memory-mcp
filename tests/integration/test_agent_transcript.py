@@ -54,6 +54,16 @@ def _user_with_tool_result(call_id: str, content: str, is_error: bool = False) -
     }
 
 
+def _user_prompt_entry(text: str) -> dict:
+    """Claude Code 用户文本输入条目（非 tool_result）。"""
+
+    return {"type": "user", "message": {"content": text}}
+
+
+def _assistant_text_entry(text: str) -> dict:
+    return {"type": "assistant", "message": {"content": text}}
+
+
 def test_extracts_document_messages_from_read_tool_calls(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
@@ -175,3 +185,100 @@ def test_source_uri_keeps_absolute_when_no_cwd(tmp_path: Path) -> None:
 
     assert len(messages) == 1
     assert messages[0]["source_uri"] == "/work/materials/04_纪要.md"
+
+
+def test_current_turn_excludes_previous_turn_documents(tmp_path: Path) -> None:
+    """第二轮只提取当前 prompt 之后的文档，不重复包含第一轮 tool message（§1）。
+
+    transcript 含两轮：turn1 读 fileA，turn2 读 fileB。传 turn2 的 prompt 时应只返回
+    fileB（不含 turn1 的 fileA）--证明 turn 边界由当前 prompt 定位，历史轮次文档被排除。
+    """
+
+    file_a = str(tmp_path / "01_概览.md")
+    file_b = str(tmp_path / "02_年报.md")
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_prompt_entry("请阅读第一份材料"),
+            _assistant_with_read("call-1", file_a),
+            _user_with_tool_result("call-1", "第一份材料内容"),
+            _assistant_text_entry("第一轮回复"),
+            _user_prompt_entry("请阅读第二份材料"),
+            _assistant_with_read("call-2", file_b),
+            _user_with_tool_result("call-2", "第二份材料内容"),
+            _assistant_text_entry("第二轮回复"),
+        ],
+    )
+
+    turn2 = extract_document_messages(
+        str(transcript),
+        user_prompt="请阅读第二份材料",
+    )
+    assert [m["source_uri"] for m in turn2] == [file_b]
+    assert turn2[0]["content"] == "第二份材料内容"
+
+    # turn1 独立 transcript（模拟 turn1 Stop 时只见本轮），返回 fileA。
+    turn1_transcript = tmp_path / "turn1.jsonl"
+    _write_jsonl(
+        turn1_transcript,
+        [
+            _user_prompt_entry("请阅读第一份材料"),
+            _assistant_with_read("call-1", file_a),
+            _user_with_tool_result("call-1", "第一份材料内容"),
+            _assistant_text_entry("第一轮回复"),
+        ],
+    )
+    turn1 = extract_document_messages(
+        str(turn1_transcript),
+        user_prompt="请阅读第一份材料",
+    )
+    assert [m["source_uri"] for m in turn1] == [file_a]
+    assert turn1[0]["content"] == "第一份材料内容"
+
+
+def test_current_turn_without_read_calls_returns_empty(tmp_path: Path) -> None:
+    """第二轮无工具调用时文档为空（等价 message_count=2，§1 验收）。"""
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_prompt_entry("请阅读第一份材料"),
+            _assistant_with_read("call-1", str(tmp_path / "01_概览.md")),
+            _user_with_tool_result("call-1", "第一份材料内容"),
+            _assistant_text_entry("第一轮回复"),
+            _user_prompt_entry("这是我的长期研究判断"),
+            _assistant_text_entry("第二轮回复，无工具调用"),
+        ],
+    )
+
+    messages = extract_document_messages(
+        str(transcript),
+        user_prompt="这是我的长期研究判断",
+    )
+
+    assert messages == []
+
+
+def test_no_user_prompt_falls_back_to_last_user_text_turn(tmp_path: Path) -> None:
+    """未传 user_prompt 时回退到最后一条用户文本消息之后的条目（不返回全部历史）。"""
+
+    file_a = str(tmp_path / "01_概览.md")
+    file_b = str(tmp_path / "02_年报.md")
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_prompt_entry("请阅读第一份材料"),
+            _assistant_with_read("call-1", file_a),
+            _user_with_tool_result("call-1", "第一份材料内容"),
+            _user_prompt_entry("请阅读第二份材料"),
+            _assistant_with_read("call-2", file_b),
+            _user_with_tool_result("call-2", "第二份材料内容"),
+        ],
+    )
+
+    messages = extract_document_messages(str(transcript))
+
+    assert [m["source_uri"] for m in messages] == [file_b]
