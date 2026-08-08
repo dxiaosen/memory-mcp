@@ -135,3 +135,43 @@ def test_no_read_tool_calls_returns_empty(tmp_path: Path) -> None:
     )
 
     assert extract_document_messages(str(transcript)) == []
+
+
+def test_source_uri_converted_to_workspace_relative(tmp_path: Path) -> None:
+    """cwd 提供时 source_uri 转为 workspace-relative，避免绑定绝对路径（§4）。"""
+
+    materials = tmp_path / "materials"
+    materials.mkdir()
+    file_path = str(materials / "02_2025年报摘要.md")
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _assistant_with_read("call-1", file_path),
+            _user_with_tool_result("call-1", "收入同比增长 35%"),
+        ],
+    )
+
+    messages = extract_document_messages(str(transcript), cwd=str(tmp_path))
+
+    assert len(messages) == 1
+    assert messages[0]["source_uri"] == "materials/02_2025年报摘要.md"
+    assert messages[0]["source_title"] == "02_2025年报摘要.md"
+
+
+def test_source_uri_keeps_absolute_when_no_cwd(tmp_path: Path) -> None:
+    """无 cwd 时保留原始路径，不强行转换。"""
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _assistant_with_read("call-1", "/work/materials/04_纪要.md"),
+            _user_with_tool_result("call-1", "收入同比增长 35%"),
+        ],
+    )
+
+    messages = extract_document_messages(str(transcript))
+
+    assert len(messages) == 1
+    assert messages[0]["source_uri"] == "/work/materials/04_纪要.md"

@@ -531,10 +531,7 @@ profile `capture_guidance` 指导不超过 12、`StructuredCandidateExtractor.ex
 
 模型返回的 `CandidateProposal` 身份字段（owner/conversation/source_turn/observed_at）不可信，
 Core 用可信 `TurnEnvelope` 与 `PrincipalContext` 覆盖：`_source_metadata` 从可信消息块派生
-source_role/message_id/tool_name/source_type 等，不信任模型自报。`_normalize_assertion_kind`
-按可信 `source_role`/`source_type` 纠正模型自报 `assertion_kind`（assistant+user_* →
-system_inference；tool/document/web+非 external → external_fact；用户来源不纠正），记 DEBUG
-事件。候选进入 `Candidate` 后才做准入与 lifecycle 判定。
+source_role/message_id/tool_name/source_type 等，不信任模型自报。`_normalize_assertion_kind` 按可信 `source_role`/`source_type` 与模型自报 `expression_basis` 纠正 `assertion_kind`，保证二者一致（recommend.md §3）：tool/document/web + inferred -> system_inference（推断非原始事实）；+ explicit + 非外部 -> external_fact；+ ambiguous 保守不纠正；assistant+user_* -> system_inference；用户来源不纠正。记 DEBUG 事件（含 from/to/expression_basis）。被前置校验拒绝的候选记入 `RejectedProposal`，经 `memory.capture.validation` 内容事件输出完整字段供调试。候选进入 `Candidate` 后才做准入与 lifecycle 判定。`process` 内部按校验/准入/lifecycle 三段累加耗时，经 `timing` 透传给 `memory.capture.completed` 分阶段耗时字段。
 
 ### 7.5 自动关系可信化
 

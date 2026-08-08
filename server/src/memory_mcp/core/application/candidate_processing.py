@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -57,6 +58,24 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedProposal:
+    """前置校验阶段被拒绝的候选建议，保留 proposal 关键字段供开发日志调试。
+
+    被拒候选未进入 ``Candidate`` 构造（缺少可信 source_metadata），但记录其
+    subject/content/source_expression 等便于定位模型为何被拒（recommend.md §1）。
+    """
+
+    candidate_id: UUID
+    reason_code: str
+    subject: str
+    memory_type: str
+    content: str
+    source_expression: str
+    assertion_kind: AssertionKind
+    expression_basis: ExpressionBasis
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateProcessingResult:
     """一批候选处理后的原子写入结果：新记忆、待确认项、重复证据与替换。"""
 
@@ -66,6 +85,8 @@ class CandidateProcessingResult:
     reviews: tuple[ReviewItem, ...]
     duplicate_evidence: tuple[DuplicateEvidenceWrite, ...]
     replacements: tuple[ReplacementWrite, ...]
+    rejected_proposals: tuple[RejectedProposal, ...] = ()
+    timing: dict[str, float] | None = None
 
 
 class CandidateMaterializer:
@@ -292,15 +313,33 @@ class CandidateProcessor:
         reviews: list[ReviewItem] = []
         duplicate_evidence: list[DuplicateEvidenceWrite] = []
         replacements: list[ReplacementWrite] = []
+        rejected: list[RejectedProposal] = []
         lifecycle_target_ids: set[UUID] = set()
         candidate_scopes: set[tuple[str, str]] = set()
+        # 分阶段耗时累加（recommend.md §5）：校验/准入/lifecycle 三段在循环内累加。
+        _validation_duration = 0.0
+        _admission_duration = 0.0
+        _lifecycle_duration = 0.0
 
         for proposal in proposals:
             candidate_id = self._id_factory()
+            _validation_started_at = perf_counter()
             if proposal.source_expression not in redacted_source:
                 # 单条候选的 source_expression 不匹配脱敏后原文时，只丢弃该条，
                 # 不让一条坏候选拖垮整轮（recommend.md P0-B：用户研究基准不应因
                 # 模型一次编造 source_expression 而整轮丢失）。
+                rejected.append(
+                    RejectedProposal(
+                        candidate_id=candidate_id,
+                        reason_code="invalid_source_expression",
+                        subject=proposal.subject,
+                        memory_type=proposal.memory_type,
+                        content=proposal.content,
+                        source_expression=proposal.source_expression,
+                        assertion_kind=proposal.assertion_kind,
+                        expression_basis=proposal.expression_basis,
+                    )
+                )
                 outcomes.append(
                     CaptureOutcome(
                         candidate_id=candidate_id,
@@ -308,6 +347,7 @@ class CandidateProcessor:
                         reason_code="invalid_source_expression",
                     )
                 )
+                _validation_duration += perf_counter() - _validation_started_at
                 continue
             self._profile_registry.validate_memory_type(
                 turn.profile_id,
@@ -329,6 +369,18 @@ class CandidateProcessor:
             if turn.messages and source_metadata["source_role"] is None:
                 # source_expression 在脱敏原文中出现但无法定位到具体消息：
                 # 同样降级为丢弃单条，而非整轮失败。
+                rejected.append(
+                    RejectedProposal(
+                        candidate_id=candidate_id,
+                        reason_code="ambiguous_source_message",
+                        subject=proposal.subject,
+                        memory_type=proposal.memory_type,
+                        content=proposal.content,
+                        source_expression=proposal.source_expression,
+                        assertion_kind=proposal.assertion_kind,
+                        expression_basis=proposal.expression_basis,
+                    )
+                )
                 outcomes.append(
                     CaptureOutcome(
                         candidate_id=candidate_id,
@@ -336,15 +388,17 @@ class CandidateProcessor:
                         reason_code="ambiguous_source_message",
                     )
                 )
+                _validation_duration += perf_counter() - _validation_started_at
                 continue
             normalized_assertion_kind = _normalize_assertion_kind(
                 proposal.assertion_kind,
                 source_metadata["source_role"],
                 source_metadata["source_type"],
+                proposal.expression_basis,
             )
             if normalized_assertion_kind is not None:
                 # 模型把 Assistant 推断标成 user_view/user_provided_fact，或把
-                # 外部材料事实标成 user_*：按可信来源纠正，避免语义污染（recommend.md §4）。
+                # 外部材料事实标成 user_*：按可信来源纠正，避免语义污染（recommend.md §3）。
                 log_event(
                     _LOGGER,
                     logging.DEBUG,
@@ -357,6 +411,7 @@ class CandidateProcessor:
                         else None
                     ),
                     source_type=source_metadata["source_type"].value,
+                    expression_basis=proposal.expression_basis.value,
                     from_assertion_kind=proposal.assertion_kind.value,
                     to_assertion_kind=normalized_assertion_kind.value,
                 )
@@ -430,6 +485,8 @@ class CandidateProcessor:
                 **source_metadata,
             )
             candidates.append(candidate)
+            _validation_duration += perf_counter() - _validation_started_at
+            _admission_started_at = perf_counter()
             admission = self._admission_policy.decide(candidate)
             # 即使通过准入，非用户来源（如助手/工具输出）的候选也降级为待确认，
             # 避免把推断性内容直接自动写入。
@@ -442,6 +499,8 @@ class CandidateProcessor:
                     AdmissionDecision.PENDING,
                     "non_user_source",
                 )
+            _admission_duration += perf_counter() - _admission_started_at
+            _lifecycle_started_at = perf_counter()
             candidate_scope = (
                 normalize_memory_text(candidate.subject),
                 candidate.memory_type,
@@ -495,6 +554,7 @@ class CandidateProcessor:
                             memory_id=target.item.memory_id,
                         )
                     )
+                    _lifecycle_duration += perf_counter() - _lifecycle_started_at
                     continue
             elif target is not None:
                 if (
@@ -514,6 +574,7 @@ class CandidateProcessor:
                             memory_id=target.item.memory_id,
                         )
                     )
+                    _lifecycle_duration += perf_counter() - _lifecycle_started_at
                     continue
                 # 存在同 subject+类型目标但非明确替换，交给用户确认。
                 admission = AdmissionOutcome(
@@ -535,6 +596,7 @@ class CandidateProcessor:
                 )
                 if admission is None:
                     # 已在分支内产出写入并 append outcome，跳过后续 auto_save 新增。
+                    _lifecycle_duration += perf_counter() - _lifecycle_started_at
                     continue
             if admission.decision is AdmissionDecision.AUTO_SAVE:
                 memory = self._materializer.record(candidate)
@@ -571,6 +633,7 @@ class CandidateProcessor:
                         reason_code=admission.reason_code,
                     )
                 )
+            _lifecycle_duration += perf_counter() - _lifecycle_started_at
 
         return CandidateProcessingResult(
             candidates=tuple(candidates),
@@ -579,6 +642,12 @@ class CandidateProcessor:
             reviews=tuple(reviews),
             duplicate_evidence=tuple(duplicate_evidence),
             replacements=tuple(replacements),
+            rejected_proposals=tuple(rejected),
+            timing={
+                "candidate_validation_duration_ms": _validation_duration * 1000,
+                "admission_duration_ms": _admission_duration * 1000,
+                "lifecycle_duration_ms": _lifecycle_duration * 1000,
+            },
         )
 
     def _resolve_semantic_target(
@@ -718,31 +787,38 @@ def _normalize_assertion_kind(
     reported: AssertionKind,
     source_role: MessageRole | None,
     source_type: EvidenceSourceType,
+    expression_basis: ExpressionBasis,
 ) -> AssertionKind | None:
-    """按可信来源角色/类型修正模型自报的 assertion_kind，消除语义冲突。
+    """按可信来源角色/类型与表达基础修正模型自报的 assertion_kind，消除语义冲突。
 
-    recommend.md §4：模型常把 Assistant 自己的 thesis 标成 user_view /
-    user_provided_fact，或把外部材料事实标成 user_*。这里只纠正明确的语义冲突，
-    对无冲突的标注返回 None（保持原值）：
+    recommend.md §3：assertion_kind 必须与 expression_basis 一致。这里只纠正
+    明确的语义冲突，对无冲突的标注返回 None（保持原值）：
 
-    - assistant + user_view/user_provided_fact → system_inference（Assistant 的
-      判断/推断；若仅转述外部材料应标 external_fact，但区分转述与推断需读语义，
-      无法仅靠角色判别，此处先统一降为 system_inference，留 external_fact 由
-      source_type=tool/document/web 通道另行兜底）。
-    - tool/document/web source_type + 任意 user_* → external_fact（外部材料提供的
-      客观信息）。
+    - tool/document/web 来源 + inferred 基础 -> system_inference（从材料推断出的
+      结论不是原始事实；本次日志"资本开支强度"即 external_fact+inferred 违规）。
+    - tool/document/web 来源 + explicit 基础 + 任意 user_*/system_inference
+      -> external_fact（直接摘自材料的事实）。
+    - tool/document/web 来源 + ambiguous 基础 -> 不纠正（保守，留待人工）。
+    - assistant + user_view/user_provided_fact -> system_inference（Assistant 的
+      判断/推断）。
     """
 
     if source_type in (
         EvidenceSourceType.TOOL,
         EvidenceSourceType.DOCUMENT,
         EvidenceSourceType.WEB,
-    ) and reported in (
-        AssertionKind.USER_VIEW,
-        AssertionKind.USER_PROVIDED_FACT,
-        AssertionKind.SYSTEM_INFERENCE,
     ):
-        return AssertionKind.EXTERNAL_FACT
+        if expression_basis is ExpressionBasis.INFERRED:
+            if reported is not AssertionKind.SYSTEM_INFERENCE:
+                return AssertionKind.SYSTEM_INFERENCE
+            return None
+        if expression_basis is ExpressionBasis.EXPLICIT and reported in (
+            AssertionKind.USER_VIEW,
+            AssertionKind.USER_PROVIDED_FACT,
+            AssertionKind.SYSTEM_INFERENCE,
+        ):
+            return AssertionKind.EXTERNAL_FACT
+        return None
     if (
         source_role is MessageRole.ASSISTANT
         and reported in (AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT)

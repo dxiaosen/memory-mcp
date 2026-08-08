@@ -113,7 +113,7 @@ Agent Hook (run_ref)
 | `memory.capture.started` | INFO | `capture_id`, `owner_ref`, `profile_id`, `profile_version`, `was_reprocessed`, `event_id`, `message_count`, `input_character_count` |
 | `memory.capture.replay` | INFO | `capture_id`, `owner_ref`, `status`, `replayed` |
 | `memory.capture.idempotency_conflict` | WARNING | `capture_id`, `owner_ref`, `event_id` |
-| `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code` |
+| `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `extracted_candidate_count`, `outcome_count`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code`, `candidate_extraction_duration_ms`, `candidate_validation_duration_ms`, `admission_duration_ms`, `lifecycle_duration_ms`, `relation_duration_ms`, `persistence_duration_ms` |
 | `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
 | `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `error_message`, `cause_type`, `cause_message`, `owner_ref` |
 | `memory.capture.invalid_output` | WARNING | `capture_id`, `error_type`, `error_message`, `error_detail`（开发期：优先读 `InvalidModelOutputError.context` 结构化违规信息，其次 pydantic `ValidationError` 经 `__cause__` 链解析的「字段: 原因」摘要，最后异常消息兜底；保证非 null）, `cause_type`, `cause_message`, `owner_ref` |
@@ -128,6 +128,7 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.capture.input` | 脱敏输入、messages、subject_hint |
 | `memory.capture.candidates` | 候选及 source expression |
 | `memory.capture.admission` | 准入结果 |
+| `memory.capture.validation` | `extracted_candidate_count`, `validated_candidate_count`, `rejected`（被 invalid_source_expression/ambiguous_source_message 提前拒绝的 proposal 完整字段） |
 | `memory.capture.relation_candidates` | 脱敏建议和计划关系 |
 | `memory.capture.persisted` | 持久化结构（memory/review/duplicate/replacement/relation） |
 

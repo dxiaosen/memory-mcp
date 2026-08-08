@@ -610,6 +610,50 @@ def test_unmatched_source_expression_discards_only_that_candidate() -> None:
     assert len(non_discard) == 1
 
 
+def test_capture_counts_reconcile_across_stages() -> None:
+    """计数语义互相对上：extracted >= outcome_count >= candidate_count（§1）。
+
+    模型抽取 2 条，其中 1 条 source_expression 不匹配被 DISCARD，1 条正常 pending。
+    outcome_count=2(=pending+discarded), candidate_count=1(通过校验进入 Candidate)。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "这段文本在原文中不存在",
+                subject="bad-candidate",
+                content="模型编造的候选",
+            ),
+            candidate_proposal(
+                "以后项目周报默认用表格",
+                subject="good-candidate",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("以后项目周报默认用表格。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    outcomes = result.outcomes
+    # outcome_count = 2（1 auto_save + 1 discarded），互相对上
+    assert len(outcomes) == 2
+    decisions = {o.decision for o in outcomes}
+    assert decisions == {AdmissionDecision.AUTO_SAVE, AdmissionDecision.DISCARD}
+    discarded = sum(1 for o in outcomes if o.decision is AdmissionDecision.DISCARD)
+    auto_saved = sum(1 for o in outcomes if o.decision is AdmissionDecision.AUTO_SAVE)
+    assert discarded == 1
+    assert auto_saved == 1
+    # 通过校验的候选（auto_save 1 条）对应 1 条记忆
+    assert len(service.list_memories(principal)) == 1
+
+
 def test_assistant_assertion_kind_is_normalized_to_system_inference() -> None:
     """模型把 Assistant 自己的分析标成 user_view/user_provided_fact 时应纠正。
 
@@ -699,6 +743,55 @@ def test_external_source_assertion_kind_is_normalized_to_external_fact() -> None
     reviews = service.list_pending_reviews(principal)
     assert len(reviews) == 1
     assert reviews[0].candidate.assertion_kind is AssertionKind.EXTERNAL_FACT
+
+
+def test_document_inferred_assertion_kind_normalized_to_system_inference() -> None:
+    """document 来源 + inferred 基础应纠正为 system_inference，而非 external_fact。
+
+    recommend.md §3：从材料推断出的结论不是原始事实。本次日志"资本开支强度"即
+    external_fact+inferred 违规，按 expression_basis=inferred 归为 system_inference。
+    """
+
+    tool_text = "结合历史 capex 趋势，产能回报验证窗口在 2026H2"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                tool_text,
+                subject="capex-payback-window",
+                content="产能回报验证窗口在 2026H2",
+                assertion_kind=AssertionKind.EXTERNAL_FACT,
+                expression_basis=ExpressionBasis.INFERRED,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-doc-inferred",
+        content=f"[tool]\n{tool_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.TOOL,
+                content=tool_text,
+                message_id="tool-message",
+                source_type=EvidenceSourceType.DOCUMENT,
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    reviews = service.list_pending_reviews(principal)
+    assert len(reviews) == 1
+    assert reviews[0].candidate.assertion_kind is AssertionKind.SYSTEM_INFERENCE
 
 
 def test_user_assertion_kind_is_not_normalized() -> None:

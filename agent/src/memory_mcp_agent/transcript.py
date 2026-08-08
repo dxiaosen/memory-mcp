@@ -38,6 +38,8 @@ class TranscriptParseError(ValueError):
 
 def extract_document_messages(
     transcript_path: str | os.PathLike[str] | None,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
     """从 transcript 提取文件/文档来源消息，返回通用 RoleMessageV1 风格字典。
 
@@ -88,7 +90,7 @@ def extract_document_messages(
                 "content": content[:_MAX_DOCUMENT_CONTENT_CHARS],
                 "tool_name": tool_name,
                 "source_type": "document",
-                "source_uri": file_path,
+                "source_uri": _workspace_relative(file_path, cwd),
                 "source_title": _file_name(file_path),
                 "message_id": f"document:{index}",
             }
@@ -202,3 +204,22 @@ def _coerce_tool_result_text(value: Any) -> str:
 
 def _file_name(file_path: str) -> str:
     return Path(file_path).name or file_path
+
+
+def _workspace_relative(
+    file_path: str,
+    cwd: str | os.PathLike[str] | None,
+) -> str:
+    """把绝对文件路径转为相对 cwd 的 workspace-relative URI（recommend.md §4）。
+
+    cwd 为空或无法计算相对路径（如跨盘符）时保留原路径，不强行截断。
+    """
+
+    if not cwd:
+        return file_path
+    try:
+        rel = os.path.relpath(file_path, str(cwd))
+    except (TypeError, ValueError):
+        return file_path
+    # relpath 在不同驱动器/根下可能返回绝对路径，保留结果。
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel

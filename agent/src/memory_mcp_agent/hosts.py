@@ -240,7 +240,10 @@ class AgentHookAdapter:
                 run_reference=run_reference,
             )
 
-        document_messages = extract_document_messages(event.transcript_path)
+        document_messages = extract_document_messages(
+            event.transcript_path,
+            cwd=event.cwd,
+        )
         staged = self._state.stage_capture(
             event.conversation_id,
             event.turn_id,

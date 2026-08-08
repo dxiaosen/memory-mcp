@@ -250,7 +250,9 @@ class CaptureService:
                 )
             )
             proposals = ()
+            _extraction_duration = 0.0
             if _has_processable_content(inspection.redacted_text):
+                _extraction_started_at = perf_counter()
                 proposals = extractor.extract(
                     ExtractionRequest(
                         profile_id=turn.profile_id,
@@ -269,6 +271,7 @@ class CaptureService:
                         ),
                     )
                 )
+                _extraction_duration = perf_counter() - _extraction_started_at
             processed = processor.process(
                 principal,
                 turn,
@@ -277,9 +280,11 @@ class CaptureService:
                 initial_outcomes=initial_outcomes,
             )
             relation_plan = AutomaticRelationPlan()
+            _relation_duration = 0.0
             if self._relation_planner is not None and _has_processable_content(
                 inspection.redacted_text
             ):
+                _relation_started_at = perf_counter()
                 relation_plan = self._relation_planner.plan(
                     principal,
                     profile=profile,
@@ -308,6 +313,27 @@ class CaptureService:
                         else None
                     ),
                 )
+                _relation_duration = perf_counter() - _relation_started_at
+            log_content_event(
+                "memory.capture.candidates",
+                capture_id=capture_id,
+                candidates=tuple(
+                    asdict(candidate) for candidate in processed.candidates
+                ),
+            )
+            log_content_event(
+                "memory.capture.validation",
+                capture_id=capture_id,
+                extracted_candidate_count=len(proposals),
+                validated_candidate_count=len(processed.candidates),
+                rejected=tuple(asdict(r) for r in processed.rejected_proposals),
+            )
+            log_content_event(
+                "memory.capture.admission",
+                capture_id=capture_id,
+                outcomes=tuple(asdict(outcome) for outcome in processed.outcomes),
+            )
+            if self._relation_planner is not None and _relation_duration > 0:
                 log_event(
                     _LOGGER,
                     logging.INFO,
@@ -321,18 +347,6 @@ class CaptureService:
                     schema_version=self._relation_planner.schema_version,
                     skipped_count=relation_plan.skipped_count,
                 )
-            log_content_event(
-                "memory.capture.candidates",
-                capture_id=capture_id,
-                candidates=tuple(
-                    asdict(candidate) for candidate in processed.candidates
-                ),
-            )
-            log_content_event(
-                "memory.capture.admission",
-                capture_id=capture_id,
-                outcomes=tuple(asdict(outcome) for outcome in processed.outcomes),
-            )
             log_content_event(
                 "memory.capture.relation_candidates",
                 capture_id=capture_id,
@@ -414,6 +428,7 @@ class CaptureService:
             contract_version=turn.contract_version,
             payload_fingerprint=turn.payload_fingerprint,
         )
+        _persistence_started_at = perf_counter()
         committed = self._repository.commit_capture(
             principal,
             CaptureWrite(
@@ -425,6 +440,7 @@ class CaptureService:
                 relations=relation_plan.relations,
             ),
         )
+        _persistence_duration = perf_counter() - _persistence_started_at
         persisted = not committed.replayed
         log_content_event(
             "memory.capture.persisted",
@@ -471,6 +487,8 @@ class CaptureService:
             replayed=committed.replayed,
             was_reprocessed=was_reprocessed,
             duration_ms=round((perf_counter() - _capture_started_at) * 1000, 3),
+            extracted_candidate_count=len(proposals),
+            outcome_count=len(committed.outcomes),
             candidate_count=len(processed.candidates),
             auto_saved_count=_decision_counts.get(
                 AdmissionDecision.AUTO_SAVE.value, 0
@@ -492,6 +510,21 @@ class CaptureService:
             relation_accepted_count=len(relation_plan.relations),
             relation_skipped_count=relation_plan.skipped_count,
             failure_code=committed.failure_code,
+            candidate_extraction_duration_ms=round(_extraction_duration * 1000, 3),
+            candidate_validation_duration_ms=round(
+                (processed.timing or {}).get(
+                    "candidate_validation_duration_ms", 0.0
+                ),
+                3,
+            ),
+            admission_duration_ms=round(
+                (processed.timing or {}).get("admission_duration_ms", 0.0), 3
+            ),
+            lifecycle_duration_ms=round(
+                (processed.timing or {}).get("lifecycle_duration_ms", 0.0), 3
+            ),
+            relation_duration_ms=round(_relation_duration * 1000, 3),
+            persistence_duration_ms=round(_persistence_duration * 1000, 3),
         )
         return committed
 

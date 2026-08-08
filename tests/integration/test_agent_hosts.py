@@ -188,6 +188,9 @@ def test_transcript_path_surfaces_document_messages_in_capture(
     async def profile_id() -> None:
         import json
 
+        materials_dir = tmp_path / "materials"
+        materials_dir.mkdir()
+        file_path = str(materials_dir / "04_纪要.md")
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(
             "\n".join(
@@ -201,9 +204,7 @@ def test_transcript_path_surfaces_document_messages_in_capture(
                                     "type": "tool_use",
                                     "id": "call-1",
                                     "name": "Read",
-                                    "input": {
-                                        "file_path": "/work/04_纪要.md"
-                                    },
+                                    "input": {"file_path": file_path},
                                 }
                             ]
                         },
@@ -252,7 +253,7 @@ def test_transcript_path_surfaces_document_messages_in_capture(
         assert len(documents) == 1
         doc = documents[0]
         assert doc["source_type"] == "document"
-        assert doc["source_uri"] == "/work/04_纪要.md"
+        assert doc["source_uri"] == "materials/04_纪要.md"
         assert doc["source_title"] == "04_纪要.md"
         assert doc["tool_name"] == "Read"
         assert doc["content"] == "收入同比增长 35%"

@@ -157,6 +157,27 @@ def test_capture_completed_logs_aggregate_counts(
     assert "replacement_count" in fields
     assert "relation_proposal_count" in fields
     assert "relation_accepted_count" in fields
+    # 计数语义互相对上（recommend.md §1）
+    assert fields["extracted_candidate_count"] == 1
+    assert fields["outcome_count"] == 1
+    assert fields["candidate_count"] == 1
+    assert (
+        fields["outcome_count"]
+        == fields["auto_saved_count"]
+        + fields["pending_count"]
+        + fields["discarded_count"]
+        + fields["blocked_count"]
+    )
+    # 分阶段耗时（recommend.md §5）
+    for stage in (
+        "candidate_extraction_duration_ms",
+        "candidate_validation_duration_ms",
+        "admission_duration_ms",
+        "lifecycle_duration_ms",
+        "relation_duration_ms",
+        "persistence_duration_ms",
+    ):
+        assert fields[stage] >= 0
 
 
 def test_capture_replay_logs_event(
@@ -297,6 +318,7 @@ def test_capture_logs_assertion_normalized_when_assistant_mislabeled(
     assert fields["from_assertion_kind"] == "user_view"
     assert fields["to_assertion_kind"] == "system_inference"
     assert fields["source_role"] == "assistant"
+    assert "expression_basis" in fields
 
 
 # --- Recall 日志 ---
