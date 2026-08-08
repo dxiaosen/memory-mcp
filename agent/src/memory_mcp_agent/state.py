@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -44,6 +45,9 @@ class TurnState(BaseModel):
     profile_id: str | None = Field(default=None, min_length=1)
     final_output: str | None = Field(default=None, min_length=1)
     capture_observed_at: datetime | None = None
+    # AfterRun 从 transcript 解析出的文件/文档来源消息，随 outbox 持久化，
+    # 使重投不依赖 transcript 文件是否仍存在（recommend.md §5）。
+    document_messages: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("created_at")
@@ -120,16 +124,19 @@ class TurnStateStore:
         final_output: str,
         observed_at: datetime,
         profile_id: str | None,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> TurnState:
         """在网络调用前原子保存固定的完整捕获 payload，保证 outbox 可重投。"""
 
         existing = self.load(session_id, turn_id)
         if existing is None:
             raise TurnStateError("missing_turn_state")
+        resolved_documents = document_messages or []
         if existing.capture_pending:
             if (
                 existing.final_output != final_output
                 or existing.profile_id != profile_id
+                or existing.document_messages != resolved_documents
             ):
                 raise TurnStateConflictError("turn_capture_payload_conflict")
             return existing
@@ -140,6 +147,7 @@ class TurnStateStore:
                 "profile_id": profile_id,
                 "final_output": final_output,
                 "capture_observed_at": observed_at,
+                "document_messages": resolved_documents,
             }
         )
         self._ensure_root()

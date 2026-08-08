@@ -175,6 +175,91 @@ def test_supported_hosts_share_active_memory_flow(
     anyio.run(profile_id)
 
 
+def test_transcript_path_surfaces_document_messages_in_capture(
+    tmp_path: Path,
+) -> None:
+    """Stop 事件携带 transcript_path 时，文档来源消息应随 capture 请求送达。
+
+    recommend.md §5：Claude Code Stop hook 提供 transcript_path，Host Adapter
+    解析出文件读取来源，构造 role=tool/source_type=document 的消息，使候选
+    Evidence provenance 能映射到真实文档而非一律归到 assistant conversation。
+    """
+
+    async def profile_id() -> None:
+        import json
+
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join(
+                json.dumps(entry)
+                for entry in (
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "call-1",
+                                    "name": "Read",
+                                    "input": {
+                                        "file_path": "/work/04_纪要.md"
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "call-1",
+                                    "content": "收入同比增长 35%",
+                                }
+                            ]
+                        },
+                    },
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "claude-code" / "hooks")
+        before = _event(
+            session_id="session-1",
+            cwd=str(tmp_path),
+            hook_event_name="UserPromptSubmit",
+            prompt_id="turn-1",
+            prompt="04 纪要里收入怎么样？",
+        )
+        await _adapter(client, state).handle(before)
+
+        after = _event(
+            session_id="session-1",
+            cwd=str(tmp_path),
+            hook_event_name="Stop",
+            prompt_id="turn-1",
+            last_assistant_message="收入同比增长 35%。",
+            transcript_path=str(transcript),
+        )
+        await _adapter(client, state).handle(after)
+
+        assert len(client.capture_calls) == 1
+        capture = client.capture_calls[0]
+        documents = capture["document_messages"]
+        assert len(documents) == 1
+        doc = documents[0]
+        assert doc["source_type"] == "document"
+        assert doc["source_uri"] == "/work/04_纪要.md"
+        assert doc["source_title"] == "04_纪要.md"
+        assert doc["tool_name"] == "Read"
+        assert doc["content"] == "收入同比增长 35%"
+
+    anyio.run(profile_id)
+
+
 def test_no_memory_returns_strict_empty_json(tmp_path: Path) -> None:
     async def profile_id() -> None:
         client = _FakeClient(with_memory=False)

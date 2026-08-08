@@ -591,17 +591,26 @@ def _has_processable_content(value: str) -> bool:
 
 
 def _validation_errors(exc: BaseException) -> str | None:
-    """从异常及其 ``__cause__`` 链提取 pydantic 校验摘要（field: reason）。
+    """从异常及其 ``__cause__`` 链提取校验摘要（field: reason）。
 
-    模型输出校验失败时，``InvalidModelOutputError`` 经 ``raise ... from exc``
-    包装，原始 pydantic ``ValidationError`` 位于 ``__cause__``；遍历整条链
-    以在开发阶段暴露具体失败字段（如 confidence=1.5、normalized_time 非法）。
+    优先级：``InvalidModelOutputError.context``（结构化违规信息，如
+    ``{"field": "confidence", "value": 1.5}``）→ pydantic ``ValidationError.errors()``
+    （经 ``raise ... from`` 包装时位于 ``__cause__``）→ 异常消息兜底。
+
+    开发阶段（recommend.md §0 已放开完整内容日志）需暴露具体失败字段，
+    避免 ``memory.capture.invalid_output.error_detail`` 恒为 null。
     """
 
     current: BaseException | None = exc
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
+        # 1) InvalidModelOutputError.context（结构化）
+        context = getattr(current, "context", None)
+        if isinstance(context, dict) and context:
+            parts = [f"{key}={value!r}" for key, value in context.items()]
+            return " | ".join(parts)
+        # 2) pydantic ValidationError.errors()
         errors = getattr(current, "errors", None)
         if callable(errors):
             try:
@@ -614,7 +623,12 @@ def _validation_errors(exc: BaseException) -> str | None:
                     f"{str(item.get('msg', '')).strip()}"
                     for item in items[:5]
                 )
-                return summary or None
+                if summary:
+                    return summary
+        # 3) 异常消息兜底（直接 raise 无 cause 的路径）
+        message = str(current).strip()
+        if message:
+            return message
         current = current.__cause__
     return None
 

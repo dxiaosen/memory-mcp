@@ -45,6 +45,8 @@ _SAFE_CONTEXT_HEADER = (
     "The current user request always takes priority. "
     "User views are unverified preferences, not verified facts."
 )
+# 无相关记忆时不再向 Agent 注入占位文本（recommend.md §6）；零结果走
+# rendered_context="" + estimated_tokens=0，由 zero_result 事件字段提供可观测性。
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _RELEVANCE_THRESHOLD = 0.18
 _RELATION_BOOST = 0.12
@@ -141,7 +143,9 @@ class RecallService:
             value for value in (query.query, query.task_intent) if value is not None
         )
         _embedding_degraded = False
+        _embedding_started_at = perf_counter()
         query_embedding = self._compute_query_embedding(search_text)
+        _query_embedding_duration_ms = (perf_counter() - _embedding_started_at) * 1000
         if _embedding_enabled and query_embedding is None:
             _embedding_degraded = True
         _candidates_started_at = perf_counter()
@@ -154,10 +158,13 @@ class RecallService:
             limit=self._candidate_limit,
             query_embedding=query_embedding,
         )
+        _repository_candidate_duration_ms = (
+            perf_counter() - _candidates_started_at
+        ) * 1000
         candidates = candidate_set.candidates
         log_event(
             _LOGGER,
-            logging.DEBUG,
+            logging.INFO,
             "memory.recall.candidates",
             recall_ref=recall_ref,
             candidate_count=len(candidates),
@@ -168,6 +175,7 @@ class RecallService:
             recent_count=candidate_set.recent_count,
             embedding_degraded=_embedding_degraded,
         )
+        _ranking_started_at = perf_counter()
         candidate_ids = frozenset(record.item.memory_id for record in candidates)
         relation_summaries = self._repository.list_relations(
             principal,
@@ -242,6 +250,7 @@ class RecallService:
                 reverse=True,
             )
         )
+        _ranking_duration_ms = (perf_counter() - _ranking_started_at) * 1000
         log_content_event(
             "memory.recall.ranked",
             candidates=tuple(
@@ -279,6 +288,9 @@ class RecallService:
                 relation_boosted_count=_relation_boosted,
                 embedding_enabled=_embedding_enabled,
                 embedding_degraded=_embedding_degraded,
+                query_embedding_duration_ms=_query_embedding_duration_ms,
+                repository_candidate_duration_ms=_repository_candidate_duration_ms,
+                ranking_duration_ms=_ranking_duration_ms,
             )
 
         header_tokens = _estimate_tokens(_SAFE_CONTEXT_HEADER)
@@ -303,6 +315,9 @@ class RecallService:
                 relation_boosted_count=_relation_boosted,
                 embedding_enabled=_embedding_enabled,
                 embedding_degraded=_embedding_degraded,
+                query_embedding_duration_ms=_query_embedding_duration_ms,
+                repository_candidate_duration_ms=_repository_candidate_duration_ms,
+                ranking_duration_ms=_ranking_duration_ms,
             )
 
         selected: list[RecalledMemory] = []
@@ -344,13 +359,12 @@ class RecallService:
             used_tokens = prospective_tokens
 
         if not selected:
-            no_context_tokens = _estimate_tokens(_NO_RELEVANT_CONTEXT)
-            fits_budget = no_context_tokens <= query.token_budget
+            # 候选存在但无一进入 token 预算：不注入占位文本（recommend.md §6）。
             return _traced_result(
                 RecallResult(
                     items=(),
-                    rendered_context=_NO_RELEVANT_CONTEXT if fits_budget else "",
-                    estimated_tokens=no_context_tokens if fits_budget else 0,
+                    rendered_context="",
+                    estimated_tokens=0,
                     token_budget=query.token_budget,
                     truncated=True,
                 ),
@@ -366,12 +380,19 @@ class RecallService:
                 relation_boosted_count=_relation_boosted,
                 embedding_enabled=_embedding_enabled,
                 embedding_degraded=_embedding_degraded,
+                query_embedding_duration_ms=_query_embedding_duration_ms,
+                repository_candidate_duration_ms=_repository_candidate_duration_ms,
+                ranking_duration_ms=_ranking_duration_ms,
             )
+        _evidence_started_at = perf_counter()
         sources_by_revision = self._repository.load_recall_evidence(
             principal,
             revision_ids=tuple(item.revision_id for item in selected),
             per_revision_limit=3,
         )
+        _evidence_loading_duration_ms = (
+            perf_counter() - _evidence_started_at
+        ) * 1000
         selected = [
             replace(
                 item,
@@ -381,9 +402,11 @@ class RecallService:
             )
             for item in selected
         ]
+        _render_started_at = perf_counter()
         rendered = "\n".join(
             (_SAFE_CONTEXT_HEADER, *_cluster_by_subject(selected, rendered_lines))
         )
+        _render_duration_ms = (perf_counter() - _render_started_at) * 1000
         return _traced_result(
             RecallResult(
                 items=tuple(selected),
@@ -404,6 +427,11 @@ class RecallService:
             relation_boosted_count=_relation_boosted,
             embedding_enabled=_embedding_enabled,
             embedding_degraded=_embedding_degraded,
+            query_embedding_duration_ms=_query_embedding_duration_ms,
+            repository_candidate_duration_ms=_repository_candidate_duration_ms,
+            ranking_duration_ms=_ranking_duration_ms,
+            evidence_loading_duration_ms=_evidence_loading_duration_ms,
+            render_duration_ms=_render_duration_ms,
         )
 
     def recall_timeline(
@@ -625,20 +653,15 @@ class RecallService:
 
 
 def _empty_result(token_budget: int) -> RecallResult:
-    """无相关记忆时的空结果：在预算内返回兜底文案，超预算则返回空串。"""
-    estimated = _estimate_tokens(_NO_RELEVANT_CONTEXT)
-    if estimated > token_budget:
-        return RecallResult(
-            items=(),
-            rendered_context="",
-            estimated_tokens=0,
-            token_budget=token_budget,
-            truncated=False,
-        )
+    """无相关记忆时的空结果：不向 Agent 注入占位文本（recommend.md §6）。
+
+    items 为空时 rendered_context 返回空串、estimated_tokens=0，让 Agent 不注入
+    additionalContext。``zero_result`` 仍在 completed 事件中标记，可观测性不受影响。
+    """
     return RecallResult(
         items=(),
-        rendered_context=_NO_RELEVANT_CONTEXT,
-        estimated_tokens=estimated,
+        rendered_context="",
+        estimated_tokens=0,
         token_budget=token_budget,
         truncated=False,
     )
@@ -763,6 +786,11 @@ def _traced_result(
     relation_boosted_count: int,
     embedding_enabled: bool,
     embedding_degraded: bool,
+    query_embedding_duration_ms: float = 0.0,
+    repository_candidate_duration_ms: float = 0.0,
+    ranking_duration_ms: float = 0.0,
+    evidence_loading_duration_ms: float = 0.0,
+    render_duration_ms: float = 0.0,
 ) -> RecallResult:
     """记录召回 INFO 完成事件和内容模式输出后原样返回结果。"""
 
@@ -796,6 +824,13 @@ def _traced_result(
         relation_boosted_count=relation_boosted_count,
         embedding_enabled=embedding_enabled,
         embedding_degraded=embedding_degraded,
+        query_embedding_duration_ms=round(query_embedding_duration_ms, 3),
+        repository_candidate_duration_ms=round(
+            repository_candidate_duration_ms, 3
+        ),
+        ranking_duration_ms=round(ranking_duration_ms, 3),
+        evidence_loading_duration_ms=round(evidence_loading_duration_ms, 3),
+        render_duration_ms=round(render_duration_ms, 3),
     )
     return result
 

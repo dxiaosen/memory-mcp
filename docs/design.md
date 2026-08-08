@@ -316,7 +316,11 @@ model_id/prompt/schema_version）。schema 用 `memory_relations_provenance_stat
 | `system_inference` | 系统推断 |
 
 `verification_status`（unverified/user_asserted/user_confirmed/source_verified）独立于
-`assertion_kind`：一条 user_view 可以是 user_asserted 但永远 unverified。
+`assertion_kind`：一条 user_view 可以是 user_asserted 但永远 unverified。`assertion_kind`
+在候选可信化阶段按可信来源角色/类型归一化（不信任模型自报）：`source_type` 为
+tool/document/web 且标注非 `external_fact` → `external_fact`；`source_role=assistant` 且
+标注 `user_view`/`user_provided_fact` → `system_inference`；用户来源不纠正。`confirm_review`
+只改 `verification_status`，不重写 `assertion_kind`。
 
 ### 4.5 记忆配置
 
@@ -518,14 +522,19 @@ ambiguous）→ 关系规划 → 单事务提交。
 allowed_memory_types/business_progress_values/capture_guidance/profile_version/subject_hint。
 `business_progress_values` 作为硬约束透传给模型 prompt：非空集合时列出允许值并要求模型不得编造
 集合外的值；空集合（如 general-work）时要求模型留空 `business_progress`。模型输出必须符合严格
-schema，否则 `InvalidModelOutputError`。
+schema，否则 `InvalidModelOutputError`。候选数量三层控制：prompt 指导 5–10、
+profile `capture_guidance` 指导不超过 12、`StructuredCandidateExtractor.extract` 解析后
+按 `SOFT_CANDIDATE_LIMIT=12` 软裁剪（confidence 降序取前 12），硬上限
+`MAX_CANDIDATES=20` 仍由 schema `max_length` 强制。
 
 ### 7.4 候选可信化
 
 模型返回的 `CandidateProposal` 身份字段（owner/conversation/source_turn/observed_at）不可信，
 Core 用可信 `TurnEnvelope` 与 `PrincipalContext` 覆盖：`_source_metadata` 从可信消息块派生
-source_role/message_id/tool_name/source_type 等，不信任模型自报。候选进入 `Candidate`
-后才做准入与 lifecycle 判定。
+source_role/message_id/tool_name/source_type 等，不信任模型自报。`_normalize_assertion_kind`
+按可信 `source_role`/`source_type` 纠正模型自报 `assertion_kind`（assistant+user_* →
+system_inference；tool/document/web+非 external → external_fact；用户来源不纠正），记 DEBUG
+事件。候选进入 `Candidate` 后才做准入与 lifecycle 判定。
 
 ### 7.5 自动关系可信化
 

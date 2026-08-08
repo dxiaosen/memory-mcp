@@ -121,6 +121,7 @@ class MemoryHookClient(Protocol):
         observed_at: datetime,
         user_input: str,
         final_output: str,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> CaptureResponse: ...
 
 
@@ -169,7 +170,11 @@ class MemoryMcpClient:
         }
         if profile_id is not None:
             arguments["profile_id"] = profile_id
-        payload = await self._call_tool("recall_memory", arguments)
+        payload = await self._call_tool(
+            "recall_memory",
+            arguments,
+            timeout=self._settings.recall_timeout_seconds,
+        )
         try:
             return RecallResponse.model_validate(payload)
         except ValueError as exc:
@@ -185,29 +190,53 @@ class MemoryMcpClient:
         observed_at: datetime,
         user_input: str,
         final_output: str,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> CaptureResponse:
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": user_input,
+                "message_id": f"{turn_id}:user",
+            },
+        ]
+        # 文件/文档来源消息插在 user 与 assistant 之间，使候选的 Evidence
+        # provenance 能映射到真实文档而非一律归到 assistant conversation
+        # （recommend.md §5）。
+        for doc in document_messages or []:
+            messages.append(
+                {
+                    "role": doc.get("role", "tool"),
+                    "content": doc["content"],
+                    "message_id": doc.get("message_id")
+                    or f"{turn_id}:document:{len(messages)}",
+                    "tool_name": doc.get("tool_name"),
+                    "source_type": doc.get("source_type", "document"),
+                    "source_uri": doc.get("source_uri"),
+                    "source_title": doc.get("source_title"),
+                }
+            )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": final_output,
+                "message_id": f"{turn_id}:assistant",
+            }
+        )
         arguments: dict[str, Any] = {
             "event_id": event_id,
             "contract_version": "1",
             "conversation_id": conversation_id,
             "turn_id": turn_id,
             "observed_at": observed_at.isoformat(),
-            "messages": [
-                {
-                    "role": "user",
-                    "content": user_input,
-                    "message_id": f"{turn_id}:user",
-                },
-                {
-                    "role": "assistant",
-                    "content": final_output,
-                    "message_id": f"{turn_id}:assistant",
-                },
-            ],
+            "messages": messages,
         }
         if profile_id is not None:
             arguments["profile_id"] = profile_id
-        payload = await self._call_tool("capture_completed_turn", arguments)
+        payload = await self._call_tool(
+            "capture_completed_turn",
+            arguments,
+            timeout=self._settings.capture_timeout_seconds,
+        )
         try:
             return CaptureResponse.model_validate(payload)
         except ValueError as exc:
@@ -217,10 +246,12 @@ class MemoryMcpClient:
         self,
         name: str,
         arguments: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         try:
             async with self._session() as session:
-                result = await session.call_tool(name, arguments)
+                result = await session.call_tool(name, arguments, timeout=timeout)
         except MemoryHookClientError:
             raise
         except httpx.HTTPStatusError as exc:
@@ -295,7 +326,9 @@ class MemoryMcpClient:
                 headers={
                     "Authorization": f"Bearer {self._settings.token_value()}",
                 },
-                timeout=self._settings.timeout_seconds,
+                # 客户端级超时仅覆盖 initialize 等无 per-request 超时的请求；
+                # tools/call 显式传 recall/capture 超时，覆盖此默认值。
+                timeout=self._settings.recall_timeout_seconds,
             )
             self._http_client = client
         return client
@@ -366,6 +399,8 @@ class _JsonMcpSession:
         self,
         name: str,
         arguments: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         return await self._request(
             "tools/call",
@@ -373,6 +408,7 @@ class _JsonMcpSession:
                 "name": name,
                 "arguments": dict(arguments),
             },
+            timeout=timeout,
         )
 
     async def _request(
@@ -381,6 +417,7 @@ class _JsonMcpSession:
         params: Mapping[str, Any],
         *,
         initialization: bool = False,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         request_id = self._next_id
         self._next_id += 1
@@ -393,6 +430,7 @@ class _JsonMcpSession:
                 "method": method,
                 "params": dict(params),
             },
+            timeout=timeout,
         )
         response.raise_for_status()
         if initialization:

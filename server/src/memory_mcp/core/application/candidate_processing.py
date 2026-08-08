@@ -35,7 +35,6 @@ from memory_mcp.core.domain import (
     VerificationStatus,
     normalize_memory_text,
 )
-from memory_mcp.core.exceptions import InvalidModelOutputError
 from memory_mcp.core.ports import (
     DuplicateEvidenceWrite,
     EmbeddingProvider,
@@ -299,9 +298,17 @@ class CandidateProcessor:
         for proposal in proposals:
             candidate_id = self._id_factory()
             if proposal.source_expression not in redacted_source:
-                raise InvalidModelOutputError(
-                    "source_expression must occur in the redacted source turn"
+                # 单条候选的 source_expression 不匹配脱敏后原文时，只丢弃该条，
+                # 不让一条坏候选拖垮整轮（recommend.md P0-B：用户研究基准不应因
+                # 模型一次编造 source_expression 而整轮丢失）。
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate_id,
+                        decision=AdmissionDecision.DISCARD,
+                        reason_code="invalid_source_expression",
+                    )
                 )
+                continue
             self._profile_registry.validate_memory_type(
                 turn.profile_id,
                 proposal.memory_type,
@@ -320,9 +327,40 @@ class CandidateProcessor:
                 self._sensitive_guard,
             )
             if turn.messages and source_metadata["source_role"] is None:
-                raise InvalidModelOutputError(
-                    "source_expression must occur in one submitted message"
+                # source_expression 在脱敏原文中出现但无法定位到具体消息：
+                # 同样降级为丢弃单条，而非整轮失败。
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate_id,
+                        decision=AdmissionDecision.DISCARD,
+                        reason_code="ambiguous_source_message",
+                    )
                 )
+                continue
+            normalized_assertion_kind = _normalize_assertion_kind(
+                proposal.assertion_kind,
+                source_metadata["source_role"],
+                source_metadata["source_type"],
+            )
+            if normalized_assertion_kind is not None:
+                # 模型把 Assistant 推断标成 user_view/user_provided_fact，或把
+                # 外部材料事实标成 user_*：按可信来源纠正，避免语义污染（recommend.md §4）。
+                log_event(
+                    _LOGGER,
+                    logging.DEBUG,
+                    "memory.capture.candidate.assertion_normalized",
+                    candidate_ref=str(candidate_id),
+                    memory_type=proposal.memory_type,
+                    source_role=(
+                        source_metadata["source_role"].value
+                        if source_metadata["source_role"] is not None
+                        else None
+                    ),
+                    source_type=source_metadata["source_type"].value,
+                    from_assertion_kind=proposal.assertion_kind.value,
+                    to_assertion_kind=normalized_assertion_kind.value,
+                )
+            resolved_assertion_kind = normalized_assertion_kind or proposal.assertion_kind
             candidate_sensitive = self._sensitive_guard.inspect(
                 "\n".join(
                     value
@@ -361,7 +399,7 @@ class CandidateProcessor:
                 subject=proposal.subject,
                 memory_type=proposal.memory_type,
                 content=proposal.content,
-                assertion_kind=proposal.assertion_kind,
+                assertion_kind=resolved_assertion_kind,
                 conversation_id=turn.conversation_id,
                 source_turn_id=turn.source_turn_id,
                 source_expression=proposal.source_expression,
@@ -674,6 +712,43 @@ def _source_metadata(
         "content_hash": selected.content_hash,
         "citation_locator": selected.citation_locator,
     }
+
+
+def _normalize_assertion_kind(
+    reported: AssertionKind,
+    source_role: MessageRole | None,
+    source_type: EvidenceSourceType,
+) -> AssertionKind | None:
+    """按可信来源角色/类型修正模型自报的 assertion_kind，消除语义冲突。
+
+    recommend.md §4：模型常把 Assistant 自己的 thesis 标成 user_view /
+    user_provided_fact，或把外部材料事实标成 user_*。这里只纠正明确的语义冲突，
+    对无冲突的标注返回 None（保持原值）：
+
+    - assistant + user_view/user_provided_fact → system_inference（Assistant 的
+      判断/推断；若仅转述外部材料应标 external_fact，但区分转述与推断需读语义，
+      无法仅靠角色判别，此处先统一降为 system_inference，留 external_fact 由
+      source_type=tool/document/web 通道另行兜底）。
+    - tool/document/web source_type + 任意 user_* → external_fact（外部材料提供的
+      客观信息）。
+    """
+
+    if source_type in (
+        EvidenceSourceType.TOOL,
+        EvidenceSourceType.DOCUMENT,
+        EvidenceSourceType.WEB,
+    ) and reported in (
+        AssertionKind.USER_VIEW,
+        AssertionKind.USER_PROVIDED_FACT,
+        AssertionKind.SYSTEM_INFERENCE,
+    ):
+        return AssertionKind.EXTERNAL_FACT
+    if (
+        source_role is MessageRole.ASSISTANT
+        and reported in (AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT)
+    ):
+        return AssertionKind.SYSTEM_INFERENCE
+    return None
 
 
 def _is_explicit_replacement(candidate: Candidate) -> bool:

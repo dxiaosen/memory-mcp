@@ -1,5 +1,6 @@
 """把任意结构化模型后端适配为候选与关系 Extractor。"""
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -18,6 +19,7 @@ from memory_mcp.core.ports import (
     ExtractionRequest,
     RelationExtractionRequest,
 )
+from memory_mcp.core.support import log_event
 
 StructuredModelBackend = Callable[
     [ExtractionRequest],
@@ -27,6 +29,13 @@ StructuredRelationBackend = Callable[
     [RelationExtractionRequest],
     Sequence[Mapping[str, Any]],
 ]
+
+_LOGGER = logging.getLogger(__name__)
+
+# 软裁剪上限：模型偶尔返回超过 12 条候选时，按 confidence 降序取前 12 条，
+# 避免单轮过多候选淹没准入/去重管线。硬上限 MAX_CANDIDATES（20）仍由 schema
+# 在解析期强制，超过 20 直接视为非法输出。
+SOFT_CANDIDATE_LIMIT = 12
 
 
 class StructuredCandidateExtractor:
@@ -64,17 +73,38 @@ class StructuredCandidateExtractor:
         return self._schema_version
 
     def extract(self, request: ExtractionRequest) -> tuple[CandidateProposal, ...]:
-        """调用后端并逐条解析候选；非法输出转为 ``InvalidModelOutputError``。"""
+        """调用后端并逐条解析候选；非法输出转为 ``InvalidModelOutputError``。
+
+        当解析出的候选数超过软上限（12）时，按 confidence 降序裁剪到上限，
+        并记一条 DEBUG 事件，避免单轮过多候选淹没准入/去重管线。
+        """
 
         try:
             payload = self._backend(request)
-            return tuple(_parse_candidate(item) for item in payload)
+            proposals = tuple(_parse_candidate(item) for item in payload)
         except InvalidModelOutputError:
             raise
         except (TypeError, ValueError, KeyError) as exc:
             raise InvalidModelOutputError(
                 "structured candidate output is invalid"
             ) from exc
+        if len(proposals) > SOFT_CANDIDATE_LIMIT:
+            original_count = len(proposals)
+            proposals = tuple(
+                sorted(proposals, key=lambda p: p.confidence, reverse=True)[
+                    :SOFT_CANDIDATE_LIMIT
+                ]
+            )
+            log_event(
+                _LOGGER,
+                logging.DEBUG,
+                "memory.capture.candidates_truncated",
+                model_id=self._model_id,
+                original_count=original_count,
+                kept_count=len(proposals),
+                soft_limit=SOFT_CANDIDATE_LIMIT,
+            )
+        return proposals
 
 
 class StructuredRelationExtractor:
@@ -230,7 +260,10 @@ def _parse_relation(payload: Mapping[str, Any]) -> RelationProposal:
 
 def _required_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise InvalidModelOutputError(f"{field_name} must be non-empty text")
+        raise InvalidModelOutputError(
+            f"{field_name} must be non-empty text",
+            context={"field": field_name, "reason": "non-empty text required"},
+        )
     return value.strip()
 
 
@@ -242,10 +275,20 @@ def _optional_text(value: object, field_name: str) -> str | None:
 
 def _confidence(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise InvalidModelOutputError("confidence must be numeric")
+        raise InvalidModelOutputError(
+            "confidence must be numeric",
+            context={"field": "confidence", "value": value, "reason": "must be numeric"},
+        )
     confidence = float(value)
     if not 0.0 <= confidence <= 1.0:
-        raise InvalidModelOutputError("confidence must be between 0 and 1")
+        raise InvalidModelOutputError(
+            "confidence must be between 0 and 1",
+            context={
+                "field": "confidence",
+                "value": confidence,
+                "reason": "out of range [0, 1]",
+            },
+        )
     return confidence
 
 
@@ -256,8 +299,14 @@ def _uuid_value(value: object, field_name: str) -> UUID:
         try:
             return UUID(value)
         except ValueError as exc:
-            raise InvalidModelOutputError(f"{field_name} must be a UUID") from exc
-    raise InvalidModelOutputError(f"{field_name} must be a UUID")
+            raise InvalidModelOutputError(
+                f"{field_name} must be a UUID",
+                context={"field": field_name, "value": value, "reason": "invalid UUID"},
+            ) from exc
+    raise InvalidModelOutputError(
+        f"{field_name} must be a UUID",
+        context={"field": field_name, "value": value, "reason": "must be UUID or string"},
+    )
 
 
 def _optional_datetime(value: object, field_name: str) -> datetime | None:
@@ -270,12 +319,27 @@ def _optional_datetime(value: object, field_name: str) -> datetime | None:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise InvalidModelOutputError(
-                f"{field_name} must be an ISO datetime"
+                f"{field_name} must be an ISO datetime",
+                context={
+                    "field": field_name,
+                    "value": value,
+                    "reason": "not ISO datetime",
+                },
             ) from exc
     else:
-        raise InvalidModelOutputError(f"{field_name} must be a datetime or ISO text")
+        raise InvalidModelOutputError(
+            f"{field_name} must be a datetime or ISO text",
+            context={
+                "field": field_name,
+                "value": value,
+                "reason": "must be datetime or ISO string",
+            },
+        )
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise InvalidModelOutputError(f"{field_name} must be timezone-aware")
+        raise InvalidModelOutputError(
+            f"{field_name} must be timezone-aware",
+            context={"field": field_name, "value": value, "reason": "naive datetime"},
+        )
     return parsed
 
 
@@ -287,4 +351,11 @@ def _enum_value[T](
     try:
         return enum_type(value)  # type: ignore[call-arg]
     except (TypeError, ValueError) as exc:
-        raise InvalidModelOutputError(f"{field_name} is invalid") from exc
+        raise InvalidModelOutputError(
+            f"{field_name} is invalid",
+            context={
+                "field": field_name,
+                "value": value,
+                "reason": f"not a valid {enum_type.__name__}",
+            },
+        ) from exc

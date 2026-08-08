@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 import pytest
 from memory_mcp.core import (
+    AssertionKind,
     MessageRole,
     PrincipalContext,
     RecallQuery,
@@ -223,6 +224,81 @@ def test_capture_incomplete_logs_duration_and_failure_code(
     assert fields["status"] in ("failed", "reprocess_required")
 
 
+def test_capture_invalid_output_logs_error_detail_not_null(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """结构化输出违规时 error_detail 不应为 null（开发期排障，recommend.md §P0-C）。
+
+    直接 raise 的 InvalidModelOutputError 路径无 __cause__ 链，旧实现 error_detail
+    恒为 null。现 _validation_errors 优先读 exc.context，其次走 cause 链，最后
+    用异常消息兜底，保证 error_detail 非空。
+    """
+
+    from memory_mcp.core.exceptions import InvalidModelOutputError
+
+    exc = InvalidModelOutputError(
+        "confidence must be between 0 and 1",
+        context={"field": "confidence", "value": 1.5, "reason": "out of range [0, 1]"},
+    )
+    # 直接调用内部摘要函数，断言 context 优先级
+    from memory_mcp.core.application.capture_service import _validation_errors
+
+    detail = _validation_errors(exc)
+    assert detail is not None
+    assert "confidence" in detail
+    assert "1.5" in detail
+
+    # 无 context 的直接 raise 路径：异常消息兜底，仍非空
+    exc_no_context = InvalidModelOutputError("candidate must be an object")
+    assert _validation_errors(exc_no_context) is not None
+
+
+def test_capture_logs_assertion_normalized_when_assistant_mislabeled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """模型把 Assistant 分析标成 user_view 时，DEBUG 记录纠正事件。"""
+
+    assistant_text = "增长质量在恶化"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                assistant_text,
+                content="增长质量恶化",
+                assertion_kind=AssertionKind.USER_VIEW,
+            ),
+        )
+    )
+    service = _capture_service(extractor=extractor)
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="log-test-session",
+        source_turn_id="log-assistant-turn",
+        content=f"[assistant]\n{assistant_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_text,
+                message_id="assistant-msg",
+            ),
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        service.capture_turn(_PRINCIPAL, turn)
+
+    normalized = [
+        e
+        for e in _extract_events(caplog)
+        if e["event"] == "memory.capture.candidate.assertion_normalized"
+    ]
+    assert len(normalized) == 1
+    fields = normalized[0]["fields"]
+    assert fields["from_assertion_kind"] == "user_view"
+    assert fields["to_assertion_kind"] == "system_inference"
+    assert fields["source_role"] == "assistant"
+
+
 # --- Recall 日志 ---
 
 
@@ -275,6 +351,13 @@ def test_recall_completed_logs_aggregate_counts_and_duration(
     assert "candidate_count" in fields
     assert "embedding_enabled" in fields
     assert "embedding_degraded" in fields
+    # 分阶段耗时（recommend.md §9.3）
+    assert fields["query_embedding_duration_ms"] >= 0
+    assert fields["repository_candidate_duration_ms"] >= 0
+    assert fields["ranking_duration_ms"] >= 0
+    # 零结果路径不执行 evidence_loading 与 render，记 0
+    assert fields["evidence_loading_duration_ms"] == 0
+    assert fields["render_duration_ms"] == 0
 
 
 def test_recall_ref_links_started_and_completed(

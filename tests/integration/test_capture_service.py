@@ -560,6 +560,187 @@ def test_invalid_model_type_fails_safely_and_is_not_reprocessed() -> None:
     assert service.list_pending_reviews(principal) == ()
 
 
+def test_unmatched_source_expression_discards_only_that_candidate() -> None:
+    """单条候选 source_expression 不匹配脱敏原文时只丢弃该条，不拖垮整轮。
+
+    用户研究基准输入若因模型一次编造 source_expression 而整轮失败，是真实联调中
+    已出现的 P0 问题（recommend.md §P0-B）。该条降级为 DISCARD + reason_code
+    invalid_source_expression，其余候选正常处理。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "这段文本在原文中不存在",
+                subject="bad-candidate",
+                content="模型编造的候选",
+            ),
+            candidate_proposal(
+                "以后项目周报默认用表格",
+                subject="good-candidate",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("以后项目周报默认用表格。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.DISCARD in decisions
+    discard_reasons = [
+        outcome.reason_code
+        for outcome in result.outcomes
+        if outcome.decision is AdmissionDecision.DISCARD
+    ]
+    assert "invalid_source_expression" in discard_reasons
+    # 好候选正常进入后续准入流程（pending/auto_save），未被坏候选拖垮
+    non_discard = [
+        outcome
+        for outcome in result.outcomes
+        if outcome.decision is not AdmissionDecision.DISCARD
+    ]
+    assert len(non_discard) == 1
+
+
+def test_assistant_assertion_kind_is_normalized_to_system_inference() -> None:
+    """模型把 Assistant 自己的分析标成 user_view/user_provided_fact 时应纠正。
+
+    recommend.md §4：Assistant 阅读材料后形成的 thesis 是 system_inference，不是
+    user_view。可信化阶段按 source_role=assistant 把 user_* 纠正为 system_inference。
+    """
+
+    assistant_text = "收入高增速无法掩盖现金利润转换率下降，增长质量在恶化"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                assistant_text,
+                subject="growth-quality-thesis",
+                content="增长质量在恶化",
+                assertion_kind=AssertionKind.USER_VIEW,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-assistant-thesis",
+        content=f"[assistant]\n{assistant_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_text,
+                message_id="assistant-message",
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    reviews = service.list_pending_reviews(principal)
+    assert len(reviews) == 1  # system_inference 被准入策略降级为 pending
+    assert reviews[0].candidate.assertion_kind is AssertionKind.SYSTEM_INFERENCE
+
+
+def test_external_source_assertion_kind_is_normalized_to_external_fact() -> None:
+    """tool/document/web 来源上的 user_*/system_inference 应纠正为 external_fact。"""
+
+    tool_text = "文档披露收入同比增长 35%"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                tool_text,
+                subject="revenue-growth",
+                content="收入同比增长 35%",
+                assertion_kind=AssertionKind.USER_PROVIDED_FACT,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-tool-source",
+        content=f"[tool]\n{tool_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.TOOL,
+                content=tool_text,
+                message_id="tool-message",
+                source_type=EvidenceSourceType.DOCUMENT,
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    reviews = service.list_pending_reviews(principal)
+    assert len(reviews) == 1
+    assert reviews[0].candidate.assertion_kind is AssertionKind.EXTERNAL_FACT
+
+
+def test_user_assertion_kind_is_not_normalized() -> None:
+    """用户来源上的 user_view/user_provided_fact 不应被纠正。"""
+
+    user_text = "我以后周报默认用表格"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                user_text,
+                assertion_kind=AssertionKind.USER_VIEW,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = TurnEnvelope(
+        profile_id="project-work",
+        conversation_id="conversation-1",
+        source_turn_id="turn-user-view",
+        content=f"[user]\n{user_text}",
+        observed_at=_OBSERVED_AT,
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=user_text,
+                message_id="user-message",
+            ),
+        ),
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    memory = service.list_memories(principal)[0]
+    assert memory.current_revision.assertion_kind is AssertionKind.USER_VIEW
+
+
 def test_pending_confirmation_and_rejection_are_owner_scoped() -> None:
     extractor = FakeCandidateExtractor(
         (

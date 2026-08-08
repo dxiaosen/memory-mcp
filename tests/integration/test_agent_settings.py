@@ -53,6 +53,38 @@ def test_empty_agent_token_is_rejected_during_configuration() -> None:
         )
 
 
+def test_agent_uses_separate_recall_and_capture_timeouts() -> None:
+    """recall 与 capture 使用各自超时（recommend.md §2 / P0-A）。
+
+    单一 timeout_seconds=15s 会导致 capture（真实 ~33s）超时后并发重发。
+    现拆为 recall_timeout_seconds（默认 15）与 capture_timeout_seconds（默认 70），
+    满足 Claude Stop Hook 90s > Agent capture 70s > Server P95 <60s。
+    """
+
+    settings = MemoryHookSettings(
+        mcp_url="https://memory.internal/mcp",
+        bearer_token="configured-token",
+        _env_file=None,
+    )
+    assert settings.recall_timeout_seconds == 15.0
+    assert settings.capture_timeout_seconds == 70.0
+    assert settings.capture_timeout_seconds > settings.recall_timeout_seconds
+
+
+def test_agent_timeout_env_overrides_apply() -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("MEMORY_MCP_URL", "https://memory.internal/mcp")
+    monkeypatch.setenv("MEMORY_MCP_TOKEN", "agent-process-secret")
+    monkeypatch.setenv("MEMORY_HOOK_RECALL_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("MEMORY_HOOK_CAPTURE_TIMEOUT_SECONDS", "65")
+    try:
+        settings = MemoryHookSettings()
+        assert settings.recall_timeout_seconds == 12.0
+        assert settings.capture_timeout_seconds == 65.0
+    finally:
+        monkeypatch.undo()
+
+
 def test_mcp_client_reuses_and_closes_its_http_pool() -> None:
     async def profile_id() -> None:
         settings = MemoryHookSettings(
@@ -78,7 +110,7 @@ def test_mcp_client_omits_unspecified_profile_from_tool_arguments() -> None:
             super().__init__(settings)
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        async def _call_tool(self, name, arguments):
+        async def _call_tool(self, name, arguments, *, timeout=None):
             self.calls.append((name, dict(arguments)))
             if name == "recall_memory":
                 return {

@@ -72,6 +72,47 @@ def test_structured_model_adapter_rejects_invalid_payload() -> None:
         extractor.extract(_request())
 
 
+def test_structured_model_adapter_trims_to_soft_limit_by_confidence() -> None:
+    """超过软上限 12 的候选按 confidence 降序裁剪，避免淹没准入管线。
+
+    recommend.md §3：模型偶尔返回过多候选时，软裁剪（非整轮失败）+ 日志
+    可观测。硬上限 MAX_CANDIDATES=20 仍由 schema 强制，这里验证 12< N ≤20
+    的裁剪路径。
+    """
+
+    def backend(request: ExtractionRequest):
+        return [
+            {
+                "subject": f"cand-{i}",
+                "memory_type": "preference",
+                "content": f"候选 {i}",
+                "assertion_kind": "user_view",
+                "source_expression": request.content,
+                "save_rationale": "测试",
+                "confidence": round(0.5 + i * 0.01, 2),
+                "durability": "durable",
+                "expression_basis": "explicit",
+            }
+            for i in range(15)
+        ]
+
+    extractor = StructuredCandidateExtractor(
+        backend,
+        model_id="offline-model",
+        prompt_version="prompt-v1",
+    )
+
+    proposals = extractor.extract(_request())
+
+    assert len(proposals) == 12
+    # 按 confidence 降序取前 12：i=14..3（confidence 0.64..0.53）
+    confidences = [p.confidence for p in proposals]
+    assert confidences == sorted(confidences, reverse=True)
+    assert max(confidences) == 0.64
+    assert min(confidences) == 0.53
+
+
+
 def test_structured_relation_adapter_parses_only_exact_schema() -> None:
     source_id = UUID("11111111-1111-1111-1111-111111111111")
     target_id = UUID("22222222-2222-2222-2222-222222222222")

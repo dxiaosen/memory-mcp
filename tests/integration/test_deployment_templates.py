@@ -73,7 +73,14 @@ def test_agent_environment_template_contains_only_hook_settings(
         if line and not line.startswith("#")
     }
     assert assignments == {"MEMORY_MCP_URL", "MEMORY_MCP_TOKEN"}
-    assert "MEMORY_HOOK_" not in text
+    # 可选的 recall/capture 超时只在注释中以安全默认值出现（recommend.md §2），
+    # 不应作为必填赋值项（行首赋值）出现。
+    uncommented_hook_lines = [
+        line
+        for line in text.splitlines()
+        if line.startswith("MEMORY_HOOK_")
+    ]
+    assert uncommented_hook_lines == []
 
 
 def test_agent_hook_templates_register_only_top_level_turn_events() -> None:

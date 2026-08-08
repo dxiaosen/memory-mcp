@@ -45,7 +45,8 @@ class InvestmentResearchProfile:
         "empty unless the source explicitly states open, monitoring, resolved, "
         "invalidated, or archived. Never capture credentials, real holdings, orders, "
         "or buy/sell instructions. Prefer no candidate when the type or durability is "
-        "ambiguous."
+        "ambiguous. Aim for 5 to 10 high-signal candidates per turn; never exceed 12, "
+        "and prefer fewer when claims overlap or the turn is conversational."
     )
     profile_version: str = "v1"
     relation_policies: dict[str, MemoryRelationPolicy] = field(

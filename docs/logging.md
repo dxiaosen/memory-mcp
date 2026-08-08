@@ -116,8 +116,10 @@ Agent Hook (run_ref)
 | `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code` |
 | `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
 | `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `error_message`, `cause_type`, `cause_message`, `owner_ref` |
-| `memory.capture.invalid_output` | WARNING | `capture_id`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 经 `__cause__` 链解析的「字段: 原因」摘要）, `cause_type`, `cause_message`, `owner_ref` |
+| `memory.capture.invalid_output` | WARNING | `capture_id`, `error_type`, `error_message`, `error_detail`（开发期：优先读 `InvalidModelOutputError.context` 结构化违规信息，其次 pydantic `ValidationError` 经 `__cause__` 链解析的「字段: 原因」摘要，最后异常消息兜底；保证非 null）, `cause_type`, `cause_message`, `owner_ref` |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
+| `memory.capture.candidate.assertion_normalized` | DEBUG | `candidate_ref`, `memory_type`, `source_role`, `source_type`, `from_assertion_kind`, `to_assertion_kind`（模型自报 assertion_kind 与可信来源语义冲突时纠正：assistant+user_* → system_inference；tool/document/web source_type + 任意非 external → external_fact） |
+| `memory.capture.candidates_truncated` | DEBUG | `model_id`, `original_count`, `kept_count`, `soft_limit`（解析出的候选数超过软上限 12 时按 confidence 降序裁剪） |
 
 Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 
@@ -134,9 +136,9 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | 事件名 | 级别 | 字段 |
 | --- | --- | --- |
 | `memory.recall.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `embedding_enabled`, `max_items`, `token_budget` |
-| `memory.recall.candidates` | DEBUG | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded` |
+| `memory.recall.candidates` | INFO | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded`（召回流程 started → candidates → ranked → output → completed 的中间环节，便于区分"未召回"还是"召回了但被阈值过滤"） |
 | `memory.recall.embedding_failed` | WARNING | `error_type`, `error_message` |
-| `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded` |
+| `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded`, `query_embedding_duration_ms`, `repository_candidate_duration_ms`, `ranking_duration_ms`, `evidence_loading_duration_ms`, `render_duration_ms`（分阶段耗时，未执行的阶段记 0；便于定位 recall 慢在 embedding/DB/排序/evidence 渲染） |
 | `memory.recall.timeline.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `focus_memory_id`, `max_hops`, `token_budget` |
 | `memory.recall.timeline.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `hop_count`, `estimated_tokens`, `token_budget`, `truncated` |
 
@@ -215,11 +217,16 @@ Core 读取内容模式事件：
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
 | `agent_hook.recall.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
 | `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
+| `agent_hook.capture.attempt.started` | INFO | `event_ref`, `attempt`, `timeout_seconds` |
+| `agent_hook.capture.attempt.completed` | INFO | `event_ref`, `attempt`, `duration_ms`, `replayed`, `status` |
+| `agent_hook.capture.attempt.failed` | WARNING | `event_ref`, `attempt`, `duration_ms`, `error_type`, `error_code`, `retryable` |
 | `agent_hook.capture.retry` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
 | `agent_hook.capture.exhausted` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message` |
 | `agent_hook.capture.fail_open` | WARNING | `attempts`, `error_code`, `error_type`, `error_message` |
 | `agent_hook.pending_retry.completed` | INFO | `run_ref`, `attempts`, `status`, `warning_code` |
 | `agent_hook.pending_retry.failed` | ERROR | `run_ref`, `error_type`, `error_message`, `cause_type`, `cause_message` |
+| `agent_hook.transcript.parse_failed` | WARNING | `transcript_path`, `error_type`, `error_message`（Claude Code transcript JSONL 不可读或结构非法时 best-effort 跳过，不阻断 capture） |
+| `agent_hook.transcript.document_messages_extracted` | DEBUG | `transcript_path`, `document_message_count`（从 transcript 解析出文件读取来源消息数） |
 | `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 的「字段: 原因」摘要）, `error_cause_type`, `error_cause_message`, `encoding`/`byte_position`（仅 `stdin_decode_error`）, `raw_head`/`raw_len`（stdin 解析失败时的原始输入前缀） |
 | `turn_state.read_failed` / `.invalid` | WARNING | `path`, `error_type`, `error_message` |
 | `turn_state.cleanup_corrupt` | WARNING | `path`, `error_type`, `error_message` |

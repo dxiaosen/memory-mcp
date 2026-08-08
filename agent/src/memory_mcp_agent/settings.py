@@ -22,7 +22,16 @@ class MemoryHookSettings(BaseSettings):
         validation_alias=AliasChoices("MEMORY_MCP_TOKEN", "bearer_token"),
     )
     profile_id: str | None = Field(default=None, min_length=1)
+    # 已弃用：单一 timeout_seconds 同时用于 recall 与 capture。真实联调暴露
+    # capture 真实处理 ~33s 而超时仅 15s，导致并发重发（recommend.md §2）。
+    # 新代码用 recall_timeout_seconds / capture_timeout_seconds 分别控制。
+    # 保留字段仅为向后兼容，旧 env MEMORY_HOOK_TIMEOUT_SECONDS 仍被吸收但不再生效。
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    # recall 与 capture 使用各自超时：recall 需在用户请求开始前返回（10-15s），
+    # capture 需覆盖真实结构化抽取 + DB 延迟（60-75s）。满足
+    # Claude Stop Hook 90s > Agent capture 70s > Server P95 <60s。
+    recall_timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    capture_timeout_seconds: float = Field(default=70.0, gt=0, le=300)
     # fail_open 默认开启：记忆服务不可用时降级为 warning，不阻断 Agent。
     fail_open: bool = True
     recall_max_items: int = Field(default=5, ge=1, le=10)

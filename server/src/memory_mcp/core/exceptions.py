@@ -1,5 +1,7 @@
 """通用记忆核心可预期的异常。"""
 
+from typing import Any
+
 from memory_mcp.core.support.exceptions import MemoryMcpError
 
 
@@ -44,7 +46,22 @@ class CaptureNotConfiguredError(MemoryCoreError):
 
 
 class InvalidModelOutputError(MemoryCoreError):
-    """结构化模型输出不符合候选契约。"""
+    """结构化模型输出不符合候选契约。
+
+    开发阶段需暴露具体失败字段以便排障（recommend.md §0 已放开完整内容日志）。
+    ``context`` 携带结构化违规信息（如 ``{"field": "confidence", "value": 1.5}``），
+    供 ``memory.capture.invalid_output`` 的 ``error_detail`` 经
+    ``_validation_errors`` 提取，避免该字段恒为 null。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.context: dict[str, Any] | None = context
 
 
 class IdempotencyConflictError(MemoryCoreError):

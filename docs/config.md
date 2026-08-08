@@ -179,9 +179,11 @@
 | --- | --- | --- | --- |
 | `MEMORY_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
 | `MEMORY_MCP_TOKEN` | 无 | 是 | Server 已映射的 Bearer Token；Secret |
+| `MEMORY_HOOK_RECALL_TIMEOUT_SECONDS` | `15` | 否 | recall HTTP 超时；需在用户请求开始前返回 |
+| `MEMORY_HOOK_CAPTURE_TIMEOUT_SECONDS` | `70` | 否 | capture HTTP 超时；需覆盖真实结构化抽取 + DB 延迟 |
 
 - Agent 默认不发送 `profile_id`，由 Token 的 `default_profile_id` 决定策略。
-- HTTP 超时 15 秒，fail-open 默认开启，召回最多 5 条/600 token，capture 最多尝试 3 次。
+- recall 与 capture 使用各自超时（recommend.md §2）：满足 Claude Stop Hook 90s > Agent capture 70s > Server P95 <60s。fail-open 默认开启，召回最多 5 条/600 token，capture 最多尝试 3 次。
 - `MEMORY_HOOK_PROFILE_ID` 可作进程级高级覆盖，不进入普通 Agent 模板。
 - Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或日志。
 - 同一用户跨 Agent 发放不同 Token，映射到相同 tenant/subject。

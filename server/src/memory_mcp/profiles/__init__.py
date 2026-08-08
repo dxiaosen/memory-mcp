@@ -13,7 +13,7 @@ _BUILT_IN_POLICY_FINGERPRINTS = {
         "059cc7aec27384deae273124ed1fae862bd275fca29dc7a65e16eb2b744b69ac"
     ),
     ("investment-research", "v1"): (
-        "794b5f54d875d140e7b3c10c24d3066fca443eee59e988ebe80502d4e0e28a5e"
+        "0f63432bd6ad3566018ee97221c86a72dcd4a64b5b76b32e4e5d0f7423f1eb14"
     ),
 }
 

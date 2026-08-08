@@ -9,6 +9,8 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from memory_mcp_agent.client import (
@@ -130,6 +132,7 @@ class MemoryHookBridge:
         user_input: str,
         final_output: str,
         observed_at: datetime | None = None,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> AfterRunResult:
         """顶层任务成功产生最终响应后捕获一次。"""
 
@@ -137,11 +140,13 @@ class MemoryHookBridge:
             observed_at.tzinfo is None or observed_at.utcoffset() is None
         ):
             raise ValueError("observed_at must be timezone-aware")
+        resolved_documents = document_messages or []
         fingerprint = _fingerprint(
             {
                 "user_input": user_input,
                 "final_output": final_output,
                 "observed_at": observed_at.isoformat() if observed_at else None,
+                "document_messages": resolved_documents,
             }
         )
         async with self._lock:
@@ -154,6 +159,7 @@ class MemoryHookBridge:
                         user_input=user_input,
                         final_output=final_output,
                         observed_at=resolved_time,
+                        document_messages=resolved_documents,
                     )
                 )
                 task.add_done_callback(self._after_task_done)
@@ -220,6 +226,7 @@ class MemoryHookBridge:
         user_input: str,
         final_output: str,
         observed_at: datetime,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> AfterRunResult:
         """对可重试错误做有界重试，最终失败则按 fail_open 决定抛出或降级。"""
         event_id = _event_id(context)
@@ -227,6 +234,15 @@ class MemoryHookBridge:
         attempts = 0
         for attempt in range(1, self._settings.capture_max_attempts + 1):
             attempts = attempt
+            _attempt_started_at = perf_counter()
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "agent_hook.capture.attempt.started",
+                event_ref=event_id,
+                attempt=attempt,
+                timeout_seconds=self._settings.capture_timeout_seconds,
+            )
             try:
                 response = await self._client.capture_completed_turn(
                     event_id=event_id,
@@ -236,6 +252,19 @@ class MemoryHookBridge:
                     observed_at=observed_at,
                     user_input=user_input,
                     final_output=final_output,
+                    document_messages=document_messages,
+                )
+                log_event(
+                    _LOGGER,
+                    logging.INFO,
+                    "agent_hook.capture.attempt.completed",
+                    event_ref=event_id,
+                    attempt=attempt,
+                    duration_ms=round(
+                        (perf_counter() - _attempt_started_at) * 1000, 3
+                    ),
+                    replayed=response.replayed,
+                    status=response.status,
                 )
                 return AfterRunResult(
                     event_id=event_id,
@@ -250,6 +279,19 @@ class MemoryHookBridge:
                 )
             except MemoryHookClientError as exc:
                 final_error = exc
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "agent_hook.capture.attempt.failed",
+                    event_ref=event_id,
+                    attempt=attempt,
+                    duration_ms=round(
+                        (perf_counter() - _attempt_started_at) * 1000, 3
+                    ),
+                    error_type=type(exc).__name__,
+                    error_code=exc.code,
+                    retryable=exc.retryable,
+                )
                 if exc.retryable and attempt < self._settings.capture_max_attempts:
                     # 每次重试前记全：第几次、错误码、是否可重试、异常链。
                     cause = exc.__cause__

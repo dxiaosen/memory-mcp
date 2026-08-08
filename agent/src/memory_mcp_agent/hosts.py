@@ -16,6 +16,7 @@ from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
 from memory_mcp_agent.state import TurnState, TurnStateError, TurnStateStore
+from memory_mcp_agent.transcript import extract_document_messages
 
 _LOGGER = logging.getLogger(__name__)
 # 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
@@ -42,6 +43,7 @@ class AgentTurnEvent(BaseModel):
     cwd: str = Field(min_length=1)
     user_input: str | None = None
     final_output: str | None = None
+    transcript_path: str | None = None
 
     def required_user_input(self) -> str:
         """返回 Before 阶段的非空用户输入。"""
@@ -90,6 +92,11 @@ class AgentHookInput(BaseModel):
     # 某些宿主在 Stop 再入时提供该字段；主动记忆不据此改变业务行为。
     stop_hook_active: bool = False
 
+    # Claude Code 在 Stop / UserPromptSubmit 事件提供 transcript_path：指向
+    # 会话 JSONL 记录。Host Adapter 据此补全文件/工具来源 provenance
+    # （recommend.md §5），Core/Server 不感知 Claude Code 格式。
+    transcript_path: str | None = Field(default=None, min_length=1)
+
     @property
     def supported(self) -> bool:
         """只对顶层轮次开始和结束事件启用主动记忆。"""
@@ -129,6 +136,7 @@ class AgentHookInput(BaseModel):
             cwd=self.cwd,
             user_input=user_input,
             final_output=final_output,
+            transcript_path=self.transcript_path,
         )
 
 
@@ -232,12 +240,14 @@ class AgentHookAdapter:
                 run_reference=run_reference,
             )
 
+        document_messages = extract_document_messages(event.transcript_path)
         staged = self._state.stage_capture(
             event.conversation_id,
             event.turn_id,
             final_output=event.final_output,
             observed_at=datetime.now(UTC),
             profile_id=self._settings.profile_id,
+            document_messages=document_messages,
         )
         result = await self._deliver_staged(staged)
         warning_code = self._finish_delivery(staged, result)
@@ -316,6 +326,7 @@ class AgentHookAdapter:
             user_input=state.prompt,
             final_output=state.final_output,
             observed_at=state.capture_observed_at,
+            document_messages=state.document_messages,
         )
 
     def _finish_delivery(
