@@ -492,9 +492,12 @@ def test_backend_exception_message_is_logged_for_debugging(
 
 
 def test_retryable_failure_is_reprocessed_without_duplicates() -> None:
+    # 非 InvalidModelOutputError 的瞬时故障不在 capture 内重试（§3 仅重试结构错误），
+    # 走 REPROCESS_REQUIRED 重投路径；profile 升级后重投成功且不产生重复。
     extractor = FakeCandidateExtractor(
         (candidate_proposal("以后项目周报默认用表格"),),
         failures_before_success=1,
+        failure_exc=RuntimeError,
     )
     repository = InMemoryMemoryRepository()
     service = create_memory_service(
@@ -788,6 +791,190 @@ def test_user_original_expression_binds_to_user_and_auto_saves() -> None:
     assert len(evidence) >= 1
     assert evidence[0].source_role is MessageRole.USER
     assert memories[0].current_revision.assertion_kind is AssertionKind.USER_VIEW
+
+
+def test_source_expression_with_deleted_newline_accepted_by_compact() -> None:
+    """模型把换行**删除**（非替换为空格）时，compact 级归一化应放过（recommend.md §1）。
+
+    原文「较高毛利率，\\n可能」，表达式「较高毛利率，可能」（逗号后无空格也无换行）。
+    whitespace 级不匹配（原文有「， 」表达式有「，」），compact 级移除全部空白后一致 -> valid。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "AI 热管理材料收入快速增长、收入占比提升和较高毛利率，可能推动公司收入与利润结构改善",
+                subject="ai-thermal-margin-drivers",
+                content="AI 热管理材料收入占比提升推动利润结构改善",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn(
+        "AI 热管理材料收入快速增长、收入占比提升和较高毛利率，\n"
+        "可能推动公司收入与利润结构改善。"
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.DISCARD not in decisions
+    assert AdmissionDecision.AUTO_SAVE in decisions
+
+
+def test_source_expression_crlf_and_consecutive_spaces_accepted() -> None:
+    """CRLF / 连续空格差异在 whitespace 级归一化即通过（recommend.md §1）。"""
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "收入同比增长 35%",
+                subject="revenue-growth-crlf",
+                content="收入同比增长 35%",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("收入同比增长  35%\r\n（季度数据）")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert AdmissionDecision.AUTO_SAVE in {
+        outcome.decision for outcome in result.outcomes
+    }
+
+
+def test_extraction_retry_recovers_within_capture() -> None:
+    """结构化输出首次失败、第二次成功时，capture 内重试成功且只写一份结果（Case D）。"""
+
+    extractor = FakeCandidateExtractor(
+        (candidate_proposal("以后项目周报默认用表格"),),
+        failures_before_success=1,
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("以后项目周报默认用表格。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    # 第一次失败 + 第二次成功 = 2 次抽取调用，仅一份 capture/记忆。
+    assert len(extractor.requests) == 2
+    assert len(service.list_memories(principal)) == 1
+
+
+def test_extraction_retry_exhausted_fails_capture() -> None:
+    """所有重试均失败后才写 incomplete + invalid_candidate_output（recommend.md §3）。"""
+
+    extractor = FakeCandidateExtractor(
+        (candidate_proposal("以后项目周报默认用表格"),),
+        failures_before_success=10,  # 超过 _EXTRACTION_MAX_ATTEMPTS
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("以后项目周报默认用表格。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.FAILED
+    assert result.failure_code == "invalid_candidate_output"
+    assert len(extractor.requests) == 3  # 重试上限 3 次
+    assert len(service.list_memories(principal)) == 0
+
+
+def test_assistant_restatement_of_existing_memory_is_discarded() -> None:
+    """Assistant 复述已有 active memory -> discard assistant_restatement，不建 Pending（Case E）。
+
+    先以用户消息保存一条 active memory，再以 assistant 消息复述同样内容（source_role=assistant），
+    AfterRun 抽取应丢弃而非产生新 Pending。用户本人重述则走既有 duplicate/evidence 规则。
+    """
+
+    restated = "Q1 二期产线综合良率约 78%"
+    repository = InMemoryMemoryRepository()
+    # 1) 用户明确陈述 -> auto_save 一条 active memory。
+    user_service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        candidate_extractor=FakeCandidateExtractor(
+            (candidate_proposal(restated, subject="ai-line2-yield", content=restated),)
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+    user_service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="c1",
+            source_turn_id="t-user",
+            content=f"[user]\n{restated}",
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=restated,
+                    message_id="user-msg",
+                ),
+            ),
+        ),
+    )
+    assert len(user_service.list_memories(principal)) == 1
+
+    # 2) Assistant 复述同一内容 -> 应 discard assistant_restatement，不新增 Pending/记忆。
+    echo_service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        candidate_extractor=FakeCandidateExtractor(
+            (candidate_proposal(restated, subject="ai-line2-yield", content=restated),)
+        ),
+    )
+    result = echo_service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="c1",
+            source_turn_id="t-assistant",
+            content=f"[assistant]\n{restated}",
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.ASSISTANT,
+                    content=restated,
+                    message_id="assistant-msg",
+                ),
+            ),
+        ),
+    )
+
+    assert result.status is CaptureStatus.COMPLETED
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "assistant_restatement"
+    # 不产生新 Pending，也不新增记忆。
+    assert len(echo_service.list_pending_reviews(principal)) == 0
+    assert len(echo_service.list_memories(principal)) == 1
 
 
 def test_assistant_assertion_kind_is_normalized_to_system_inference() -> None:

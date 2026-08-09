@@ -117,6 +117,9 @@ Agent Hook (run_ref)
 | `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
 | `memory.capture.processing_failed` | ERROR | `capture_id`, `error_type`, `error_message`, `cause_type`, `cause_message`, `owner_ref` |
 | `memory.capture.invalid_output` | WARNING | `capture_id`, `error_type`, `error_message`, `error_detail`（开发期：优先读 `InvalidModelOutputError.context` 结构化违规信息，其次 pydantic `ValidationError` 经 `__cause__` 链解析的「字段: 原因」摘要，最后异常消息兜底；保证非 null）, `cause_type`, `cause_message`, `owner_ref` |
+| `memory.capture.extraction_attempt.started` | INFO | `capture_id`, `attempt`, `max_attempts`（结构化抽取每次尝试开始；recommend.md §3） |
+| `memory.capture.extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（仅对 `InvalidModelOutputError` 等 recoverable 结构错误重试；业务校验 `invalid_source_expression` 不重试） |
+| `memory.capture.extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次尝试成功，capture 继续后续候选处理） |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
 | `memory.capture.candidate.assertion_normalized` | DEBUG | `candidate_ref`, `memory_type`, `source_role`, `source_type`, `from_assertion_kind`, `to_assertion_kind`（模型自报 assertion_kind 与可信来源语义冲突时纠正：assistant+user_* → system_inference；tool/document/web source_type + 任意非 external → external_fact） |
 | `memory.capture.candidates_truncated` | DEBUG | `model_id`, `original_count`, `kept_count`, `soft_limit`（解析出的候选数超过软上限 12 时按 confidence 降序裁剪） |
@@ -147,7 +150,7 @@ Recall 内容模式事件（仅 `LOG_CONTENT=true`）：
 
 | 事件名 | 记录内容 |
 | --- | --- |
-| `memory.recall.input` | 脱敏查询、subject、task_intent |
+| `memory.recall.input` | 脱敏查询、`normalized_query`（剔除操作/工具/格式指令子句后的查询，recommend.md §7）、subject、task_intent |
 | `memory.recall.ranked` | 排序记录 |
 | `memory.recall.output` | 召回输出、rendered_context |
 | `memory.recall.timeline.output` | 时间线焦点记忆、hops、rendered_context |

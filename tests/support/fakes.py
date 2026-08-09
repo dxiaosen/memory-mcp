@@ -11,6 +11,7 @@ from memory_mcp.core import (
     CreateMemoryCommand,
     ExpressionBasis,
     ExtractionRequest,
+    InvalidModelOutputError,
     LifecycleStatus,
     MemoryExpiryDerivation,
     MemoryMetadataPolicy,
@@ -107,9 +108,11 @@ class FakeCandidateExtractor:
         proposals: tuple[CandidateProposal, ...] = (),
         *,
         failures_before_success: int = 0,
+        failure_exc: type[Exception] = InvalidModelOutputError,
     ) -> None:
         self.proposals = proposals
         self.failures_before_success = failures_before_success
+        self.failure_exc = failure_exc
         self.requests: list[ExtractionRequest] = []
 
     def extract(
@@ -118,7 +121,10 @@ class FakeCandidateExtractor:
     ) -> tuple[CandidateProposal, ...]:
         self.requests.append(request)
         if len(self.requests) <= self.failures_before_success:
-            raise RuntimeError("temporary model interruption")
+            # 默认模拟真实结构化输出失败（null/parse/schema/validation），由 capture 重试（§3）。
+            # 传入非 InvalidModelOutputError 的异常可模拟不可在 capture 内重试的瞬时故障
+            # （走 REPROCESS_REQUIRED 重投路径）。
+            raise self.failure_exc("temporary model interruption")
         return self.proposals
 
 

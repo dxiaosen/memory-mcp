@@ -25,6 +25,7 @@ from memory_mcp.core.application.candidate_processing import (
 from memory_mcp.core.application.review_service import ReviewService
 from memory_mcp.core.domain import (
     AdmissionDecision,
+    CandidateProposal,
     CaptureOutcome,
     CaptureResult,
     CaptureStatus,
@@ -47,16 +48,21 @@ from memory_mcp.core.ports import (
     CaptureWrite,
     EmbeddingProvider,
     ExtractionRequest,
+    MemoryProfile,
     MemoryRepository,
     ProfileRegistry,
     RelationExtractor,
     SensitiveContentGuard,
+    SensitiveInspection,
     profile_fingerprint,
 )
 from memory_mcp.core.support import log_content_event, log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")
+# 结构化抽取失败时的有界重试上限（recommend.md §3）。仅对可恢复的模型结构错误
+# （null/parse/schema/validation）重试，不对业务校验（invalid_source_expression）重试。
+_EXTRACTION_MAX_ATTEMPTS = 3
 
 
 class CaptureService:
@@ -249,27 +255,17 @@ class CaptureService:
                     (*inspection.categories, *subject_hint_inspection.categories)
                 )
             )
-            proposals = ()
+            proposals: tuple[CandidateProposal, ...] = ()
             _extraction_duration = 0.0
             if _has_processable_content(inspection.redacted_text):
                 _extraction_started_at = perf_counter()
-                proposals = extractor.extract(
-                    ExtractionRequest(
-                        profile_id=turn.profile_id,
-                        conversation_id=turn.conversation_id,
-                        source_turn_id=turn.source_turn_id,
-                        content=inspection.redacted_text,
-                        observed_at=turn.observed_at,
-                        allowed_memory_types=profile.memory_types,
-                        capture_guidance=profile.capture_guidance,
-                        profile_version=profile.profile_version,
-                        business_progress_values=profile.business_progress_values,
-                        subject_hint=(
-                            subject_hint_inspection.redacted_text
-                            if turn.subject_hint is not None
-                            else None
-                        ),
-                    )
+                proposals = self._extract_candidates(
+                    capture_id,
+                    extractor,
+                    profile=profile,
+                    turn=turn,
+                    inspection=inspection,
+                    subject_hint_inspection=subject_hint_inspection,
                 )
                 _extraction_duration = perf_counter() - _extraction_started_at
             processed = processor.process(
@@ -527,6 +523,89 @@ class CaptureService:
             persistence_duration_ms=round(_persistence_duration * 1000, 3),
         )
         return committed
+
+    def _extract_candidates(
+        self,
+        capture_id: UUID,
+        extractor: CandidateExtractor,
+        *,
+        profile: MemoryProfile,
+        turn: TurnEnvelope,
+        inspection: SensitiveInspection,
+        subject_hint_inspection: SensitiveInspection,
+    ) -> tuple[CandidateProposal, ...]:
+        """对结构化抽取做有界重试（recommend.md §3）。
+
+        仅对 ``InvalidModelOutputError``（null/parse/schema/validation 等可恢复结构错误）
+        重试，最多 ``_EXTRACTION_MAX_ATTEMPTS`` 次。每次 attempt 记 started/failed/completed
+        事件。所有 attempt 失败则向上抛出，由调用方既有 except 写
+        ``memory.capture.incomplete`` + ``invalid_candidate_output``。重试在同一 Capture 内，
+        不产生重复 Capture/Memory。业务校验（invalid_source_expression）在后续 candidate_processing
+        产生 discard，不在此重试。
+        """
+
+        request = ExtractionRequest(
+            profile_id=turn.profile_id,
+            conversation_id=turn.conversation_id,
+            source_turn_id=turn.source_turn_id,
+            content=inspection.redacted_text,
+            observed_at=turn.observed_at,
+            allowed_memory_types=profile.memory_types,
+            capture_guidance=profile.capture_guidance,
+            profile_version=profile.profile_version,
+            business_progress_values=profile.business_progress_values,
+            subject_hint=(
+                subject_hint_inspection.redacted_text
+                if turn.subject_hint is not None
+                else None
+            ),
+        )
+        final_error: InvalidModelOutputError | None = None
+        for attempt in range(1, _EXTRACTION_MAX_ATTEMPTS + 1):
+            _attempt_started_at = perf_counter()
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.capture.extraction_attempt.started",
+                capture_id=capture_id,
+                attempt=attempt,
+                max_attempts=_EXTRACTION_MAX_ATTEMPTS,
+            )
+            try:
+                proposals = extractor.extract(request)
+            except InvalidModelOutputError as exc:
+                final_error = exc
+                retryable = attempt < _EXTRACTION_MAX_ATTEMPTS
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "memory.capture.extraction_attempt.failed",
+                    capture_id=capture_id,
+                    attempt=attempt,
+                    max_attempts=_EXTRACTION_MAX_ATTEMPTS,
+                    duration_ms=round(
+                        (perf_counter() - _attempt_started_at) * 1000, 3
+                    ),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    retryable=retryable,
+                )
+                if retryable:
+                    continue
+                raise
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.capture.extraction_attempt.completed",
+                capture_id=capture_id,
+                attempt=attempt,
+                max_attempts=_EXTRACTION_MAX_ATTEMPTS,
+                duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
+            )
+            return proposals
+        # 所有 attempt 均失败（理论上不可达：最后一次 attempt 失败已 raise）。
+        assert final_error is not None
+        raise final_error
 
     def list_pending_reviews(
         self,

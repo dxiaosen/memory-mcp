@@ -274,6 +274,45 @@ def test_capture_invalid_output_logs_error_detail_not_null(
     assert _validation_errors(exc_no_context) is not None
 
 
+def test_capture_extraction_attempt_events_logged_with_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """结构化抽取重试记 started/failed/completed 事件（recommend.md §3）。
+
+    首次 InvalidModelOutputError 失败（retryable=true），第二次成功：2 次 started、
+    1 次 failed、1 次 completed，attempt/max_attempts/error_type 字段齐全。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (candidate_proposal("以后项目周报默认用表格"),),
+        failures_before_success=1,
+    )
+    service = _capture_service(extractor=extractor)
+
+    with caplog.at_level(logging.INFO):
+        service.capture_turn(_PRINCIPAL, _turn("以后项目周报默认用表格。"))
+
+    events = _extract_events(caplog)
+    started = [
+        e for e in events if e["event"] == "memory.capture.extraction_attempt.started"
+    ]
+    failed = [
+        e for e in events if e["event"] == "memory.capture.extraction_attempt.failed"
+    ]
+    completed = [
+        e for e in events if e["event"] == "memory.capture.extraction_attempt.completed"
+    ]
+    assert len(started) == 2  # attempt 1（失败）+ attempt 2（成功）
+    assert len(failed) == 1
+    assert len(completed) == 1
+    failed_fields = failed[0]["fields"]
+    assert failed_fields["attempt"] == 1
+    assert failed_fields["max_attempts"] == 3
+    assert failed_fields["retryable"] is True
+    assert failed_fields["error_type"] == "InvalidModelOutputError"
+    assert completed[0]["fields"]["attempt"] == 2
+
+
 def test_capture_logs_assertion_normalized_when_assistant_mislabeled(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

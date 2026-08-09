@@ -3,6 +3,7 @@
 import json
 import logging
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -49,6 +50,46 @@ _SAFE_CONTEXT_HEADER = (
 # rendered_context="" + estimated_tokens=0，由 zero_result 事件字段提供可观测性。
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _RELEVANCE_THRESHOLD = 0.18
+
+# Recall 查询归一化（recommend.md §7）：完整用户 Prompt 中的操作/工具/格式指令会稀释
+# embedding 与 lexical 检索。按子句（标点/换行切分）剔除明显指令子句，保留实体/主题/
+# 研究任务关键词。确定性、无 LLM；空结果回退原文，避免过度清空。不下调全局阈值。
+_RECALL_CLAUSE_SPLIT_RE = re.compile(r"[，。；！？\n]+")
+_RECALL_INSTRUCTION_CLAUSE_RE = re.compile(
+    r"(?:"
+    r"不(?:要|需|需要)?(?:使用|读取|调用|引入|替我)|"
+    r"请(?:阅读|使用|调用|按|严格区分|基于|列出|替我|形成|参考)|"
+    r"按[^，。；！？\n]*?格式|"
+    r"输出(?:一份|按|简短|公司|跟踪)?|"
+    r"(?:使用|调用)[^，。；！？\n]*?(?:工具|skill)|"
+    r"严格区分|"
+    r"替我形成|"
+    r"列出|"
+    r"(?:materials|data|src|tests|docs)/"
+    r")"
+)
+
+
+def _normalize_recall_query(raw: str) -> str:
+    """去除操作/工具/格式指令子句，保留实体/主题/研究任务关键词（recommend.md §7）。
+
+    按中文/英文句末标点与换行切分子句，剔除命中指令模式的子句；保留的子句以单空格拼接。
+    全部子句被剔除时回退原文，避免空查询。不调用 LLM、不改 owner/profile/lifecycle 过滤。
+    """
+
+    if not raw or not raw.strip():
+        return raw
+    kept: list[str] = []
+    for clause in _RECALL_CLAUSE_SPLIT_RE.split(raw):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if _RECALL_INSTRUCTION_CLAUSE_RE.search(stripped):
+            continue
+        kept.append(stripped)
+    return " ".join(kept) or raw
+
+
 _RELATION_BOOST = 0.12
 _PROFILE_HINT_BOOST = 0.16
 # subject 精确命中加成。原值 0.45 会把仅 subject 命中但正文无关的记忆拉到
@@ -127,10 +168,13 @@ class RecallService:
             max_items=query.max_items,
             token_budget=query.token_budget,
         )
+        # 归一化 Recall 查询：剔除操作/工具/格式指令子句，保留实体/主题（recommend.md §7）。
+        normalized_query = _normalize_recall_query(query.query or "")
         log_content_event(
             "memory.recall.input",
             max_items=query.max_items,
             query=self._redact_for_logging(query.query),
+            normalized_query=self._redact_for_logging(normalized_query),
             profile_id=query.profile_id,
             recall_ref=recall_ref,
             subject=self._redact_for_logging(query.subject),
@@ -140,7 +184,9 @@ class RecallService:
         profile = self._profile_registry.get(query.profile_id)
         effective_at = self._clock()
         search_text = " ".join(
-            value for value in (query.query, query.task_intent) if value is not None
+            value
+            for value in (normalized_query, query.task_intent)
+            if value is not None
         )
         _embedding_degraded = False
         _embedding_started_at = perf_counter()
