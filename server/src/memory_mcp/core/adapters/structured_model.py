@@ -19,7 +19,7 @@ from memory_mcp.core.ports import (
     ExtractionRequest,
     RelationExtractionRequest,
 )
-from memory_mcp.core.support import log_event
+from memory_mcp.core.support import log_content_event, log_event
 
 StructuredModelBackend = Callable[
     [ExtractionRequest],
@@ -82,7 +82,16 @@ class StructuredCandidateExtractor:
         try:
             payload = self._backend(request)
             proposals = tuple(_parse_candidate(item) for item in payload)
-        except InvalidModelOutputError:
+        except InvalidModelOutputError as exc:
+            # 结构化输出失败：开发态记录 model_id + raw 诊断（recommend.md §3），
+            # 便于定位是 None / schema malformed / 重复 wrapper 哪一层。
+            log_content_event(
+                "memory.capture.structured_output.invalid",
+                model_id=self._model_id,
+                prompt_version=self._prompt_version,
+                schema_version=self._schema_version,
+                **(exc.context or {}),
+            )
             raise
         except (TypeError, ValueError, KeyError) as exc:
             raise InvalidModelOutputError(

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from memory_mcp.core import MemoryRelationPolicy, RelationEndpoint
+from memory_mcp.core.exceptions import InvalidModelOutputError
 from memory_mcp.core.ports import ExtractionRequest, RelationExtractionRequest
 from memory_mcp.extraction import (
     CandidateBatch,
@@ -13,6 +14,7 @@ from memory_mcp.extraction import (
     RelationBatch,
     create_configured_candidate_extractor,
     create_configured_extractors,
+    normalize_candidate_batch_output,
 )
 
 
@@ -250,3 +252,87 @@ def _relation_request(
             ),
         ),
     )
+
+
+class _ScriptedRunnable:
+    """返回预设 raw 结构的模型桩，用于测试结构化输出归一化。"""
+
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+
+    def invoke(self, messages: object) -> object:
+        return self.raw
+
+
+class _ScriptedModel:
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+
+    def with_structured_output(self, schema: type[CandidateBatch]) -> _ScriptedRunnable:
+        assert schema is CandidateBatch
+        return _ScriptedRunnable(self.raw)
+
+
+def test_normalize_candidate_batch_output_passes_normal_list() -> None:
+    assert normalize_candidate_batch_output({"candidates": []}) == {"candidates": []}
+    assert normalize_candidate_batch_output({"candidates": [_candidate()]}) == {
+        "candidates": [_candidate()]
+    }
+
+
+def test_normalize_candidate_batch_output_passes_candidate_batch_instance() -> None:
+    batch = CandidateBatch(candidates=[])
+    assert normalize_candidate_batch_output(batch) is batch
+
+
+def test_normalize_candidate_batch_output_unwraps_double_wrapper() -> None:
+    """provider 偶发 {"candidates": {"candidates": [...]}} 应拆为单层（recommend.md §5）。"""
+
+    assert normalize_candidate_batch_output({"candidates": {"candidates": []}}) == {
+        "candidates": []
+    }
+    assert normalize_candidate_batch_output(
+        {"candidates": {"candidates": [_candidate()]}}
+    ) == {"candidates": [_candidate()]}
+
+
+def test_normalize_candidate_batch_output_rejects_invalid() -> None:
+    import pytest
+
+    with pytest.raises(InvalidModelOutputError):
+        normalize_candidate_batch_output(None)
+    with pytest.raises(InvalidModelOutputError):
+        normalize_candidate_batch_output("not-an-object")
+    with pytest.raises(InvalidModelOutputError):
+        normalize_candidate_batch_output({"candidates": "xxx"})
+    with pytest.raises(InvalidModelOutputError):
+        normalize_candidate_batch_output({"foo": []})
+
+
+def test_backend_succeeds_on_double_wrapped_output() -> None:
+    """backend 对 {"candidates": {"candidates": [...]}} 应拆 wrapper 后正常返回（§5）。"""
+
+    backend = LangChainCandidateBackend(
+        _ScriptedModel({"candidates": {"candidates": [_candidate()]}})
+    )
+    payload = backend(_request("以后项目周报默认用表格"))
+
+    assert len(payload) == 1
+    assert payload[0]["source_expression"] == "以后项目周报默认用表格"
+
+
+def test_backend_succeeds_on_empty_candidates() -> None:
+    """合法空 Candidate {"candidates": []} 必须成功，不得判 invalid（§6）。"""
+
+    backend = LangChainCandidateBackend(_ScriptedModel({"candidates": []}))
+    assert backend(_request("继续")) == []
+
+
+def test_backend_rejects_none_output_with_diagnostics() -> None:
+    import pytest
+
+    backend = LangChainCandidateBackend(_ScriptedModel(None))
+    with pytest.raises(InvalidModelOutputError) as exc_info:
+        backend(_request("继续"))
+    assert exc_info.value.context is not None
+    assert exc_info.value.context["raw_type"] == "NoneType"

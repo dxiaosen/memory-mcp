@@ -135,6 +135,7 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.capture.candidates` | 候选及 source expression |
 | `memory.capture.admission` | 准入结果 |
 | `memory.capture.validation` | `extracted_candidate_count`, `validated_candidate_count`, `rejected`（被 invalid_source_expression/ambiguous_source_message 提前拒绝的 proposal 完整字段） |
+| `memory.capture.structured_output.invalid` | `model_id`, `prompt_version`, `schema_version`, `raw_type`, `raw_preview`（截断的原始响应，开发态 content log）, `error_type`, `error_message`（结构化输出校验失败时记录，便于定位 None / schema malformed / 重复 wrapper；recommend.md §3） |
 | `memory.capture.relation_candidates` | 脱敏建议和计划关系 |
 | `memory.capture.relation_validation_rejected` | 被拒/跳过的关系建议（`source_memory_id`/`target_memory_id`/`relation_type`/`confidence`/`source_expression`/`reason_code`）。**fatal**（retry / 可使 Capture 失败）：invalid_source_expression/relation_endpoint_outside_catalog；**non-fatal**（skip，不 retry、不拖垮 Capture）：relation_policy_mismatch/relation_not_explicit/relation_low_confidence/relation_insufficient_evidence/relation_negated/relation_reversed_direction/relation_duplicate/relation_non_user_source。recommend.md §2/§4 |
 | `memory.capture.persisted` | 持久化结构（memory/review/duplicate/replacement/relation） |

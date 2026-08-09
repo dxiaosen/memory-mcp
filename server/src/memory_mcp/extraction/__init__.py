@@ -7,6 +7,7 @@ from memory_mcp.extraction.backends import (
     LangChainRelationBackend,
     RelationBatch,
     RelationOutput,
+    normalize_candidate_batch_output,
 )
 from memory_mcp.extraction.chat_models import create_chat_model
 from memory_mcp.extraction.factory import (
@@ -32,4 +33,5 @@ __all__ = [
     "create_chat_model",
     "create_configured_candidate_extractor",
     "create_configured_extractors",
+    "normalize_candidate_batch_output",
 ]

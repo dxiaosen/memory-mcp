@@ -118,6 +118,66 @@ class SupportsStructuredOutput(Protocol):
     ) -> StructuredModel: ...
 
 
+def normalize_candidate_batch_output(value: Any) -> Any:
+    """对结构化候选输出做窄范围 canonicalization（recommend.md §5）。
+
+    处理 provider/SDK 偶发的单层重复 wrapper：
+    ``{"candidates": {"candidates": [...]}}`` -> ``{"candidates": [...]}``。
+    合法的 ``{"candidates": []}`` 与 ``{"candidates": [{...}]}`` 原样返回。
+    只允许一层明确重复 wrapper；禁止递归 unwrap / 猜 schema / 修复任意 JSON。
+    None / 非 dict / schema 非法 -> 抛 ``InvalidModelOutputError``（可重试）。
+    """
+
+    if value is None:
+        raise InvalidModelOutputError("candidate output is empty")
+    if isinstance(value, CandidateBatch):
+        return value
+    if not isinstance(value, dict):
+        raise InvalidModelOutputError("candidate output must be an object")
+    candidates = value.get("candidates")
+    if isinstance(candidates, list):
+        return value
+    if (
+        isinstance(candidates, dict)
+        and set(candidates.keys()) == {"candidates"}
+        and isinstance(candidates["candidates"], list)
+    ):
+        return {**value, "candidates": candidates["candidates"]}
+    raise InvalidModelOutputError("candidate output schema is invalid")
+
+
+def _structured_output_diagnostic(raw: Any, exc: BaseException) -> dict[str, Any]:
+    """构造结构化输出失败时的开发态诊断 context（recommend.md §3）。"""
+
+    try:
+        preview = json.dumps(raw, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        preview = repr(raw)
+    return {
+        "raw_type": type(raw).__name__,
+        "raw_preview": preview[:1000],
+        "error_type": type(exc).__name__,
+        "error_message": str(exc)[:500],
+    }
+
+
+def _parse_candidate_batch(raw: Any) -> CandidateBatch:
+    """归一化（拆重复 wrapper）后校验为 ``CandidateBatch``；失败附带 raw 诊断 context。"""
+
+    try:
+        normalized = normalize_candidate_batch_output(raw)
+        return (
+            normalized
+            if isinstance(normalized, CandidateBatch)
+            else CandidateBatch.model_validate(normalized)
+        )
+    except (InvalidModelOutputError, TypeError, ValueError, ValidationError) as exc:
+        raise InvalidModelOutputError(
+            "structured candidate output is invalid",
+            context=_structured_output_diagnostic(raw, exc),
+        ) from exc
+
+
 class LangChainCandidateBackend:
     """通过严格结构化输出契约调用真实聊天模型。"""
 
@@ -143,16 +203,17 @@ class LangChainCandidateBackend:
                 )
             ),
         ]
+        raw: Any = None
         try:
             raw = self._model.invoke(messages)
-            batch = (
-                raw
-                if isinstance(raw, CandidateBatch)
-                else CandidateBatch.model_validate(raw)
-            )
+            batch = _parse_candidate_batch(raw)
+        except InvalidModelOutputError:
+            raise
         except (TypeError, ValueError, ValidationError) as exc:
+            # invoke 本身的类型/解析异常（非 model_validate）也归为可重试结构错误。
             raise InvalidModelOutputError(
-                "structured candidate output is invalid"
+                "structured candidate output is invalid",
+                context=_structured_output_diagnostic(raw, exc),
             ) from exc
         return [
             candidate.model_dump(mode="json", exclude_none=True)
