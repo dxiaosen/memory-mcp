@@ -1821,9 +1821,17 @@ def test_invalid_automatic_relation_direction_fails_without_writes() -> None:
 
     result = service.capture_turn(principal, _turn(text))
 
-    assert result.status is CaptureStatus.FAILED
-    assert result.failure_code == "invalid_candidate_output"
-    assert service.list_memories(principal) == ()
+    # 反向 / 策略不匹配属 non-fatal：skip，Capture 继续，候选记忆正常持久化（§2.2）。
+    # 不再因 relation policy mismatch 拖垮整个 Capture。
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    assert len(service.list_memories(principal)) == 2  # candidates persisted
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
 
 
 def test_relation_provider_failure_reprocesses_without_duplicate_relation() -> None:
@@ -1928,6 +1936,74 @@ def test_relation_extraction_all_attempts_fail_incomplete() -> None:
     assert len(relation_extractor.requests) == 3  # _RELATION_EXTRACTION_MAX_ATTEMPTS
     # 原子失败回滚：不持久化任何记忆/关系。
     assert len(service.list_memories(principal)) == 0
+
+
+def test_relation_policy_mismatch_skipped_capture_continues() -> None:
+    """relation_policy_mismatch 属 non-fatal：skip、不 retry、Capture 继续（Case 4）。
+
+    proposal 用 Profile 未声明的 relation_type -> validate_relation 失败 -> policy_mismatch
+    skip。capture completed，候选记忆正常持久化，仅 1 次抽取（不浪费重试）。
+    """
+
+    text = "周报偏好明确支持持续事项"
+
+    def proposals(request):
+        return (replace(_relation_proposal(request, text), relation_type="challenges"),)
+
+    relation_extractor = FakeRelationExtractor(proposals)
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    # non-fatal -> 不 retry，仅 1 次抽取。
+    assert len(relation_extractor.requests) == 1
+    assert len(service.list_memories(principal)) == 2  # candidates persisted
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
+
+
+def test_relation_low_confidence_skipped_capture_continues() -> None:
+    """低置信度 relation 属 non-fatal：skip、不 retry、Capture 继续（Case 5）。"""
+
+    text = "周报偏好明确支持持续事项"
+
+    def proposals(request):
+        # 合法 proposal 但 confidence=0.7 < 0.90 -> relation_low_confidence skip。
+        return (replace(_relation_proposal(request, text), confidence=0.7),)
+
+    relation_extractor = FakeRelationExtractor(proposals)
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    assert len(relation_extractor.requests) == 1  # non-fatal -> 不 retry
+    assert len(service.list_memories(principal)) == 2
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
 
 
 def test_in_memory_capture_rolls_back_when_relation_write_is_invalid() -> None:

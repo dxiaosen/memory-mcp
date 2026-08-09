@@ -35,6 +35,7 @@ from memory_mcp.core.domain import (
     TurnMessage,
     VerificationStatus,
     normalize_memory_text,
+    source_expression_matches,
 )
 from memory_mcp.core.ports import (
     DuplicateEvidenceWrite,
@@ -69,36 +70,6 @@ _EXPLICIT_DURABLE_PREFERENCE_RE = re.compile(
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _normalize_whitespace(value: str) -> str:
-    """空白压成单空格 + trim（``str.split`` 已 trim 首尾并按任意 Unicode 空白切分）。"""
-
-    return " ".join(value.split())
-
-
-def _normalize_compact(value: str) -> str:
-    """移除全部 Unicode 空白，保留标点/数字/字符不改写。
-
-    recommend.md §1：模型常把换行**删除**（如「较高毛利率，\\n可能」->「较高毛利率，可能」），
-    单空格归一后原文为「较高毛利率， 可能」，仍不匹配。compact 移除全部空白后两者一致。
-    标点/数字/字符不动，因此模型改写、增标点、拼接独立 bullet（bullet 标记等非空白字符保留）
-    仍判不匹配（§4 严格性）。
-    """
-
-    return "".join(value.split())
-
-
-def _source_expression_in(source_expression: str, source: str) -> bool:
-    """两级空白归一化 containment（recommend.md §1）。
-
-    先 ``normalize_whitespace``（空白压单空格）containment；失败再 ``normalize_compact``
-    （移除全部空白）containment。只忽略 Unicode 空白，不做语义模糊匹配，不改标点/数字/字符。
-    """
-
-    if _normalize_whitespace(source_expression) in _normalize_whitespace(source):
-        return True
-    return _normalize_compact(source_expression) in _normalize_compact(source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,10 +331,6 @@ class CandidateProcessor:
         rejected: list[RejectedProposal] = []
         lifecycle_target_ids: set[UUID] = set()
         candidate_scopes: set[tuple[str, str]] = set()
-        # source_expression 校验采用两级空白归一化子串匹配（recommend.md §1）：
-        # 真实原文仅换行/空白差异 -> valid；模型改写/增标点/拼接独立 bullet -> 仍 invalid（§4）。
-        source_whitespace = _normalize_whitespace(redacted_source)
-        source_compact = _normalize_compact(redacted_source)
         # 分阶段耗时累加（recommend.md §5）：校验/准入/lifecycle 三段在循环内累加。
         _validation_duration = 0.0
         _admission_duration = 0.0
@@ -372,11 +339,9 @@ class CandidateProcessor:
         for proposal in proposals:
             candidate_id = self._id_factory()
             _validation_started_at = perf_counter()
-            expression_matches_source = (
-                _normalize_whitespace(proposal.source_expression) in source_whitespace
-                or _normalize_compact(proposal.source_expression) in source_compact
-            )
-            if not expression_matches_source:
+            if not source_expression_matches(
+                proposal.source_expression, redacted_source
+            ):
                 # 单条候选的 source_expression 不匹配脱敏后原文时，只丢弃该条，
                 # 不让一条坏候选拖垮整轮（recommend.md P0-B：用户研究基准不应因
                 # 模型一次编造 source_expression 而整轮丢失）。
@@ -885,7 +850,7 @@ def _source_metadata(
     matching: list[TurnMessage] = []
     for message in turn.messages:
         redacted = guard.inspect(message.content).redacted_text
-        if _source_expression_in(source_expression, redacted):
+        if source_expression_matches(source_expression, redacted):
             matching.append(message)
     if not matching:
         return {

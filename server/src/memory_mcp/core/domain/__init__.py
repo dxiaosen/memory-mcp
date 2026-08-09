@@ -19,7 +19,10 @@ from memory_mcp.core.domain.lifecycle import (
     MemoryHistoryEntry,
     MemoryTokenizer,
     SimpleTokenizer,
+    normalize_compact,
     normalize_memory_text,
+    normalize_whitespace,
+    source_expression_matches,
     tokenize_memory_text,
 )
 from memory_mcp.core.domain.maintenance import (
@@ -112,6 +115,9 @@ __all__ = [
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",
+    "normalize_compact",
     "normalize_memory_text",
+    "normalize_whitespace",
+    "source_expression_matches",
     "tokenize_memory_text",
 ]

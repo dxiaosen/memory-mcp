@@ -121,8 +121,8 @@ Agent Hook (run_ref)
 | `memory.capture.extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（仅对 `InvalidModelOutputError` 等 recoverable 结构错误重试；业务校验 `invalid_source_expression` 不重试） |
 | `memory.capture.extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次尝试成功，capture 继续后续候选处理） |
 | `memory.capture.relation_extraction_attempt.started` | INFO | `capture_id`, `attempt`, `max_attempts`（关系抽取每次尝试开始；recommend.md §1） |
-| `memory.capture.relation_extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（InvalidModelOutputError 或 admit 校验拒绝时重试；全部 attempt 失败才 incomplete） |
-| `memory.capture.relation_extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次关系抽取尝试无 rejected proposal，返回 accepted 关系） |
+| `memory.capture.relation_extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（仅 **fatal** 拒绝才重试：invalid_source_expression/relation_endpoint_outside_catalog/模型结构错误；全部 attempt fatal 才 incomplete。`error_message` 形如 `relation validation failed: <reason_code>`，与 reason 一致） |
+| `memory.capture.relation_extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次关系抽取尝试无 fatal rejected proposal 即完成；non-fatal skip 不触发 retry，Capture 继续） |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
 | `memory.capture.candidate.assertion_normalized` | DEBUG | `candidate_ref`, `memory_type`, `source_role`, `source_type`, `from_assertion_kind`, `to_assertion_kind`（模型自报 assertion_kind 与可信来源语义冲突时纠正：assistant+user_* → system_inference；tool/document/web source_type + 任意非 external → external_fact） |
 | `memory.capture.candidates_truncated` | DEBUG | `model_id`, `original_count`, `kept_count`, `soft_limit`（解析出的候选数超过软上限 12 时按 confidence 降序裁剪） |
@@ -136,7 +136,7 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.capture.admission` | 准入结果 |
 | `memory.capture.validation` | `extracted_candidate_count`, `validated_candidate_count`, `rejected`（被 invalid_source_expression/ambiguous_source_message 提前拒绝的 proposal 完整字段） |
 | `memory.capture.relation_candidates` | 脱敏建议和计划关系 |
-| `memory.capture.relation_validation_rejected` | 被前置校验拒绝的关系建议（`source_memory_id`/`target_memory_id`/`relation_type`/`confidence`/`source_expression`/`reason_code`，reason_code ∈ invalid_source_expression/relation_endpoint_outside_catalog/relation_policy_mismatch；recommend.md §1） |
+| `memory.capture.relation_validation_rejected` | 被拒/跳过的关系建议（`source_memory_id`/`target_memory_id`/`relation_type`/`confidence`/`source_expression`/`reason_code`）。**fatal**（retry / 可使 Capture 失败）：invalid_source_expression/relation_endpoint_outside_catalog；**non-fatal**（skip，不 retry、不拖垮 Capture）：relation_policy_mismatch/relation_not_explicit/relation_low_confidence/relation_insufficient_evidence/relation_negated/relation_reversed_direction/relation_duplicate/relation_non_user_source。recommend.md §2/§4 |
 | `memory.capture.persisted` | 持久化结构（memory/review/duplicate/replacement/relation） |
 
 ### Recall 阶段

@@ -47,6 +47,36 @@ def normalize_memory_text(value: str) -> str:
     )
 
 
+def normalize_whitespace(value: str) -> str:
+    """将任意 Unicode 空白（含 ``\\r\\n``/``\\n``/``\\t``）压成单空格并 trim。
+
+    不做 NFKC/casefold，不改写字符--用于 source_expression 匹配，仅容忍空白差异。
+    """
+
+    return " ".join(value.split())
+
+
+def normalize_compact(value: str) -> str:
+    """移除全部 Unicode 空白，保留标点/数字/字符不改写。"""
+
+    return "".join(value.split())
+
+
+def source_expression_matches(source_expression: str, source: str) -> bool:
+    """三级空白归一化 containment，用于 Candidate/Relation 的 source_expression 校验。
+
+    依次尝试 raw -> ``normalize_whitespace`` -> ``normalize_compact`` containment；
+    只忽略 Unicode 空白，不改标点/数字/字符。真实原文仅换行/空白差异 -> 匹配；
+    模型改写、增标点、拼接独立 bullet（非空白字符保留） -> 不匹配。
+    """
+
+    if source_expression in source:
+        return True
+    if normalize_whitespace(source_expression) in normalize_whitespace(source):
+        return True
+    return normalize_compact(source_expression) in normalize_compact(source)
+
+
 def tokenize_memory_text(
     value: str,
     tokenizer: MemoryTokenizer | None = None,

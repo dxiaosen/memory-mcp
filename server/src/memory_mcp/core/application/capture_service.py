@@ -560,7 +560,6 @@ class CaptureService:
                 else None
             ),
         )
-        final_error: InvalidModelOutputError | None = None
         for attempt in range(1, _EXTRACTION_MAX_ATTEMPTS + 1):
             _attempt_started_at = perf_counter()
             log_event(
@@ -574,7 +573,6 @@ class CaptureService:
             try:
                 proposals = extractor.extract(request)
             except InvalidModelOutputError as exc:
-                final_error = exc
                 retryable = attempt < _EXTRACTION_MAX_ATTEMPTS
                 log_event(
                     _LOGGER,
@@ -603,9 +601,7 @@ class CaptureService:
                 duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
             )
             return proposals
-        # 所有 attempt 均失败（理论上不可达：最后一次 attempt 失败已 raise）。
-        assert final_error is not None
-        raise final_error
+        raise InvalidModelOutputError("structured candidate output is invalid")
 
     def list_pending_reviews(
         self,

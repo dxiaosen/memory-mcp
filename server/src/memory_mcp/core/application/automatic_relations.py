@@ -3,7 +3,7 @@
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from time import perf_counter
 from uuid import UUID
@@ -21,6 +21,7 @@ from memory_mcp.core.domain import (
     RelationScope,
     RelationStatus,
     normalize_memory_text,
+    source_expression_matches,
 )
 from memory_mcp.core.exceptions import (
     InvalidMemoryRelationError,
@@ -29,6 +30,7 @@ from memory_mcp.core.exceptions import (
 from memory_mcp.core.ports import (
     MAX_RELATION_ENDPOINTS,
     MemoryProfile,
+    MemoryRelationPolicy,
     MemoryRepository,
     ProfileRegistry,
     RelationExtractionRequest,
@@ -63,31 +65,6 @@ class RejectedRelation:
     confidence: float
     source_expression: str
     reason_code: str
-
-
-def _normalize_whitespace(value: str) -> str:
-    """空白压成单空格 + trim（与 candidate 校验一致，recommend.md §1）。"""
-
-    return " ".join(value.split())
-
-
-def _normalize_compact(value: str) -> str:
-    """移除全部 Unicode 空白，保留标点/数字/字符不改写。"""
-
-    return "".join(value.split())
-
-
-def _relation_source_expression_in(source_expression: str, source: str) -> bool:
-    """三级空白归一化 containment（recommend.md §1）：raw -> whitespace -> compact。
-
-    只忽略 Unicode 空白，不改标点/数字/字符；因此模型改写、增标点、拼接独立句仍判不匹配。
-    """
-
-    if source_expression in source:
-        return True
-    if _normalize_whitespace(source_expression) in _normalize_whitespace(source):
-        return True
-    return _normalize_compact(source_expression) in _normalize_compact(source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +182,7 @@ class AutomaticRelationPlanner:
                 if retryable:
                     continue
                 raise
-            accepted, skipped_count, rejected = self._admit(
+            accepted, skipped, fatal_rejected = self._admit(
                 principal,
                 profile=profile,
                 capture_id=capture_id,
@@ -216,7 +193,18 @@ class AutomaticRelationPlanner:
                 proposals=proposals,
                 trusted_user_sources=trusted_user_sources,
             )
-            if not rejected:
+            # 记录全部被拒/跳过 proposal（fatal + non-fatal）的真实 reason_code（§4）。
+            all_rejected = (*fatal_rejected, *skipped)
+            if all_rejected:
+                log_content_event(
+                    "memory.capture.relation_validation_rejected",
+                    capture_id=capture_id,
+                    attempt=attempt,
+                    rejected=tuple(asdict(item) for item in all_rejected),
+                )
+            if not fatal_rejected:
+                # 无 fatal：non-fatal（policy mismatch / 低置信 / 反向 / 非用户来源等）只 skip，
+                # 不 retry、不让 Capture 失败--Memory 主链优先于 Relation 增强（§2.2）。
                 log_event(
                     _LOGGER,
                     logging.INFO,
@@ -229,16 +217,13 @@ class AutomaticRelationPlanner:
                 return AutomaticRelationPlan(
                     endpoint_count=len(endpoints),
                     proposal_count=len(proposals),
-                    skipped_count=skipped_count,
+                    skipped_count=len(skipped),
                     relations=accepted,
                     proposals=proposals,
                 )
-            # rejected 非空：记 rejected 详情 + failed，重试（保留原子失败安全语义）。
-            log_content_event(
-                "memory.capture.relation_validation_rejected",
-                capture_id=capture_id,
-                attempt=attempt,
-                rejected=tuple(asdict(item) for item in rejected),
+            # fatal rejected（invalid_source_expression / endpoint 不存在等不可信输出）-> retry（§5）。
+            fatal_reasons = ",".join(
+                sorted({item.reason_code for item in fatal_rejected})
             )
             retryable = attempt < max_attempts
             log_event(
@@ -250,14 +235,14 @@ class AutomaticRelationPlanner:
                 max_attempts=max_attempts,
                 duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
                 error_type="InvalidModelOutputError",
-                error_message="relation proposals rejected at validation",
+                error_message=f"relation validation failed: {fatal_reasons}",
                 retryable=retryable,
             )
             if not retryable:
                 break
-        # 全部 attempt 均有 rejected proposal -> 原子失败，由 capture 写 incomplete。
+        # 全部 attempt 均有 fatal rejected -> 原子失败，由 capture 写 incomplete（§2.1 fail-closed）。
         raise InvalidModelOutputError(
-            "relation source_expression must occur in the redacted source turn"
+            f"relation validation failed: {fatal_reasons}"
         )
 
     def _select_endpoint_records(
@@ -329,45 +314,50 @@ class AutomaticRelationPlanner:
         endpoint_records: tuple[MemoryRecord, ...],
         proposals: tuple[RelationProposal, ...],
         trusted_user_sources: tuple[str, ...] | None,
-    ) -> tuple[tuple[MemoryRelation, ...], int, tuple[RejectedRelation, ...]]:
-        """对模型建议逐条做保守准入校验。
+    ) -> tuple[
+        tuple[MemoryRelation, ...],
+        tuple[RejectedRelation, ...],
+        tuple[RejectedRelation, ...],
+    ]:
+        """对模型建议逐条做保守准入校验，按可重试性分级（recommend.md §2）。
 
-        返回 ``(accepted, skipped_count, rejected)``：``rejected`` 为前置校验拒绝的 proposal
-        （invalid_source_expression/endpoint_outside_catalog/policy_mismatch），由调用方决定重试或
-        原子失败；``skipped_count`` 计合法但低置信/否定/反向/重复/非用户来源的跳过。不再就地 raise，
-        以便单次 attempt 内收集全部 rejected 供调试日志（recommend.md §1）。
+        返回 ``(accepted, skipped, fatal_rejected)``：
+
+        - ``fatal_rejected``（不可信模型输出，retry / 可使 Capture 失败）：``invalid_source_expression``
+          （伪造 / 原文找不到）、``relation_endpoint_outside_catalog``（端点不存在）。
+        - ``skipped``（non-fatal，直接 skip、Capture 继续、不 retry）：``relation_policy_mismatch``
+          （类型组合不符合 Profile 策略）、``relation_not_explicit``、``relation_low_confidence``、
+          ``relation_insufficient_evidence``、``relation_negated``、``relation_reversed_direction``、
+          ``relation_duplicate``、``relation_non_user_source``。
         """
 
         endpoint_by_id = {record.item.memory_id: record for record in endpoint_records}
         accepted: list[MemoryRelation] = []
         accepted_keys: set[tuple[UUID, UUID, str]] = set()
-        skipped_count = 0
-        rejected: list[RejectedRelation] = []
+        skipped: list[RejectedRelation] = []
+        fatal_rejected: list[RejectedRelation] = []
         for proposal in proposals:
-            if not _relation_source_expression_in(
+            rejected_item = RejectedRelation(
+                source_memory_id=proposal.source_memory_id,
+                target_memory_id=proposal.target_memory_id,
+                relation_type=proposal.relation_type,
+                confidence=proposal.confidence,
+                source_expression=proposal.source_expression,
+                reason_code="",  # 占位，下方按分支覆写
+            )
+            if not source_expression_matches(
                 proposal.source_expression, redacted_source
             ):
-                rejected.append(
-                    RejectedRelation(
-                        source_memory_id=proposal.source_memory_id,
-                        target_memory_id=proposal.target_memory_id,
-                        relation_type=proposal.relation_type,
-                        confidence=proposal.confidence,
-                        source_expression=proposal.source_expression,
-                        reason_code="invalid_source_expression",
-                    )
+                fatal_rejected.append(
+                    replace(rejected_item, reason_code="invalid_source_expression")
                 )
                 continue
             source = endpoint_by_id.get(proposal.source_memory_id)
             target = endpoint_by_id.get(proposal.target_memory_id)
             if source is None or target is None:
-                rejected.append(
-                    RejectedRelation(
-                        source_memory_id=proposal.source_memory_id,
-                        target_memory_id=proposal.target_memory_id,
-                        relation_type=proposal.relation_type,
-                        confidence=proposal.confidence,
-                        source_expression=proposal.source_expression,
+                fatal_rejected.append(
+                    replace(
+                        rejected_item,
                         reason_code="relation_endpoint_outside_catalog",
                     )
                 )
@@ -380,15 +370,9 @@ class AutomaticRelationPlanner:
                     target.item.memory_type,
                 )
             except InvalidMemoryRelationError:
-                rejected.append(
-                    RejectedRelation(
-                        source_memory_id=proposal.source_memory_id,
-                        target_memory_id=proposal.target_memory_id,
-                        relation_type=proposal.relation_type,
-                        confidence=proposal.confidence,
-                        source_expression=proposal.source_expression,
-                        reason_code="relation_policy_mismatch",
-                    )
+                # 类型组合不符合 Profile 策略属 non-fatal：skip，不 retry、不拖垮 Capture（§2.2）。
+                skipped.append(
+                    replace(rejected_item, reason_code="relation_policy_mismatch")
                 )
                 continue
             policy = profile.relation_policies[proposal.relation_type]
@@ -397,31 +381,17 @@ class AutomaticRelationPlanner:
                 proposal.target_memory_id,
                 proposal.relation_type,
             )
-            if (
-                proposal.expression_basis is not ExpressionBasis.EXPLICIT
-                or proposal.confidence < AUTO_RELATION_CONFIDENCE_THRESHOLD
-                or _has_insufficient_endpoint_evidence(
-                    proposal.source_expression,
-                    source,
-                    target,
-                )
-                or _has_negated_relation_evidence(proposal.source_expression)
-                or _has_clearly_reversed_direction(
-                    proposal.source_expression,
-                    source,
-                    target,
-                    policy.direction_cues,
-                )
-                or key in accepted_keys
-                or (
-                    trusted_user_sources is not None
-                    and not any(
-                        proposal.source_expression in user_source
-                        for user_source in trusted_user_sources
-                    )
-                )
-            ):
-                skipped_count += 1
+            skip_reason = _relation_skip_reason(
+                proposal,
+                source,
+                target,
+                policy,
+                key,
+                accepted_keys,
+                trusted_user_sources,
+            )
+            if skip_reason is not None:
+                skipped.append(replace(rejected_item, reason_code=skip_reason))
                 continue
             accepted_keys.add(key)
             accepted.append(
@@ -451,7 +421,7 @@ class AutomaticRelationPlanner:
                     ),
                 )
             )
-        return tuple(accepted), skipped_count, tuple(rejected)
+        return tuple(accepted), tuple(skipped), tuple(fatal_rejected)
 
 
 def _endpoint(record: MemoryRecord) -> RelationEndpoint:
@@ -517,6 +487,50 @@ def _has_negated_relation_evidence(source_expression: str) -> bool:
     """原文出现明确否定关系动词（如"不支持""does not challenge"）时拒绝自动建边。"""
 
     return _NEGATED_RELATION_EVIDENCE.search(source_expression) is not None
+
+
+def _relation_skip_reason(
+    proposal: RelationProposal,
+    source: MemoryRecord,
+    target: MemoryRecord,
+    policy: MemoryRelationPolicy,
+    key: tuple[UUID, UUID, str],
+    accepted_keys: set[tuple[UUID, UUID, str]],
+    trusted_user_sources: tuple[str, ...] | None,
+) -> str | None:
+    """返回 non-fatal skip 的 reason_code（recommend.md §2.2），无 skip 则 None。
+
+    这些都是「合法但不符合自动保存规则」的跳过：直接 skip、不 retry、不让 Capture 失败。
+    按优先级返回首个命中原因。
+    """
+
+    if proposal.expression_basis is not ExpressionBasis.EXPLICIT:
+        return "relation_not_explicit"
+    if proposal.confidence < AUTO_RELATION_CONFIDENCE_THRESHOLD:
+        return "relation_low_confidence"
+    if _has_insufficient_endpoint_evidence(
+        proposal.source_expression,
+        source,
+        target,
+    ):
+        return "relation_insufficient_evidence"
+    if _has_negated_relation_evidence(proposal.source_expression):
+        return "relation_negated"
+    if _has_clearly_reversed_direction(
+        proposal.source_expression,
+        source,
+        target,
+        policy.direction_cues,
+    ):
+        return "relation_reversed_direction"
+    if key in accepted_keys:
+        return "relation_duplicate"
+    if trusted_user_sources is not None and not any(
+        proposal.source_expression in user_source
+        for user_source in trusted_user_sources
+    ):
+        return "relation_non_user_source"
+    return None
 
 
 def _has_insufficient_endpoint_evidence(
