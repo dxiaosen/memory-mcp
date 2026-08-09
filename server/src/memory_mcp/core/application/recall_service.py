@@ -51,34 +51,34 @@ _SAFE_CONTEXT_HEADER = (
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _RELEVANCE_THRESHOLD = 0.18
 
-# Recall 查询归一化（recommend.md §7）：完整用户 Prompt 中的操作/工具/格式指令会稀释
-# embedding 与 lexical 检索。按子句（标点/换行切分）剔除明显指令子句，保留实体/主题/
-# 研究任务关键词。确定性、无 LLM；空结果回退原文，避免过度清空。不下调全局阈值。
+# Recall 查询归一化（recommend.md §5）：完整用户 Prompt 中的操作/工具/格式指令会稀释
+# embedding 与 lexical 检索。按子句（标点/换行切分）剔除**纯操作指令**子句，保留实体/主题/
+# 研究任务关键词。确定性、无 LLM。注意：只剔纯指令（不要使用工具/读取文件/联网/请阅读/按格式/
+# 输出一份/文件列表），不剔「请基于…研究判断」等带实体的子句，避免过度裁剪（§5 上一轮过度裁剪
+# 丢了启明先进材料等实体）。全部子句被剔除时返回空串，由 recall 判定 operational-only 跳过。
 _RECALL_CLAUSE_SPLIT_RE = re.compile(r"[，。；！？\n]+")
 _RECALL_INSTRUCTION_CLAUSE_RE = re.compile(
     r"(?:"
-    r"不(?:要|需|需要)?(?:使用|读取|调用|引入|替我)|"
-    r"请(?:阅读|使用|调用|按|严格区分|基于|列出|替我|形成|参考)|"
-    r"按[^，。；！？\n]*?格式|"
-    r"输出(?:一份|按|简短|公司|跟踪)?|"
+    r"不(?:要|需|需要)?(?:使用|读取|调用|引入|访问|运行|打开|联网)|"
     r"(?:使用|调用)[^，。；！？\n]*?(?:工具|skill)|"
-    r"严格区分|"
-    r"替我形成|"
-    r"列出|"
+    r"请(?:阅读|使用|调用|严格区分)|"
+    r"按[^，。；！？\n]*?格式|"
+    r"输出(?:一份|按|简短|公司|跟踪)|"
     r"(?:materials|data|src|tests|docs)/"
     r")"
 )
 
 
 def _normalize_recall_query(raw: str) -> str:
-    """去除操作/工具/格式指令子句，保留实体/主题/研究任务关键词（recommend.md §7）。
+    """去除纯操作/工具/格式指令子句，保留实体/主题/研究任务关键词（recommend.md §5）。
 
-    按中文/英文句末标点与换行切分子句，剔除命中指令模式的子句；保留的子句以单空格拼接。
-    全部子句被剔除时回退原文，避免空查询。不调用 LLM、不改 owner/profile/lifecycle 过滤。
+    按中文/英文句末标点与换行切分子句，剔除命中纯指令模式的子句；保留的子句以单空格拼接。
+    全部子句被剔除时返回空串（operational-only），由 recall 跳过 semantic recall。
+    不调用 LLM、不改 owner/profile/lifecycle 过滤、不下调全局阈值。
     """
 
     if not raw or not raw.strip():
-        return raw
+        return ""
     kept: list[str] = []
     for clause in _RECALL_CLAUSE_SPLIT_RE.split(raw):
         stripped = clause.strip()
@@ -87,7 +87,7 @@ def _normalize_recall_query(raw: str) -> str:
         if _RECALL_INSTRUCTION_CLAUSE_RE.search(stripped):
             continue
         kept.append(stripped)
-    return " ".join(kept) or raw
+    return " ".join(kept)
 
 
 _RELATION_BOOST = 0.12
@@ -188,6 +188,36 @@ class RecallService:
             for value in (normalized_query, query.task_intent)
             if value is not None
         )
+        # operational-only 查询（归一化后无业务内容且无 subject/task_intent）无检索价值，
+        # 跳过 semantic recall，避免不必要的 embedding 请求（recommend.md §5）。
+        if (
+            not normalized_query.strip()
+            and not (query.subject or "").strip()
+            and not (query.task_intent or "").strip()
+        ):
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.recall.query_skipped_operational",
+                recall_ref=recall_ref,
+                owner_ref=stable_reference(principal.owner_id),
+                profile_id=query.profile_id,
+            )
+            return _traced_result(
+                _empty_result(query.token_budget),
+                recall_ref=recall_ref,
+                owner_ref=stable_reference(principal.owner_id),
+                profile_id=query.profile_id,
+                duration_ms=(perf_counter() - _recall_started_at) * 1000,
+                lexical_count=0,
+                vector_count=0,
+                recent_count=0,
+                candidate_count=0,
+                threshold_passed_count=0,
+                relation_boosted_count=0,
+                embedding_enabled=_embedding_enabled,
+                embedding_degraded=False,
+            )
         _embedding_degraded = False
         _embedding_started_at = perf_counter()
         query_embedding = self._compute_query_embedding(search_text)
@@ -849,6 +879,15 @@ def _traced_result(
         token_budget=result.token_budget,
         truncated=result.truncated,
     )
+    # accounted = 各 stage duration 之和；unaccounted = 总耗时 - accounted（连接/序列化等，
+    # recommend.md §8：定位「总耗时 > 各 stage 之和」的缺口，不改 Recall 架构）。
+    accounted_duration_ms = (
+        query_embedding_duration_ms
+        + repository_candidate_duration_ms
+        + ranking_duration_ms
+        + evidence_loading_duration_ms
+        + render_duration_ms
+    )
     log_event(
         _LOGGER,
         logging.INFO,
@@ -877,6 +916,8 @@ def _traced_result(
         ranking_duration_ms=round(ranking_duration_ms, 3),
         evidence_loading_duration_ms=round(evidence_loading_duration_ms, 3),
         render_duration_ms=round(render_duration_ms, 3),
+        accounted_duration_ms=round(accounted_duration_ms, 3),
+        unaccounted_duration_ms=round(max(duration_ms - accounted_duration_ms, 0.0), 3),
     )
     return result
 

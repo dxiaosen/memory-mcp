@@ -903,6 +903,72 @@ def test_extraction_retry_exhausted_fails_capture() -> None:
     assert len(service.list_memories(principal)) == 0
 
 
+def test_operational_instruction_discarded_not_saved_as_preference() -> None:
+    """操作指令（不要使用内置记忆工具）不应存为长期偏好（recommend.md §4 Case B）。
+
+    默认 discard `operational_instruction`，不 auto_save、不建 Pending；
+    除非用户显式表达跨会话持久。
+    """
+
+    operational = "不要使用内置的记忆工具"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                operational,
+                subject="no-built-in-memory-tool",
+                memory_type="preference",
+                content="用户偏好不使用内置记忆工具",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(operational))
+
+    assert result.status is CaptureStatus.COMPLETED
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "operational_instruction"
+    assert len(service.list_memories(principal)) == 0
+
+
+def test_explicit_durable_preference_not_treated_as_operational() -> None:
+    """用户显式跨会话持久偏好不被 operational 规则误杀（§4）。"""
+
+    durable = "以后分析公司时使用中文"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                durable,
+                subject="use-chinese-analysis",
+                memory_type="preference",
+                content=durable,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(durable))
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {o.decision for o in result.outcomes}
+    assert AdmissionDecision.DISCARD not in decisions
+    assert AdmissionDecision.AUTO_SAVE in decisions
+    assert len(service.list_memories(principal)) == 1
+
+
 def test_assistant_restatement_of_existing_memory_is_discarded() -> None:
     """Assistant 复述已有 active memory -> discard assistant_restatement，不建 Pending（Case E）。
 
@@ -1762,9 +1828,12 @@ def test_invalid_automatic_relation_direction_fails_without_writes() -> None:
 
 def test_relation_provider_failure_reprocesses_without_duplicate_relation() -> None:
     text = "周报偏好明确支持持续事项"
+    # 非 InvalidModelOutputError 的瞬时故障不在 plan 内重试（§1 仅重试结构错误），
+    # 走 REPROCESS_REQUIRED 重投路径；重投成功且不产生重复关系。
     relation_extractor = FakeRelationExtractor(
         lambda request: (_relation_proposal(request, text),),
         failures_before_success=1,
+        failure_exc=RuntimeError,
     )
     service = create_memory_service(
         InMemoryMemoryRepository(),
@@ -1788,6 +1857,77 @@ def test_relation_provider_failure_reprocesses_without_duplicate_relation() -> N
         if record.item.memory_type == "preference"
     )
     assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
+def test_relation_extraction_retry_recovers_within_capture() -> None:
+    """关系抽取首次 source_expression 非法、第二次合法 -> capture 内重试成功（Case E）。
+
+    attempt 1 返回的 proposal source_expression 不在原文 -> admit reject -> 重试；
+    attempt 2 返回合法 proposal -> 接受。capture completed，2 次抽取，仅一份关系。
+    """
+
+    text = "周报偏好明确支持持续事项"
+    calls = {"n": 0}
+
+    def factory(request):
+        calls["n"] += 1
+        proposal = _relation_proposal(request, text)
+        if calls["n"] == 1:
+            return (replace(proposal, source_expression="这段关系原文里不存在"),)
+        return (proposal,)
+
+    relation_extractor = FakeRelationExtractor(factory)
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    assert len(relation_extractor.requests) == 2  # attempt 1 reject + attempt 2 success
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
+def test_relation_extraction_all_attempts_fail_incomplete() -> None:
+    """关系抽取全部 attempt 均有 rejected proposal -> 原子失败 incomplete（§1 安全语义）。"""
+
+    text = "周报偏好明确支持持续事项"
+
+    def factory(request):
+        # 始终返回 source_expression 不在原文的 proposal -> 每次都被 reject。
+        return (
+            replace(
+                _relation_proposal(request, text),
+                source_expression="这段关系原文里不存在",
+            ),
+        )
+
+    relation_extractor = FakeRelationExtractor(factory)
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=relation_extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(text))
+
+    assert result.status is CaptureStatus.FAILED
+    assert result.failure_code == "invalid_candidate_output"
+    assert len(relation_extractor.requests) == 3  # _RELATION_EXTRACTION_MAX_ATTEMPTS
+    # 原子失败回滚：不持久化任何记忆/关系。
+    assert len(service.list_memories(principal)) == 0
 
 
 def test_in_memory_capture_rolls_back_when_relation_write_is_invalid() -> None:

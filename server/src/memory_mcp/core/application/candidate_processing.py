@@ -53,6 +53,20 @@ _EXPLICIT_REPLACEMENT = re.compile(
     r"\bchange\b.+\bto\b)",
     re.IGNORECASE,
 )
+# 操作指令模式（recommend.md §4）：不要使用/读取/调用/打开工具、文件、skill、memory、联网。
+# 这类指令不是投研长期偏好，默认丢弃；除非用户显式表达跨会话持久（下方 _EXPLICIT_DURABLE）。
+_OPERATIONAL_INSTRUCTION_RE = re.compile(
+    r"(?:不(?:要|需|需要)?|别|勿)"
+    r"(?:使用|读取|调用|打开|引入|访问|运行)"
+    r"[^，。；！？\n]{0,15}?"
+    r"(?:工具|skill|memory|记忆|文件|网络|联网)"
+    r"|(?:不(?:要|需|需要)?|别|勿)联网"
+    r"|(?:不(?:要|需|需要)?|别|勿)打开[^，。；！？\n]{0,10}?文件"
+)
+# 用户显式跨会话持久偏好（recommend.md §4）：即便含操作指令词，也视为长期偏好保留。
+_EXPLICIT_DURABLE_PREFERENCE_RE = re.compile(
+    r"以后所有会话|今后始终|长期默认|从今以后|每次都|以后(?:分析|研究|输出|默认|都|用)"
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -383,6 +397,31 @@ class CandidateProcessor:
                         candidate_id=candidate_id,
                         decision=AdmissionDecision.DISCARD,
                         reason_code="invalid_source_expression",
+                    )
+                )
+                _validation_duration += perf_counter() - _validation_started_at
+                continue
+            if _is_operational_instruction(proposal):
+                # 操作指令（不要使用工具/读取文件/联网等）不是长期研究偏好：默认丢弃，
+                # 除非用户显式表达跨会话持久（recommend.md §4）。类型无关，不在 Core 硬编码
+                # research_preference（尊重 Profile 边界铁律）。
+                rejected.append(
+                    RejectedProposal(
+                        candidate_id=candidate_id,
+                        reason_code="operational_instruction",
+                        subject=proposal.subject,
+                        memory_type=proposal.memory_type,
+                        content=proposal.content,
+                        source_expression=proposal.source_expression,
+                        assertion_kind=proposal.assertion_kind,
+                        expression_basis=proposal.expression_basis,
+                    )
+                )
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate_id,
+                        decision=AdmissionDecision.DISCARD,
+                        reason_code="operational_instruction",
                     )
                 )
                 _validation_duration += perf_counter() - _validation_started_at
@@ -939,6 +978,19 @@ def _is_explicit_replacement(candidate: Candidate) -> bool:
         in {AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT}
         and _EXPLICIT_REPLACEMENT.search(candidate.source_expression) is not None
     )
+
+
+def _is_operational_instruction(proposal: CandidateProposal) -> bool:
+    """候选是否为操作指令（不要使用工具/读取文件/联网等），且非显式跨会话持久偏好。
+
+    recommend.md §4：操作指令不是投研长期偏好，默认丢弃；但用户显式表达「以后所有会话都…」
+    等跨会话持久时保留。检查 source_expression 与 content。
+    """
+
+    text = f"{proposal.source_expression}\n{proposal.content}"
+    if _EXPLICIT_DURABLE_PREFERENCE_RE.search(text):
+        return False
+    return _OPERATIONAL_INSTRUCTION_RE.search(text) is not None
 
 
 def _content_restates(target: MemoryRecord, candidate: Candidate) -> bool:

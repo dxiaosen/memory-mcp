@@ -120,6 +120,9 @@ Agent Hook (run_ref)
 | `memory.capture.extraction_attempt.started` | INFO | `capture_id`, `attempt`, `max_attempts`（结构化抽取每次尝试开始；recommend.md §3） |
 | `memory.capture.extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（仅对 `InvalidModelOutputError` 等 recoverable 结构错误重试；业务校验 `invalid_source_expression` 不重试） |
 | `memory.capture.extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次尝试成功，capture 继续后续候选处理） |
+| `memory.capture.relation_extraction_attempt.started` | INFO | `capture_id`, `attempt`, `max_attempts`（关系抽取每次尝试开始；recommend.md §1） |
+| `memory.capture.relation_extraction_attempt.failed` | WARNING | `capture_id`, `attempt`, `max_attempts`, `duration_ms`, `error_type`, `error_message`, `retryable`（InvalidModelOutputError 或 admit 校验拒绝时重试；全部 attempt 失败才 incomplete） |
+| `memory.capture.relation_extraction_attempt.completed` | INFO | `capture_id`, `attempt`, `max_attempts`, `duration_ms`（某次关系抽取尝试无 rejected proposal，返回 accepted 关系） |
 | `memory.capture.relations_planned` | INFO | `capture_id`, 模型/prompt/schema 版本, endpoint/proposal/accepted/skipped 数量 |
 | `memory.capture.candidate.assertion_normalized` | DEBUG | `candidate_ref`, `memory_type`, `source_role`, `source_type`, `from_assertion_kind`, `to_assertion_kind`（模型自报 assertion_kind 与可信来源语义冲突时纠正：assistant+user_* → system_inference；tool/document/web source_type + 任意非 external → external_fact） |
 | `memory.capture.candidates_truncated` | DEBUG | `model_id`, `original_count`, `kept_count`, `soft_limit`（解析出的候选数超过软上限 12 时按 confidence 降序裁剪） |
@@ -133,6 +136,7 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.capture.admission` | 准入结果 |
 | `memory.capture.validation` | `extracted_candidate_count`, `validated_candidate_count`, `rejected`（被 invalid_source_expression/ambiguous_source_message 提前拒绝的 proposal 完整字段） |
 | `memory.capture.relation_candidates` | 脱敏建议和计划关系 |
+| `memory.capture.relation_validation_rejected` | 被前置校验拒绝的关系建议（`source_memory_id`/`target_memory_id`/`relation_type`/`confidence`/`source_expression`/`reason_code`，reason_code ∈ invalid_source_expression/relation_endpoint_outside_catalog/relation_policy_mismatch；recommend.md §1） |
 | `memory.capture.persisted` | 持久化结构（memory/review/duplicate/replacement/relation） |
 
 ### Recall 阶段
@@ -142,7 +146,8 @@ Capture 内容模式事件（仅 `LOG_CONTENT=true`）：
 | `memory.recall.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `embedding_enabled`, `max_items`, `token_budget` |
 | `memory.recall.candidates` | INFO | `recall_ref`, `candidate_count`, `candidate_limit`, `lexical_count`, `vector_count`, `recent_count`, `profile_id`, `embedding_degraded`（召回流程 started → candidates → ranked → output → completed 的中间环节，便于区分"未召回"还是"召回了但被阈值过滤"） |
 | `memory.recall.embedding_failed` | WARNING | `error_type`, `error_message` |
-| `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded`, `query_embedding_duration_ms`, `repository_candidate_duration_ms`, `ranking_duration_ms`, `evidence_loading_duration_ms`, `render_duration_ms`（分阶段耗时，未执行的阶段记 0；便于定位 recall 慢在 embedding/DB/排序/evidence 渲染） |
+| `memory.recall.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `duration_ms`, `result_count`, `estimated_tokens`, `token_budget`, `truncated`, `zero_result`, `candidate_count`, `lexical_count`, `vector_count`, `recent_count`, `threshold_passed_count`, `relation_boosted_count`, `embedding_enabled`, `embedding_degraded`, `query_embedding_duration_ms`, `repository_candidate_duration_ms`, `ranking_duration_ms`, `evidence_loading_duration_ms`, `render_duration_ms`, `accounted_duration_ms`（各 stage 耗时之和）, `unaccounted_duration_ms`（总耗时 - accounted，定位连接/序列化等缺口，§8）（分阶段耗时，未执行的阶段记 0；便于定位 recall 慢在 embedding/DB/排序/evidence 渲染） |
+| `memory.recall.query_skipped_operational` | INFO | `recall_ref`, `owner_ref`, `profile_id`（operational-only 查询跳过 semantic recall，不调 embedding、返回空；recommend.md §5） |
 | `memory.recall.timeline.started` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `focus_memory_id`, `max_hops`, `token_budget` |
 | `memory.recall.timeline.completed` | INFO | `recall_ref`, `owner_ref`, `profile_id`, `hop_count`, `estimated_tokens`, `token_budget`, `truncated` |
 

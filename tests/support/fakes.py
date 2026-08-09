@@ -165,9 +165,11 @@ class FakeRelationExtractor:
         proposal_factory=None,
         *,
         failures_before_success: int = 0,
+        failure_exc: type[Exception] = InvalidModelOutputError,
     ) -> None:
         self.proposal_factory = proposal_factory or (lambda request: ())
         self.failures_before_success = failures_before_success
+        self.failure_exc = failure_exc
         self.requests: list[RelationExtractionRequest] = []
 
     def extract(
@@ -176,7 +178,8 @@ class FakeRelationExtractor:
     ) -> tuple[RelationProposal, ...]:
         self.requests.append(request)
         if len(self.requests) <= self.failures_before_success:
-            raise RuntimeError("temporary relation model interruption")
+            # 默认模拟真实结构化输出失败，由 relation planner 重试（§1）。
+            raise self.failure_exc("temporary relation model interruption")
         return tuple(self.proposal_factory(request))
 
 

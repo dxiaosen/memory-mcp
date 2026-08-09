@@ -1,9 +1,11 @@
 """Profile 驱动的自动关系抽取：端点选择、模型抽取与保守准入。"""
 
+import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from time import perf_counter
 from uuid import UUID
 
 from memory_mcp.core.domain import (
@@ -32,8 +34,14 @@ from memory_mcp.core.ports import (
     RelationExtractionRequest,
     RelationExtractor,
 )
+from memory_mcp.core.support import log_content_event, log_event
+
+_LOGGER = logging.getLogger(__name__)
 
 AUTO_RELATION_CONFIDENCE_THRESHOLD = 0.90
+# 关系抽取有界重试上限（recommend.md §1），与 CandidateExtractor 对齐。仅对 InvalidModelOutputError
+# （模型结构错误或 admit 校验拒绝）重试；全部 attempt 均有 rejected proposal 才让 capture 原子失败。
+_RELATION_EXTRACTION_MAX_ATTEMPTS = 3
 _NEGATED_RELATION_EVIDENCE = re.compile(
     r"(?:不|并不|不能|无法|未能|没有|并未|不再)\s*"
     r"(?:明确|直接|真正|足以|构成)?\s*"
@@ -43,6 +51,43 @@ _NEGATED_RELATION_EVIDENCE = re.compile(
     r"(?:support|challenge|threaten|catalyze|address|resolve)\b",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedRelation:
+    """被前置校验拒绝的关系建议，保留字段供开发 content 日志调试（recommend.md §1）。"""
+
+    source_memory_id: UUID
+    target_memory_id: UUID
+    relation_type: str
+    confidence: float
+    source_expression: str
+    reason_code: str
+
+
+def _normalize_whitespace(value: str) -> str:
+    """空白压成单空格 + trim（与 candidate 校验一致，recommend.md §1）。"""
+
+    return " ".join(value.split())
+
+
+def _normalize_compact(value: str) -> str:
+    """移除全部 Unicode 空白，保留标点/数字/字符不改写。"""
+
+    return "".join(value.split())
+
+
+def _relation_source_expression_in(source_expression: str, source: str) -> bool:
+    """三级空白归一化 containment（recommend.md §1）：raw -> whitespace -> compact。
+
+    只忽略 Unicode 空白，不改标点/数字/字符；因此模型改写、增标点、拼接独立句仍判不匹配。
+    """
+
+    if source_expression in source:
+        return True
+    if _normalize_whitespace(source_expression) in _normalize_whitespace(source):
+        return True
+    return _normalize_compact(source_expression) in _normalize_compact(source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +145,14 @@ class AutomaticRelationPlanner:
         subject_hint: str | None,
         trusted_user_sources: tuple[str, ...] | None,
     ) -> AutomaticRelationPlan:
-        """在有合法端点组合时调用模型抽取关系，并保守准入通过的建议。"""
+        """在有合法端点组合时调用模型抽取关系，并保守准入通过的建议。
+
+        对关系抽取做有界重试（recommend.md §1）：某次 attempt 产出被前置校验拒绝的 proposal
+        （invalid_source_expression/endpoint/policy）时记 ``relation_validation_rejected`` 并重试；
+        仅当全部 attempt 均有 rejected 才向上抛 ``InvalidModelOutputError``，由 capture 写
+        ``incomplete``（保留原子失败安全语义，不静默忽略）。模型结构错误（InvalidModelOutputError）
+        同样重试。
+        """
 
         if not profile.relation_policies:
             return AutomaticRelationPlan()
@@ -123,24 +175,89 @@ class AutomaticRelationPlanner:
             endpoints=endpoints,
             subject_hint=subject_hint,
         )
-        proposals = self._extractor.extract(request)
-        relations, skipped_count = self._admit(
-            principal,
-            profile=profile,
-            capture_id=capture_id,
-            conversation_id=conversation_id,
-            source_turn_id=source_turn_id,
-            redacted_source=redacted_source,
-            endpoint_records=endpoint_records,
-            proposals=proposals,
-            trusted_user_sources=trusted_user_sources,
-        )
-        return AutomaticRelationPlan(
-            endpoint_count=len(endpoints),
-            proposal_count=len(proposals),
-            skipped_count=skipped_count,
-            relations=relations,
-            proposals=proposals,
+        max_attempts = _RELATION_EXTRACTION_MAX_ATTEMPTS
+        for attempt in range(1, max_attempts + 1):
+            _attempt_started_at = perf_counter()
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.capture.relation_extraction_attempt.started",
+                capture_id=capture_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            try:
+                proposals = self._extractor.extract(request)
+            except InvalidModelOutputError as exc:
+                retryable = attempt < max_attempts
+                log_event(
+                    _LOGGER,
+                    logging.WARNING,
+                    "memory.capture.relation_extraction_attempt.failed",
+                    capture_id=capture_id,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    retryable=retryable,
+                )
+                if retryable:
+                    continue
+                raise
+            accepted, skipped_count, rejected = self._admit(
+                principal,
+                profile=profile,
+                capture_id=capture_id,
+                conversation_id=conversation_id,
+                source_turn_id=source_turn_id,
+                redacted_source=redacted_source,
+                endpoint_records=endpoint_records,
+                proposals=proposals,
+                trusted_user_sources=trusted_user_sources,
+            )
+            if not rejected:
+                log_event(
+                    _LOGGER,
+                    logging.INFO,
+                    "memory.capture.relation_extraction_attempt.completed",
+                    capture_id=capture_id,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
+                )
+                return AutomaticRelationPlan(
+                    endpoint_count=len(endpoints),
+                    proposal_count=len(proposals),
+                    skipped_count=skipped_count,
+                    relations=accepted,
+                    proposals=proposals,
+                )
+            # rejected 非空：记 rejected 详情 + failed，重试（保留原子失败安全语义）。
+            log_content_event(
+                "memory.capture.relation_validation_rejected",
+                capture_id=capture_id,
+                attempt=attempt,
+                rejected=tuple(asdict(item) for item in rejected),
+            )
+            retryable = attempt < max_attempts
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.capture.relation_extraction_attempt.failed",
+                capture_id=capture_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                duration_ms=round((perf_counter() - _attempt_started_at) * 1000, 3),
+                error_type="InvalidModelOutputError",
+                error_message="relation proposals rejected at validation",
+                retryable=retryable,
+            )
+            if not retryable:
+                break
+        # 全部 attempt 均有 rejected proposal -> 原子失败，由 capture 写 incomplete。
+        raise InvalidModelOutputError(
+            "relation source_expression must occur in the redacted source turn"
         )
 
     def _select_endpoint_records(
@@ -212,23 +329,49 @@ class AutomaticRelationPlanner:
         endpoint_records: tuple[MemoryRecord, ...],
         proposals: tuple[RelationProposal, ...],
         trusted_user_sources: tuple[str, ...] | None,
-    ) -> tuple[tuple[MemoryRelation, ...], int]:
-        """对模型建议逐条做保守准入校验，返回通过的关系与被跳过的计数。"""
+    ) -> tuple[tuple[MemoryRelation, ...], int, tuple[RejectedRelation, ...]]:
+        """对模型建议逐条做保守准入校验。
+
+        返回 ``(accepted, skipped_count, rejected)``：``rejected`` 为前置校验拒绝的 proposal
+        （invalid_source_expression/endpoint_outside_catalog/policy_mismatch），由调用方决定重试或
+        原子失败；``skipped_count`` 计合法但低置信/否定/反向/重复/非用户来源的跳过。不再就地 raise，
+        以便单次 attempt 内收集全部 rejected 供调试日志（recommend.md §1）。
+        """
+
         endpoint_by_id = {record.item.memory_id: record for record in endpoint_records}
         accepted: list[MemoryRelation] = []
         accepted_keys: set[tuple[UUID, UUID, str]] = set()
         skipped_count = 0
+        rejected: list[RejectedRelation] = []
         for proposal in proposals:
-            if proposal.source_expression not in redacted_source:
-                raise InvalidModelOutputError(
-                    "relation source_expression must occur in the redacted source turn"
+            if not _relation_source_expression_in(
+                proposal.source_expression, redacted_source
+            ):
+                rejected.append(
+                    RejectedRelation(
+                        source_memory_id=proposal.source_memory_id,
+                        target_memory_id=proposal.target_memory_id,
+                        relation_type=proposal.relation_type,
+                        confidence=proposal.confidence,
+                        source_expression=proposal.source_expression,
+                        reason_code="invalid_source_expression",
+                    )
                 )
+                continue
             source = endpoint_by_id.get(proposal.source_memory_id)
             target = endpoint_by_id.get(proposal.target_memory_id)
             if source is None or target is None:
-                raise InvalidModelOutputError(
-                    "relation endpoint is outside the trusted catalog"
+                rejected.append(
+                    RejectedRelation(
+                        source_memory_id=proposal.source_memory_id,
+                        target_memory_id=proposal.target_memory_id,
+                        relation_type=proposal.relation_type,
+                        confidence=proposal.confidence,
+                        source_expression=proposal.source_expression,
+                        reason_code="relation_endpoint_outside_catalog",
+                    )
                 )
+                continue
             try:
                 self._profile_registry.validate_relation(
                     profile.profile_id,
@@ -236,10 +379,18 @@ class AutomaticRelationPlanner:
                     source.item.memory_type,
                     target.item.memory_type,
                 )
-            except InvalidMemoryRelationError as exc:
-                raise InvalidModelOutputError(
-                    "relation does not match the trusted profile policy"
-                ) from exc
+            except InvalidMemoryRelationError:
+                rejected.append(
+                    RejectedRelation(
+                        source_memory_id=proposal.source_memory_id,
+                        target_memory_id=proposal.target_memory_id,
+                        relation_type=proposal.relation_type,
+                        confidence=proposal.confidence,
+                        source_expression=proposal.source_expression,
+                        reason_code="relation_policy_mismatch",
+                    )
+                )
+                continue
             policy = profile.relation_policies[proposal.relation_type]
             key = (
                 proposal.source_memory_id,
@@ -300,7 +451,7 @@ class AutomaticRelationPlanner:
                     ),
                 )
             )
-        return tuple(accepted), skipped_count
+        return tuple(accepted), skipped_count, tuple(rejected)
 
 
 def _endpoint(record: MemoryRecord) -> RelationEndpoint:

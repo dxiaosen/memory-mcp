@@ -34,6 +34,8 @@ from memory_mcp.core.domain import Evidence
 from memory_mcp.core.ports import MemoryMetadataPolicy
 from memory_mcp.profiles import InvestmentResearchProfile
 
+from tests.support.fakes import FakeEmbeddingProvider
+
 _PRINCIPAL = PrincipalContext("owner-a")
 _BASE_NOW = datetime(2026, 7, 30, 10, tzinfo=UTC)
 
@@ -215,3 +217,49 @@ def test_recall_ranks_newer_evidence_above_older_of_equal_relevance() -> None:
     # 新证据（2025）应排第一。
     assert recalled.items[0].subject == "example-company-revenue-2025"
     assert recalled.items[0].relevance_score >= recalled.items[1].relevance_score
+
+
+def test_operational_only_query_skips_semantic_recall() -> None:
+    """operational-only 查询跳过 semantic recall：不调 embedding、返回空（recommend.md §5）。
+
+    归一化后查询为空（纯操作指令）且无 subject/task_intent -> 跳过 embedding 与候选检索，
+    result_count=0 / rendered_context=""，即便仓库里有活动记忆也不召回。
+    """
+
+    now = [datetime(2026, 7, 30, 10, tzinfo=UTC)]
+
+    def clock() -> datetime:
+        return now[0]
+
+    repository = InMemoryMemoryRepository()
+    embedding = FakeEmbeddingProvider({})
+    service = MemoryService(
+        repository,
+        ProfileRegistry(),
+        sensitive_guard=RegexSensitiveContentGuard(),
+        clock=clock,
+        embedding_provider=embedding,
+    )
+    service.register_profile(InvestmentResearchProfile())
+    repository.add(
+        _PRINCIPAL,
+        _evidence_claim_record(
+            subject="example-company-revenue-2025",
+            content="示例公司 2025 年企业收入同比增长 18%",
+            observed_at=now[0],
+            valid_until=now[0] + timedelta(days=365),
+        ),
+    )
+
+    recalled = service.recall_memory(
+        _PRINCIPAL,
+        RecallQuery(
+            profile_id="investment-research",
+            query="不要使用任何内置工具",
+            max_items=5,
+        ),
+    )
+
+    assert len(recalled.items) == 0
+    assert recalled.rendered_context == ""
+    assert embedding.calls == 0  # operational-only 跳过 embedding 请求
