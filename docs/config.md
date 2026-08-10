@@ -152,7 +152,7 @@
 | 变量 | 默认值 | 必需 | 说明 |
 | --- | --- | --- | --- |
 | `MEMORY_MCP_TEAM_EXTRACTION_INTERVAL_SECONDS` | `3600` | 否 | 团队提取周期，0 关闭；范围 0–86400 |
-| `MEMORY_MCP_TEAM_EXTRACTION_SIMILARITY_THRESHOLD` | `0.85` | 否 | embedding 聚类相似度阈值 |
+| `MEMORY_MCP_TEAM_EXTRACTION_SIMILARITY_THRESHOLD` | `0.70` | 否 | embedding 聚类相似度阈值；投研共性提取场景语义近似但措辞不同是常态 |
 | `MEMORY_MCP_TEAM_EXTRACTION_MIN_CLUSTER_SIZE` | `2` | 否 | 最小簇大小 |
 
 - 服务端周期性扫描团队成员个人记忆，用 embedding 相似度聚类提取公共知识候选，写入团队 pending review。

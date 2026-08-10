@@ -77,6 +77,17 @@ _OPERATIONAL_INSTRUCTION_RE = re.compile(
 _EXPLICIT_DURABLE_PREFERENCE_RE = re.compile(
     r"以后所有会话|今后始终|长期默认|从今以后|每次都|以后(?:分析|研究|输出|默认|都|用)"
 )
+# inspect/manage/test turn 模式：用户在查看/检查/管理 Memory MCP 记忆，而非陈述投研判断。
+# 这类 turn 的 source_expression/content 不应进入长期记忆。确定性兜底（prompt 只引导）。
+_INSPECT_MANAGE_RE = re.compile(
+    r"(?:查看|检查|查下|帮我查|看看|列出|确认下|可以查)"
+    r"[^，。；！？\n]{0,20}?"
+    r"(?:Pending|pending|待确认|待审|记忆|memory|review|owner_id|团队记忆)"
+    r"|(?:请(?:查看|检查|告诉我))"
+    r"|(?:告诉我[^，。；！？\n]{0,15}?(?:验证|指标|判断|跟踪|风险|结论))"
+    r"|(?:我当前有权限访问.*记忆)"
+    r"|(?:不应该作为我的个人记忆)"
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1000,16 +1011,21 @@ def _is_explicit_replacement(candidate: Candidate) -> bool:
 
 
 def _is_operational_instruction(proposal: CandidateProposal) -> bool:
-    """候选是否为操作指令（不要使用工具/读取文件/联网等），且非显式跨会话持久偏好。
+    """候选是否为操作指令或 inspect/manage turn，且非显式跨会话持久偏好。
 
-    操作指令不是投研长期偏好，默认丢弃；但用户显式表达「以后所有会话都…」等跨会话
-    持久时保留。检查 source_expression 与 content。
+    操作指令（不要使用工具/读取文件/联网）不是投研长期偏好，默认丢弃。
+    inspect/manage turn（查看/检查/查下 Pending/记忆/团队记忆）是系统操作语义，
+    不应进入业务记忆。用户显式表达「以后所有会话都…」等跨会话持久时保留。
+    检查 source_expression 与 content。
     """
 
     text = f"{proposal.source_expression}\n{proposal.content}"
     if _EXPLICIT_DURABLE_PREFERENCE_RE.search(text):
         return False
-    return _OPERATIONAL_INSTRUCTION_RE.search(text) is not None
+    return (
+        _OPERATIONAL_INSTRUCTION_RE.search(text) is not None
+        or _INSPECT_MANAGE_RE.search(text) is not None
+    )
 
 
 def _content_restates(target: MemoryRecord, candidate: Candidate) -> bool:

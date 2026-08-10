@@ -648,6 +648,7 @@ def _to_recalled_memory_view(item: RecalledMemory) -> RecalledMemoryView:
 
 class PendingReviewView(StrictDto):
     review_id: UUID
+    owner_id: str
     profile_id: str
     subject: str
     memory_type: str
@@ -666,6 +667,7 @@ class PendingReviewView(StrictDto):
         candidate = review.candidate
         return cls(
             review_id=review.review_id,
+            owner_id=candidate.owner_id,
             profile_id=candidate.profile_id,
             subject=candidate.subject,
             memory_type=candidate.memory_type,

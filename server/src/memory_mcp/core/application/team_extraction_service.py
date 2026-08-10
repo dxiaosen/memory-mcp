@@ -11,7 +11,7 @@ from memory_mcp.core.support import log_event, stable_reference
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_SIMILARITY_THRESHOLD = 0.85
+DEFAULT_SIMILARITY_THRESHOLD = 0.70
 DEFAULT_MIN_CLUSTER_SIZE = 2
 
 

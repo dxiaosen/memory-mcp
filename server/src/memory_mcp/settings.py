@@ -91,7 +91,7 @@ class MemoryServerSettings(BaseSettings):
     recall_candidate_limit: int = Field(default=500, ge=1, le=10_000)
     maintenance_interval_seconds: int = Field(default=300, ge=0, le=86_400)
     team_extraction_interval_seconds: int = Field(default=3600, ge=0, le=86_400)
-    team_extraction_similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    team_extraction_similarity_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     team_extraction_min_cluster_size: int = Field(default=2, ge=2, le=100)
 
     auth_issuer_url: AnyHttpUrl = AnyHttpUrl("http://localhost/memory-mcp-auth")

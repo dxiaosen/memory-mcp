@@ -976,6 +976,74 @@ def test_explicit_durable_preference_not_treated_as_operational() -> None:
     assert len(service.list_memories(principal)) == 1
 
 
+def test_inspect_manage_turn_discarded_not_saved() -> None:
+    """用户查看/检查/管理 Memory MCP 记忆的 turn 不应进入业务记忆。"""
+
+    inspect_expr = "请查看 Memory MCP 当前属于我的 Pending 记忆"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                inspect_expr,
+                subject="inspect-pending-reviews",
+                memory_type="preference",
+                content="用户要求查看当前 Pending 记忆",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(inspect_expr))
+
+    assert result.status is CaptureStatus.COMPLETED
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "operational_instruction"
+    assert len(service.list_memories(principal)) == 0
+
+
+def test_request_sentence_not_saved_as_research_decision() -> None:
+    """请求型语句（告诉我下一季度验证指标）不应存为 research_decision。
+
+    research_decision 只用于具体的研究范围/方法/结论，不用于请求或问题句。
+    """
+
+    request_expr = "基于我之前的长期判断，告诉我下一季度最重要的两个验证指标"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                request_expr,
+                subject="next-quarter-verification-metrics",
+                memory_type="preference",
+                content="用户问下一季度最重要的两个验证指标",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(principal, _turn(request_expr))
+
+    assert result.status is CaptureStatus.COMPLETED
+    # 请求句含「告诉我」-> 命中 inspect/manage 模式 -> discard
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "operational_instruction"
+    assert len(service.list_memories(principal)) == 0
+
+
 def test_explicit_uncertainty_goes_pending_not_auto_save() -> None:
     """用户明确表达不确定/猜测 -> Pending(explicit_uncertainty)，不 Auto-save。
 
