@@ -174,7 +174,11 @@ class MemoryTools(ToolSupport):
             description=(
                 "Revoke one owned current memory. Marks it revoked while "
                 "preserving the full traceable revision and evidence history; "
-                "the operation is idempotent and never physically deletes data."
+                "the operation is idempotent and never physically deletes data. "
+                "Use only when the user explicitly asks to revoke or manage a "
+                "stored Memory MCP record; do not call it merely because the "
+                "user changes or corrects a business judgment--normal semantic "
+                "updates are handled by the AfterRun capture lifecycle."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
@@ -224,7 +228,11 @@ class MemoryTools(ToolSupport):
             name="link_memories",
             description=(
                 "Create one directed relation between two owned active memories. "
-                "The relation type and direction must be allowed by their profile."
+                "The relation type and direction must be allowed by their profile. "
+                "Use only for explicit manual management of stored memory "
+                "relations; do not call it merely because the user says one fact "
+                "supports, challenges, or threatens another judgment--automatic "
+                "relation extraction handles normal conversation semantics."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
@@ -387,7 +395,9 @@ class MemoryTools(ToolSupport):
             name="batch_confirm_pending",
             description=(
                 "Confirm multiple owned pending candidates in one call. "
-                "Each is confirmed independently; failures do not block others."
+                "Each is confirmed independently; failures do not block others. "
+                "Use only when the user explicitly asks to confirm stored pending "
+                "reviews; do not auto-confirm based on ordinary conversation."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,

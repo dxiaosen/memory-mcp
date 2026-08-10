@@ -510,13 +510,17 @@ class PostgreSQLMemoryRepository:
             # 与 replacement 对齐：revoke 也把指向该 memory 当前 revision 的
             # revision-scoped 活动边物化为 stale，避免 memory_relations.status
             # 与端点实际状态不一致。item-scoped 手动边不受影响。
+            # stale_at 必须用「撤销时刻」而非 revision_created_at：关系可能在
+            # 该 revision 创建之后才建立，用 revision_created_at 会令
+            # stale_at < relation.created_at，违反 memory_relations_terminal_state
+            # 的 stale_at >= created_at 约束（recommend.md §5）。
             revoked_principal = PrincipalContext(row["owner_id"])
             _stale_revision_relations(
                 connection,
                 revoked_principal,
                 memory_id,
                 row["revision_id"],
-                stale_at=row["revision_created_at"],
+                stale_at=datetime.now(UTC),
                 stale_reason="endpoint_revoked",
             )
             row["lifecycle_status"] = "revoked"  # type: ignore[index]

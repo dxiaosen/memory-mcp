@@ -1,642 +1,654 @@
-Memory MCP 最终稳定性修复方案 V2
-
 1. 本轮目标
 
-本轮只解决两个问题：
+本轮不再扩展 Memory MCP 能力，只修复当前 E2E 中已经暴露出的 4 个边界问题：
 
-Candidate structured output 稳定性
+RelationExtractor 失败不应回滚合法 Candidate；
 
-Memory MCP E2E 测试环境隔离
+单个 Candidate 的业务字段错误不应让整个 Capture 失败；
 
-当前不再扩展 Relation、Recall、Admission、Lifecycle、Timeline、Team Memory 或 Evidence 架构。
+Claude 主动调用 mutation MCP 的边界需要进一步收紧；
 
-本轮原则：
+revoke_memory 撤销带有 Active Relation 的 Memory 时，应由服务端完成关系级联失效，而不是抛数据库约束错误。
 
-先定位 structured output 链路，再做最小修复；先隔离 Claude 内部 Memory，再重新做核心 E2E。
+本轮完成后，停止继续扩展 Core。
 
-2. 当前已确认的问题
+2. 当前已确认稳定的部分
 
-2.1 Candidate structured output 不稳定
+以下能力本轮不再修改：
 
-当前服务端已经出现过以下几类异常：
+Candidate structured output 基本稳定；
 
-CandidateBatch input = None
+文档事实可以进入 Pending；
 
-以及：
+用户明确长期判断可以 Auto-save；
 
-CandidateBatch.candidates
-Input should be a valid list
-input_value={'candidates': [...]}
+Fresh-session Recall 可以命中 Active Memory；
 
-后一种现象高度疑似某一层发生了重复包装：
+不确定猜测可以进入 Pending，而不是 Auto-save；
 
-正常结构：
+自动 threatens Relation 可以成功建立；
 
-{
-  "candidates": []
-}
+自动 challenges Relation 可以成功建立；
 
-异常结构可能变成：
+普通 relation_policy_mismatch 已能 skip，而不是直接失败；
 
-{
-  "candidates": {
-    "candidates": []
-  }
-}
+Hook Capture / Recall 主链正常；
 
-因此当前优先怀疑链路：
+PostgreSQL、Embedding、Recall threshold、Admission threshold 暂不调整。
 
-DeepSeek response
+因此本轮不要继续修改：
+
+Candidate Prompt 大框架；
+
+Relation Prompt 大框架；
+
+Relation threshold；
+
+Recall threshold；
+
+Admission threshold；
+
+Memory types；
+
+Relation policy 类型设计；
+
+Timeline；
+
+Team Memory；
+
+Evidence 多源架构；
+
+PostgreSQL Schema（除非修复 relation terminal-state 约束必须做极小调整）。
+
+3. P0：Relation 必须彻底改成 Best-Effort Enhancement
+
+3.1 当前问题
+
+当前 Capture 主流程中，Candidate 已经合法抽取、验证、Admission，但 RelationExtractor 如果连续产生非法结果，例如：
+
+invalid_source_expression；
+
+unknown / stale endpoint；
+
+malformed relation proposal；
+
+relation validator structural rejection；
+
+最终仍可能导致整个 Capture：
+
+status=failed
+failure_code=invalid_candidate_output
+
+这会造成：
+
+合法 Candidate
+→ 已完成 extraction / validation / admission
+→ RelationExtractor 出错
+→ 整个 Capture rollback
+→ 合法 Memory / Pending 丢失
+
+对于当前项目定位，这个失败语义过重。
+
+3.2 新的责任边界
+
+改成：
+
+Candidate Capture = 主链
+Relation Extraction = best-effort 增强链
+
+目标流程：
+
+CompletedTurn
     ↓
-provider / SDK structured output
+Candidate Extraction
     ↓
-adapter
+Candidate Validation
     ↓
-parsed Python object
+Admission / Lifecycle
     ↓
-CandidateBatch.model_validate(...)
-
-不要继续优先修改 Candidate Prompt。
-
-2.2 Claude 内部项目 Memory 仍然污染测试
-
-即使项目中加入了 CLAUDE.md，Claude 仍可能读取或写入：
-
-~/.claude/projects/<project>/memory/
-
-因此可能出现：
-
-Memory MCP BeforeRun Recall = 0
-
-但 Claude 仍能正确回答历史判断。
-
-这种情况下不能把回答算作 Memory MCP Recall 成功。
-
-所以后续 E2E 必须进行物理隔离，不能只依赖 CLAUDE.md 的软约束。
-
-3. P0：Structured Output 链路诊断
-
-3.1 不先修 Prompt，先观察真实输入输出
-
-在 Candidate structured-output validation 失败时，增加开发态诊断日志。
-
-建议至少记录：
-
-model_id
-attempt
-finish_reason
-
-raw_message_content
-raw_tool_calls
-raw_structured_response
-
-provider_parsed_type
-provider_parsed_value
-
-candidate_batch_input_type
-candidate_batch_input_value
-
-validation_error
-
-生产环境继续保留现有脱敏策略。
-
-开发环境允许记录完整响应，便于确认问题到底发生在哪一层。
-
-3.2 需要明确区分的五种情况
-
-A. DeepSeek 原始响应为空 / None
-
-B. 原始 JSON 正确，但 SDK parsed 结果错误
-
-C. SDK parsed 正确，但项目 adapter 再包装了一层
-
-D. 模型本身输出了重复 wrapper
-
-E. response_format / structured-output 使用方式与 DeepSeek 兼容性不稳定
-
-只有确认是哪一种之后，才修改对应层。
-
-4. P0：DeepSeek V4 Pro 稳定性实验
-
-当前不要直接换模型。
-
-先单独建立一个极小的 extraction stability test，不经过完整 Memory Core。
-
-4.1 固定测试输入
-
-使用一个固定的、简单的 Candidate extraction fixture，例如：
-
-用户：以后分析恒川工业软件时请使用中文，并按照“事实—判断—风险—验证指标”的结构输出。
-
-期望结构固定为一个 CandidateBatch。
-
-4.2 做两组 A/B
-
-A 组
-
-deepseek-v4-pro
-thinking = enabled
-
-B 组
-
-deepseek-v4-pro
-thinking = disabled
-
-每组建议连续运行：
-
-30～50 次
-
-4.3 统计指标
-
-至少统计：
-
-valid_candidate_batch_count
-empty_or_none_count
-schema_malformed_count
-double_wrapper_count
-json_parse_error_count
-other_error_count
-average_latency_ms
-p95_latency_ms
-
-4.4 判定逻辑
-
-如果两组都稳定出现：
-
-{"candidates":{"candidates":[...]}}
-
-优先判断为 SDK / adapter 包装问题。
-
-如果主要出现：
-
-None / empty content
-
-保留 bounded retry，并检查 DeepSeek JSON Output / provider compatibility。
-
-如果 thinking=disabled 明显更加稳定，则 CandidateExtractor 和 RelationExtractor 可以独立使用：
-
-deepseek-v4-pro
-thinking = disabled
-
-其他真正需要复杂推理的业务场景仍可使用默认思考模式。
-
-注意：
-
-不要仅凭一次测试就认定 thinking mode 是根因，必须以重复实验统计结果为准。
-
-5. P0：CandidateBatch Adapter 最小修复
-
-5.1 优先修真实 bug
-
-如果诊断发现：
-
-raw / provider parsed 已经是正确结构
-
-但项目 adapter 再次包装：
-
-{"candidates": parsed}
-
-则直接删除重复包装逻辑。
-
-这是优先方案。
-
-不要为了兼容自己的 bug 再添加复杂 normalization。
-
-5.2 仅在 provider 确实存在稳定 wrapper 差异时做 canonicalization
-
-如果确认 provider / SDK 确实稳定返回一层额外 wrapper，可在进入：
-
-CandidateBatch.model_validate(...)
-
-之前做一个非常窄的 normalization。
-
-示意：
-
-def normalize_candidate_batch_output(value):
-    if value is None:
-        raise InvalidModelOutputError("candidate output is empty")
-
-    if isinstance(value, CandidateBatch):
-        return value
-
-    if not isinstance(value, dict):
-        raise InvalidModelOutputError("candidate output must be an object")
-
-    candidates = value.get("candidates")
-
-    if isinstance(candidates, list):
-        return value
-
-    if (
-        isinstance(candidates, dict)
-        and set(candidates.keys()) == {"candidates"}
-        and isinstance(candidates["candidates"], list)
-    ):
-        return {
-            **value,
-            "candidates": candidates["candidates"],
-        }
-
-    raise InvalidModelOutputError("candidate output schema is invalid")
-
-限制：
-
-只允许一层明确重复 wrapper
-
-禁止：
-
-递归 unwrap
-自动猜 schema
-自动修复任意 JSON
-吞掉未知字段错误
-
-6. P0：合法空 Candidate 必须成功
-
-以下结果必须视为合法：
-
-{
-  "candidates": []
-}
-
-对应 Capture：
-
-status = completed
-auto_saved_count = 0
-pending_count = 0
-discarded_count = 0
-
-适用场景包括：
-
-继续
-寒暄
-纯操作说明
-无长期价值的 assistant meta turn
-
-合法 empty batch 绝不能进入：
-
-invalid_candidate_output
-
-7. P0：Retry 保持简单
-
-保留当前最多 3 次 CandidateExtractor structured-output retry。
-
-Retryable
-
-provider 返回 None
-JSON parse failure
-schema malformed
-structured output adapter failure
-
-不 Retry
-
-合法 candidates=[]
-
-单条 Candidate source_expression 不合法
-→ discard candidate
-
-单条 Candidate Admission 进入 pending/discard
-→ 正常继续
-
-Relation policy mismatch / confidence below threshold
-→ skip relation
-
-不要因为某一条 Candidate 的业务验证失败，重新执行整个 CandidateExtractor。
-
-8. P0：Structured Output 测试
-
-至少增加以下单元测试。
-
-正常结构
-
-{"candidates": []}
-→ success
-
-{"candidates": [{...}]}
-→ success
-
-如果确认 provider 存在重复 wrapper
-
-{"candidates": {"candidates": []}}
-→ normalize → success
-
-{"candidates": {"candidates": [{...}]}}
-→ normalize → success
-
-异常结构
-
-None
-→ retryable InvalidModelOutputError
-
-{"candidates": "xxx"}
-→ retryable InvalidModelOutputError
-
-{"foo": []}
-→ InvalidModelOutputError
-
-CandidateBatch instance
-→ success
-
-另外增加真实 DeepSeek integration stability test：
-
-固定 fixture 连续调用至少 30 次
-
-统计成功率，而不是只测单次 happy path。
-
-9. P1：测试环境物理隔离
-
-9.1 E2E 前准备
-
-每次正式验收前执行：
-
-1. 关闭当前 Claude 会话
-
-2. 找到当前项目对应：
-   ~/.claude/projects/<project>/memory/
-
-3. 备份并临时移走该目录
-
-4. 确认测试项目根目录存在 CLAUDE.md
-
-5. 使用 VS Code 重新打开项目根目录
-
-6. 新建 Claude 会话
-
-7. 确认测试过程中没有读取旧 Claude project memory
-
-8. 清空 Memory MCP 当前测试 owner 的数据
-
-如果方便，推荐直接使用一个全新的测试目录路径，例如：
-
-hengchuan_memory_e2e_clean_v1/
-
-避免 Claude Code 根据旧项目路径恢复历史项目 memory。
-
-10. CLAUDE.md 建议内容
-
-保持简短，不要写复杂策略。
-
-# Memory Test Rules
-
-This project uses Memory MCP for long-term memory testing.
-
-- Do not use Claude's built-in MEMORY.md or project memory for long-term memory.
-- Automatic recall and capture are handled by configured hooks.
-- Do not call `capture_completed_turn` directly.
-- Do not manually persist ordinary conversation content.
-- Memory MCP management tools may only be used when the user explicitly asks to inspect or manage stored memories.
-
-注意：
-
-CLAUDE.md 只是辅助约束。
-
-正式 E2E 的可信性应来自：
-
-内部 Memory 物理隔离
-+
-日志验证
-
-11. 本轮不再优化 Candidate Prompt
-
-当前暂时不要继续增加：
-
-更多 source_expression 规则
-更多 assistant exclusion
-更多案例
-更多 atomicity 描述
-更多 relation 描述
-
-当前主要失败发生在：
-
-structured output → CandidateBatch schema parsing
-
-不是 Candidate semantic validation。
-
-因此先修底层稳定性。
-
-12. P2：Evidence Coverage 作为 Known Limitation
-
-当前仍允许暂时存在：
-
-content 包含多个 period 的总结
-source_expression 只支持其中一部分
-
-本轮不要为此实现：
-
-Multi-Evidence
-Evidence Graph
-Cross-document Evidence Bundle
-新的复杂 validator framework
-
-继续依赖：
-
-Prompt 原子化
-+
-source_expression containment validation
-
-即可。
-
-后续如需要，只增加更严格的测试和轻量 prompt 调整。
-
-13. 修复后核心 E2E
-
-Structured output 修好以后，不需要立刻重新跑完整 8 轮。
-
-先从空库跑四个核心场景。
-
-Test A：明确长期基准
-
-输入用户明确的：
-
-核心 thesis
-风险
-未来跟踪指标
-分析偏好
-
-验收：
-
+Memory / Pending / Replacement 已确定
+    ↓
+Relation Extraction
+    ├─ success → 保存 relation
+    └─ failure → warning + skip relation
+    ↓
 Capture completed
-invalid_candidate_output = false
-auto_saved_count >= 3
 
-至少应出现：
+3.3 Relation 失败语义
 
-thesis
-risk
-ongoing_research
+以下 Relation 错误全部只影响 Relation，不允许回滚 Candidate：
+
+invalid_source_expression
+unknown endpoint
+stale endpoint
+endpoint type mismatch
+relation type mismatch
+invalid direction
+below threshold
+policy mismatch
+malformed relation proposal
+model structured-output failure
+relation extraction retry exhausted
+
+最终记录：
+
+relation_status=failed/skipped
+relation_error_code=<reason>
+relation_accepted_count=0
+Capture status=completed
+
+3.4 Retry
+
+RelationExtractor 可以继续保留最多 3 次 bounded retry，但 retry exhausted 后：
+
+不要 raise 到 Capture 顶层
+不要 rollback Candidate
+
+建议日志：
+
+memory.capture.relation_extraction_failed
+capture_id
+attempts
+error_code
+error_message
+candidate_persistence_preserved=true
+
+3.5 原子性重新定义
+
+Capture 的原子性只保证：
+
+Candidate / Admission / Lifecycle / Memory persistence 自身一致。
+
+Relation 不再参与主 Capture 的原子事务边界。
+
+Relation 是派生增强数据，可以失败、重试或后续补算。
+
+4. P0：单 Candidate 错误改为 Candidate-Level Reject
+
+4.1 当前问题
+
+模型偶尔可能产生：
+
+memory_type = external_fact
+
+但 external_fact 实际应属于：
+
+assertion_kind
+
+而 investment-research profile 的 memory_type 应为：
+
 research_preference
+research_question
+thesis
+evidence_claim
+risk
+catalyst
+ongoing_research
+research_decision
 
-Test B：全新会话 Recall
+这种错误目前可能导致整个 CandidateBatch / Capture 失败。
 
-新建 Claude 会话，不读取任何历史材料或 Claude 内部 Memory。
+4.2 新规则
 
-输入：
+只要 CandidateBatch 顶层 schema 可以解析：
 
-我要继续跟踪恒川工业软件。
-请基于我之前形成的研究判断，告诉我下一季度最值得验证的指标。
+单条 Candidate 非法
+→ discard candidate
+→ 其他 Candidate 继续
 
-验收：
+Candidate-level reject 包括：
 
-服务端：
+invalid_memory_type
+invalid_assertion_kind
+invalid_source_expression
+invalid_profile_value
+invalid_business_progress
+invalid_candidate_field
+unsupported_candidate_semantics
 
-candidate_count > 0
-result_count > 0
-rendered_context != ""
+Admission 输出：
 
-Agent：
+decision=discard
+reason_code=invalid_memory_type
 
-recalled_count > 0
+4.3 只有这些情况才允许整个 Candidate Extraction fail
 
-同时确认回答依赖的是 BeforeRun Recall 注入内容，而不是文件工具。
+provider 返回 None 且 retry exhausted
+CandidateBatch 顶层完全无法解析
+JSON/schema 完全损坏
+返回值不是 CandidateBatch 语义对象
 
-Test C：明确修正 thesis
+即：
 
-输入明确修正：
+Batch structural failure → retry / final fail
+Candidate business validation failure → discard only
 
-我不再认为旧判断成立……
-以后更核心的判断应该是……
-请以后以这个更新后的判断为准。
+5. P0：修复 revoke_memory 与 Active Relation 的级联失效
 
-验收：
+5.1 当前问题
 
-Capture completed
-invalid_candidate_output = false
-new thesis auto-saved
+当某个 Active Memory 上存在 Active Relation 时，直接：
 
-如果 replacement 已稳定：
+revoke_memory(memory_id)
 
-old thesis → superseded
-new thesis → active/current
+可能触发 PostgreSQL：
 
-如果 replacement 仍有轻微限制，最低要求：
+CheckViolation
+memory_relations_terminal_state
 
+调用者必须手动：
+
+revoke_memory_relation
+→ revoke_memory
+
+这暴露了 Service / Repository 边界问题。
+
+调用者不应该理解 relation terminal-state 的底层约束。
+
+5.2 目标行为
+
+revoke_memory 应在同一业务事务内：
+
+revoke_memory(memory A)
+    ↓
+查询所有涉及 A 的 active relations
+    ↓
+将这些 relation 标记为 stale / revoked
+    ↓
+stale_reason = endpoint_revoked
+stale_at = now
+    ↓
+revoke memory A
+    ↓
+commit
+
+建议优先使用：
+
+relation.status = stale
+stale_reason = endpoint_revoked
+
+因为 Relation 本身不一定是“被用户显式撤销”，只是 endpoint 已失效。
+
+5.3 事务要求
+
+必须做到：
+
+relation stale
++
+memory revoke
+
+同一事务成功或失败。
+
+不能出现：
+
+Memory revoked
+Relation 仍 active
+
+也不能把数据库 CheckViolation 直接暴露给 MCP Client。
+
+5.4 单元测试
+
+至少覆盖：
+
+1. revoke 无 relation 的 memory
+   → success
+
+2. revoke source endpoint
+   → relation stale
+   → memory revoked
+
+3. revoke target endpoint
+   → relation stale
+   → memory revoked
+
+4. 一个 memory 多条 active relations
+   → 全部 stale
+   → memory revoked
+
+5. relation stale 过程中失败
+   → 整个事务 rollback
+
+6. 重复 revoke
+   → idempotent / 明确 terminal result
+
+6. P0：重新定义 Claude 主动调用 MCP Mutation 的边界
+
+6.1 当前问题
+
+Claude 会把普通业务语义：
+
+“我修正之前的判断”
+“以后以新判断为准”
+“Q2 NRR 下滑挑战了之前的判断”
+
+错误理解成：
+
+revoke_memory
+link_memories
+confirm_pending_memory
+
+随后模型开始探测 Memory MCP 数据结构和 Relation policy，造成测试状态污染。
+
+6.2 正确边界
+
+普通业务语义
+
+下面这些都属于普通对话：
+
+我改变观点了
+我不再认可原判断
+以后以这个新判断为准
+这个事实挑战了之前的 thesis
+这个风险威胁原判断
+这个数据支持之前的逻辑
+
+正确处理：
+
+Claude 正常回答
+↓
+AfterRun Hook
+↓
+Candidate / Lifecycle / RelationExtractor 自动处理
+
+Claude 不允许主动调用 mutation MCP。
+
+显式 Memory 管理语义
+
+只有用户明确表达“管理已存储 Memory MCP 数据”的意图时，才允许主动调用 mutation tools，例如：
+
+看看 Memory MCP 里存了什么
+把 memory_id=xxx 的记忆撤销
+把这个 Pending 确认掉
+拒绝这条 Pending
+手动把 memory A 和 memory B 建成 challenges
+删除这条存储的关系
+
+此时才可以调用：
+
+confirm_pending_memory
+batch_confirm_pending
+reject_pending_memory
+revoke_memory
+link_memories
+revoke_memory_relation
+
+7. 更新 CLAUDE.md
+
+建议项目根目录规则调整为：
+
+# Memory MCP Test Rules
+
+This project uses Memory MCP as its external long-term memory system.
+
+- Do not use Claude's built-in MEMORY.md or project memory as long-term memory for this test.
+- Automatic memory recall and capture are handled by the configured BeforeRun and AfterRun hooks.
+- Never call `capture_completed_turn` directly.
+- Do not manually persist ordinary conversation content.
+
+## Business updates are not memory-management commands
+
+- A user changing, correcting, replacing, or updating a business judgment is normal conversation content, not a direct Memory MCP management command.
+- A user saying that one research fact supports, challenges, threatens, or resolves another judgment is normal semantic content.
+- Let the AfterRun hook handle candidate extraction, replacement, lifecycle updates, and automatic relation extraction.
+- Do not call `revoke_memory`, `confirm_pending_memory`, `link_memories`, `revoke_memory_relation`, or other mutation tools merely because the user's business statement implies a memory update.
+
+## When mutation tools are allowed
+
+- Use Memory MCP mutation tools only when the user explicitly asks to inspect or manage stored Memory MCP records themselves.
+- Examples include explicitly asking to confirm a Pending record, revoke a stored memory, remove a stored relation, or manually link two known stored memories.
+
+8. MCP Tool Description 同时增加 Server-Side 提示
+
+不要只依赖 CLAUDE.md。
+
+对 mutation tool 的 description 增加统一提示。
+
+例如 revoke_memory：
+
+Use this tool only when the user explicitly asks to revoke or manage a stored Memory MCP record.
+Do not call it merely because the user changes or corrects a business judgment; normal semantic updates are handled by the AfterRun capture lifecycle.
+
+link_memories：
+
+Use this tool only for explicit manual management of stored memory relations.
+Do not call it merely because the user says one fact supports, challenges, or threatens another judgment; automatic relation extraction handles normal conversation semantics.
+
+confirm_pending_memory：
+
+Use only when the user explicitly asks to confirm a stored pending review.
+Do not auto-confirm pending records based on ordinary conversation context.
+
+目标是让普通 Agent 在 tools/list 阶段就理解工具责任边界。
+
+9. 可选：进一步做 Tool Exposure 隔离
+
+如果当前 MCP Server 容易实现，可以进一步分层：
+
+Hook-only:
+  capture_completed_turn
+
+Read:
+  recall_memory
+  list_memories
+  get_memory
+  search_memories
+  list_pending_reviews
+  get_memory_stats
+
+Manage:
+  confirm_pending_memory
+  batch_confirm_pending
+  reject_pending_memory
+  revoke_memory
+  link_memories
+  revoke_memory_relation
+
+最好让：
+
+Hook token → runtime scope
+Claude token → read + manage scope
+
+capture_completed_turn 不出现在普通 Claude 的 tools/list。
+
+但本轮如果实现成本较高，可以先只改 tool description + CLAUDE.md，不做大规模鉴权重构。
+
+10. Replacement / Supersede 验收要求
+
+这是本轮真正需要重新验证的主链。
+
+Step 1：建立旧 thesis
+
+用户：
+
+如果订阅与维护收入占比持续提升，同时 NRR 稳定在 110% 以上，
+那么收入质量和盈利稳定性有望改善。
+
+期望：
+
+thesis auto_save
+old_thesis = active
+
+Step 2：明确修正 thesis
+
+用户：
+
+我现在明确修正之前的长期判断。
+我不再认为订阅收入占比提升本身就足以说明收入质量改善。
+
+以后更核心的判断是：
+只有当 NRR 能持续在 110% 左右或以上、
+经营现金流没有明显落后于利润、
+且应收账款周转天数没有持续恶化时，
+我才会认为公司的收入质量真正改善。
+
+以后以更新后的判断为准。
+
+Claude 不应该主动调用：
+
+revoke_memory
+link_memories
+
+只正常回答。
+
+AfterRun 应实现：
+
+new thesis auto_save
+old thesis superseded / replaced
 new thesis active
-最终 Recall 优先返回新 thesis
-
-Test D：最终新会话 Recall
-
-再次创建全新 Claude 会话。
-
-验收：
-
-MCP result_count > 0
-Agent recalled_count > 0
-
-回答应优先使用更新后的长期判断。
-
-同时日志中不得出现：
-
-Read ~/.claude/projects/.../memory
-模型手动 capture_completed_turn
-模型无明确用户意图时主动 batch_confirm/revoke/link
-
-14. 核心通过后再补两个增强测试
-
-Uncertain
-
-用户明确说只是猜测、证据不足
-
-期望：
-
-Capture completed
-pending_count > 0
-auto_saved_count = 0
-
-Relation
-
-用户明确表达：
-
-某 evidence challenges 某 thesis
-
-期望：
-
-RelationExtractor 真正执行
-
-合法关系：
-
-accepted
-
-普通 policy rejection / low confidence：
-
-skipped
 Capture completed
 
-不得再次因为普通 Relation policy 问题回滚 Candidate Capture。
+即使 RelationExtractor 失败：
 
-15. 本轮明确禁止修改
+new thesis 仍必须入库
 
-不要修改：
+11. Relation E2E 验收
 
-Relation threshold
-Admission threshold
-Recall similarity threshold
-Memory types
-Relation types
-PostgreSQL schema
-MCP contract
-Agent retry architecture
-Timeline
-Team Memory
-Evidence architecture
+用户自然语言：
 
-除非 structured-output 诊断能够直接证明其中某一项是根因，否则不要顺带调整。
+2026Q2 NRR 从 112% 降到 109%，
+这挑战了之前“NRR 稳定在 110% 以上时收入质量改善”的判断。
 
-16. Stop Condition
+Claude：
 
-满足以下条件后停止修改 Core：
+正常回答
+不要主动 link_memories
 
-1. DeepSeek Candidate structured output 重复测试稳定
-2. explicit user thesis 可稳定 auto-save
-3. fresh session Recall 稳定命中
-4. thesis update 不再因 CandidateBatch parsing 失败
-5. uncertain hypothesis 稳定进入 Pending
-6. Relation 普通 policy rejection 不影响 Capture
-7. Claude 内部 Memory 不再污染 E2E
+AfterRun：
 
-之后以下问题全部暂列 Known Limitations：
+evidence_claim
+    --challenges-->
+new thesis
 
-assistant extraction noise
-Evidence Coverage 不完美
-Capture 延迟 20～40 秒
-复杂关系图
-Timeline / multihop
-Team Memory
+如果 RelationExtractor 失败：
 
-不要继续扩展。
+Candidate Capture completed
+Relation skipped/failed
 
-17. 最终执行顺序
+不得 rollback。
 
-按以下顺序完成：
+12. 最终 E2E 只跑 6 步
 
-Step 1
-增加 structured-output failure diagnostics
+不再跑复杂的完整压力测试。
 
-Step 2
-运行 deepseek-v4-pro thinking on/off A/B 稳定性实验
+1. Baseline
+   → explicit thesis / risk / ongoing / preference auto-save
 
-Step 3
-定位 raw response → adapter → CandidateBatch 的真实错误层
+2. Fresh Recall
+   → result_count > 0
 
-Step 4
-只修真实 adapter bug；必要时增加一层非常窄的 canonicalization
+3. Thesis Revision
+   → new thesis active
+   → old thesis superseded/replaced
+   → no proactive mutation MCP
 
-Step 5
-补 structured-output unit/integration tests
+4. Fresh Recall Latest
+   → 最新 thesis 优先召回
+   → 旧 thesis 不应作为当前核心判断返回
 
-Step 6
-物理隔离 Claude project memory
+5. Explicit Semantic Relation
+   → Claude 不主动 link
+   → AfterRun 自动 challenges / threatens
 
-Step 7
-清空 Memory MCP 测试 owner 数据
+6. Final Recall
+   → 最新 thesis + 当前 risk + ongoing research 正确返回
 
-Step 8
-跑核心 E2E：A → B → C → D
+13. 验收标准
 
-Step 9
-核心通过后补 uncertain + relation
+必须通过
 
-Step 10
-停止继续扩展 Core
+Candidate structured output 稳定
 
-最终判断原则：
+explicit user thesis
+→ auto_save
 
-如果一个修改不能直接提高 structured-output 稳定性、消除测试污染、或让核心 E2E 更可靠，本轮就不要做。
+fresh session
+→ recall > 0
+
+uncertain hypothesis
+→ pending
+→ auto_saved = 0
+
+thesis revision
+→ Capture completed
+→ new thesis active
+
+RelationExtractor failure
+→ does not rollback Candidate
+
+single invalid Candidate
+→ discard only
+→ does not fail batch
+
+revoke memory with active relation
+→ relation automatically stale
+→ no PostgreSQL CheckViolation
+
+normal business update
+→ Claude does not proactively call mutation MCP
+
+semantic relation statement
+→ Claude does not proactively link
+→ AfterRun handles relation
+
+可接受 Known Limitations
+
+本轮完成后以下问题允许保留：
+
+Candidate 数量偶尔偏多
+Assistant 解释偶尔进入 Pending
+source_expression / Evidence Coverage 仍不完美
+Capture 可能需要 10~30 秒
+RelationExtractor 偶发失败
+复杂 Timeline / Multi-hop 未完全验证
+Team Memory 未做完整 E2E
+
+这些不再作为继续修改 Core 的理由。
+
+14. Stop Condition
+
+满足下面条件后停止开发 Core：
+
+1. baseline 能稳定 auto-save
+2. fresh recall 能稳定命中
+3. uncertain 能稳定 Pending
+4. thesis revision 不受 Relation 失败影响
+5. latest thesis 能在 fresh recall 中优先返回
+6. semantic relation 能成功建立，或失败时不影响 Candidate
+7. Claude 不再把普通业务更新当成 mutation MCP 命令
+8. revoke_memory 可以安全级联 stale active relations
+
+完成以上 8 条后：
+
+Memory MCP Core 进入“功能冻结 / 只修严重 Bug”阶段。
+
+后续如果继续工作，优先做：
+
+测试整理
+README / 架构文档
+日志收敛
+Demo
+性能测量
+
+而不是继续增加 Memory Core 复杂度。
+
+15. 本轮实现原则
+
+优先修边界，不扩功能。
+优先降低失败传播，不增加智能逻辑。
+优先让 Candidate 主链稳定，Relation 永远不能喧宾夺主。
+优先让 Hook 处理语义更新，模型 mutation 只处理显式存储管理。
+优先删除错误耦合，而不是新增抽象层。
+
+禁止为本轮新增：
+
+BaseExtractor
+GenericValidationPipeline
+PolicyEngine
+RetryManager
+MemoryCommandClassifier
+EventBus
+复杂 Tool Router
+新的 Relation Graph 层
+新的 Multi-Evidence 架构
+
+如果一个修复可以通过局部 service / validator / repository 调整完成，就不要增加新框架。

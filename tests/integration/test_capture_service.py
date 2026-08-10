@@ -12,6 +12,7 @@ from memory_mcp.core import (
     EvidenceSourceType,
     ExpressionBasis,
     IdempotencyConflictError,
+    LifecycleStatus,
     MemoryRelationPolicy,
     MessageRole,
     PrincipalContext,
@@ -534,7 +535,12 @@ def test_retryable_failure_is_reprocessed_without_duplicates() -> None:
     assert len(upgraded.list_memories(principal)) == 1
 
 
-def test_invalid_model_type_fails_safely_and_is_not_reprocessed() -> None:
+def test_invalid_model_type_discarded_safely() -> None:
+    """单条 Candidate 的 memory_type 非法 -> discard 该条，Capture 完成（recommend.md §4）。
+
+    旧实现整轮 FAILED + reprocess；现改为 candidate-level discard，不产生记忆/待确认。
+    """
+
     extractor = FakeCandidateExtractor(
         (
             candidate_proposal(
@@ -551,14 +557,15 @@ def test_invalid_model_type_fails_safely_and_is_not_reprocessed() -> None:
     principal = PrincipalContext("analyst-a")
     turn = _turn("以后项目周报默认用表格。")
 
-    first = service.capture_turn(principal, turn)
-    second = service.capture_turn(principal, turn)
+    result = service.capture_turn(principal, turn)
 
-    assert first.status is CaptureStatus.FAILED
-    assert first.failure_code == "invalid_candidate_output"
-    assert first.outcomes == ()
-    assert second.replayed is True
-    assert len(extractor.requests) == 1
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "invalid_memory_type"
     assert service.list_memories(principal) == ()
     assert service.list_pending_reviews(principal) == ()
 
@@ -966,6 +973,44 @@ def test_explicit_durable_preference_not_treated_as_operational() -> None:
     decisions = {o.decision for o in result.outcomes}
     assert AdmissionDecision.DISCARD not in decisions
     assert AdmissionDecision.AUTO_SAVE in decisions
+    assert len(service.list_memories(principal)) == 1
+
+
+def test_single_candidate_invalid_memory_type_discarded_not_batch_fail() -> None:
+    """单条 Candidate 的 memory_type 非法只丢弃该条，不让整轮 Capture 失败（recommend.md §4）。"""
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "以后项目周报默认用表格", subject="good-preference", memory_type="preference"
+            ),
+            candidate_proposal(
+                "某条非法候选",
+                subject="bad-thesis",
+                memory_type="thesis",  # TestMemoryProfile 不含 thesis -> invalid_memory_type
+                content="非法类型候选",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+
+    result = service.capture_turn(
+        principal, _turn("以后项目周报默认用表格。某条非法候选")
+    )
+
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "invalid_memory_type"
+    # 合法 Candidate 正常持久化，非法 Candidate 未入库。
     assert len(service.list_memories(principal)) == 1
 
 
@@ -1772,7 +1817,9 @@ def test_assistant_only_relation_expression_is_not_auto_saved() -> None:
     assert service.list_memory_relations(principal, source.item.memory_id) == ()
 
 
-def test_unknown_relation_endpoint_fails_without_persisting_candidates() -> None:
+def test_unknown_relation_endpoint_best_effort_preserves_candidates() -> None:
+    """Relation fatal（unknown endpoint）重试耗尽 -> best-effort：不回滚 Candidate（§3）。"""
+
     text = "周报偏好明确支持持续事项"
 
     def proposals(request):
@@ -1793,9 +1840,16 @@ def test_unknown_relation_endpoint_fails_without_persisting_candidates() -> None
 
     result = service.capture_turn(principal, _turn(text))
 
-    assert result.status is CaptureStatus.FAILED
-    assert result.failure_code == "invalid_candidate_output"
-    assert service.list_memories(principal) == ()
+    # Relation 失败降级，Candidate 主链完成并持久化。
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    assert len(service.list_memories(principal)) == 2
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
 
 
 def test_invalid_automatic_relation_direction_fails_without_writes() -> None:
@@ -1906,13 +1960,13 @@ def test_relation_extraction_retry_recovers_within_capture() -> None:
     assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
 
 
-def test_relation_extraction_all_attempts_fail_incomplete() -> None:
-    """关系抽取全部 attempt 均有 rejected proposal -> 原子失败 incomplete（§1 安全语义）。"""
+def test_relation_fatal_exhausted_best_effort_preserves_candidates() -> None:
+    """关系抽取全部 attempt 均有 fatal rejected -> best-effort：Capture 完成、Candidate 保留（§3）。"""
 
     text = "周报偏好明确支持持续事项"
 
     def factory(request):
-        # 始终返回 source_expression 不在原文的 proposal -> 每次都被 reject。
+        # 始终返回 source_expression 不在原文的 proposal -> 每次都被 fatal reject。
         return (
             replace(
                 _relation_proposal(request, text),
@@ -1931,11 +1985,17 @@ def test_relation_extraction_all_attempts_fail_incomplete() -> None:
 
     result = service.capture_turn(principal, _turn(text))
 
-    assert result.status is CaptureStatus.FAILED
-    assert result.failure_code == "invalid_candidate_output"
+    # Relation 重试耗尽降级为 best-effort，不回滚 Candidate 主链。
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
     assert len(relation_extractor.requests) == 3  # _RELATION_EXTRACTION_MAX_ATTEMPTS
-    # 原子失败回滚：不持久化任何记忆/关系。
-    assert len(service.list_memories(principal)) == 0
+    assert len(service.list_memories(principal)) == 2  # Candidate 已持久化
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
 
 
 def test_relation_policy_mismatch_skipped_capture_continues() -> None:
@@ -2006,7 +2066,9 @@ def test_relation_low_confidence_skipped_capture_continues() -> None:
     assert len(service.list_memory_relations(principal, source.item.memory_id)) == 0
 
 
-def test_in_memory_capture_rolls_back_when_relation_write_is_invalid() -> None:
+def test_relation_write_failure_best_effort_preserves_candidates() -> None:
+    """Relation 写入失败（commit 时端点失效）-> best-effort：放弃 relation，Candidate 仍持久化（§3.5）。"""
+
     class RejectingRelationRepository(InMemoryMemoryRepository):
         def commit_capture(self, principal, write):
             if write.relations:
@@ -2033,13 +2095,24 @@ def test_in_memory_capture_rolls_back_when_relation_write_is_invalid() -> None:
     )
     principal = PrincipalContext("analyst-a")
 
-    with pytest.raises(ValueError, match="endpoints are unavailable"):
-        service.capture_turn(
-            principal,
-            _turn("周报偏好明确支持持续事项"),
-        )
+    result = service.capture_turn(
+        principal,
+        _turn("周报偏好明确支持持续事项"),
+    )
 
-    assert repository.list(principal, active_only=False) == ()
+    # Relation 写入失败降级为 best-effort：Capture 完成，Candidate 主链已持久化。
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    assert len(repository.list(principal, active_only=False)) == 2
+    source = next(
+        record
+        for record in repository.list(principal, active_only=True)
+        if record.item.memory_type == "preference"
+    )
+    assert (
+        len(service.list_memory_relations(principal, source.item.memory_id))
+        == 0
+    )
 
 
 def test_replacement_and_stale_transition_roll_back_together() -> None:
@@ -2072,10 +2145,6 @@ def test_replacement_and_stale_transition_roll_back_together() -> None:
         for record in service.list_memories(principal)
         if record.item.memory_type == "preference"
     )
-    active_relation = service.list_memory_relations(
-        principal,
-        source.item.memory_id,
-    )[0].relation
 
     replacement_text = "以后项目周报改为图表并明确支持持续事项"
     candidate_extractor.proposals = (
@@ -2089,33 +2158,81 @@ def test_replacement_and_stale_transition_roll_back_together() -> None:
         _relation_proposal(request, replacement_text),
     )
 
-    with pytest.raises(ValueError, match="endpoints are unavailable"):
-        service.capture_turn(
-            principal,
-            TurnEnvelope(
-                profile_id="project-work",
-                conversation_id="conversation-1",
-                source_turn_id="turn-rollback-replacement",
-                content=replacement_text,
-                observed_at=_OBSERVED_AT,
-                messages=(
-                    TurnMessage(
-                        role=MessageRole.USER,
-                        content=replacement_text,
-                        message_id="rollback-replacement-message",
-                    ),
+    # Relation 写入失败（endpoints unavailable）-> best-effort：放弃 relation，
+    # Candidate 主链（含 replacement）仍持久化（recommend.md §3.5）。
+    result = service.capture_turn(
+        principal,
+        TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="conversation-1",
+            source_turn_id="turn-rollback-replacement",
+            content=replacement_text,
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=replacement_text,
+                    message_id="rollback-replacement-message",
                 ),
             ),
-        )
+        ),
+    )
 
-    unchanged = service.get_memory(principal, source.item.memory_id)
-    relation = service.list_memory_relations(
+    assert result.status is CaptureStatus.COMPLETED
+    assert result.failure_code is None
+    # replacement 已生效（revision 升级到 2），旧 revision-scoped 关系已被 stale。
+    updated = service.get_memory(principal, source.item.memory_id)
+    assert updated.current_revision.revision_number == 2
+    inactive = service.list_memory_relations(
         principal,
         source.item.memory_id,
-    )[0].relation
-    assert unchanged.current_revision.revision_number == 1
-    assert relation.relation_id == active_relation.relation_id
-    assert relation.status is RelationStatus.ACTIVE
+        include_inactive=True,
+    )
+    assert all(
+        summary.relation.status is RelationStatus.STALE
+        for summary in inactive
+    )
+
+
+def test_revoke_memory_cascades_active_relation_to_stale() -> None:
+    """revoke_memory 撤销带 Active Relation 的端点 -> relation 级联 stale，不抛约束错误（§5）。"""
+
+    text = "周报偏好明确支持持续事项"
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(
+            lambda request: (_relation_proposal(request, text),)
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+    service.capture_turn(principal, _turn(text))
+
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    active_relations = service.list_memory_relations(
+        principal, source.item.memory_id
+    )
+    assert len(active_relations) == 1
+    assert active_relations[0].relation.status is RelationStatus.ACTIVE
+
+    # 撤销 source 端点：revision-scoped 活动边应级联为 stale，不抛 CheckViolation。
+    revoked = service.revoke_memory(principal, source.item.memory_id)
+
+    assert revoked.current_revision.lifecycle_status is LifecycleStatus.REVOKED
+    # 活动关系已不再 active；include_inactive 可见其 stale。
+    assert (
+        len(service.list_memory_relations(principal, source.item.memory_id)) == 0
+    )
+    inactive = service.list_memory_relations(
+        principal, source.item.memory_id, include_inactive=True
+    )
+    assert len(inactive) == 1
+    assert inactive[0].relation.status is RelationStatus.STALE
 
 
 def _relation_profile():

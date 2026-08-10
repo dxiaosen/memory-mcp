@@ -425,17 +425,45 @@ class CaptureService:
             payload_fingerprint=turn.payload_fingerprint,
         )
         _persistence_started_at = perf_counter()
-        committed = self._repository.commit_capture(
-            principal,
-            CaptureWrite(
-                result=result,
-                memories=processed.memories,
-                reviews=processed.reviews,
-                duplicate_evidence=processed.duplicate_evidence,
-                replacements=processed.replacements,
-                relations=relation_plan.relations,
-            ),
-        )
+        committed_relations = relation_plan.relations
+        try:
+            committed = self._repository.commit_capture(
+                principal,
+                CaptureWrite(
+                    result=result,
+                    memories=processed.memories,
+                    reviews=processed.reviews,
+                    duplicate_evidence=processed.duplicate_evidence,
+                    replacements=processed.replacements,
+                    relations=relation_plan.relations,
+                ),
+            )
+        except Exception as exc:
+            if not relation_plan.relations:
+                raise
+            # Relation 写入失败（端点失效 / 约束等）-> best-effort：放弃 relation，
+            # 仅提交 Candidate 主链（recommend.md §3.5，Relation 不参与主 Capture 原子边界）。
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "memory.capture.relation_commit_failed",
+                capture_id=capture_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:500],
+                candidate_persistence_preserved=True,
+            )
+            committed = self._repository.commit_capture(
+                principal,
+                CaptureWrite(
+                    result=result,
+                    memories=processed.memories,
+                    reviews=processed.reviews,
+                    duplicate_evidence=processed.duplicate_evidence,
+                    replacements=processed.replacements,
+                    relations=(),
+                ),
+            )
+            committed_relations = ()
         _persistence_duration = perf_counter() - _persistence_started_at
         persisted = not committed.replayed
         log_content_event(
@@ -457,7 +485,7 @@ class CaptureService:
                 else ()
             ),
             relations=(
-                tuple(asdict(relation) for relation in relation_plan.relations)
+                tuple(asdict(relation) for relation in committed_relations)
                 if persisted
                 else ()
             ),
@@ -503,7 +531,7 @@ class CaptureService:
             replacement_count=len(processed.replacements),
             review_count=len(processed.reviews),
             relation_proposal_count=relation_plan.proposal_count,
-            relation_accepted_count=len(relation_plan.relations),
+            relation_accepted_count=len(committed_relations),
             relation_skipped_count=relation_plan.skipped_count,
             failure_code=committed.failure_code,
             candidate_extraction_duration_ms=round(_extraction_duration * 1000, 3),

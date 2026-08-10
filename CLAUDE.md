@@ -98,3 +98,15 @@ Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF
 变更走 OpenSpec：`openspec/changes/<name>/` 下 `proposal.md`（为什么）、`specs/`（规范增量）、
 `design.md`（设计决策）、`tasks.md`（可执行任务，勾选需证据化）。`docs/design.md` 是当前
 系统事实来源，OpenSpec 只管变更历史。详见 `.claude/commands/opsx/` 与 `openspec/README.md`。
+
+## Memory MCP 测试使用边界（当作为 Memory MCP 客户端测试时）
+
+当本仓库被用作 Memory MCP 的测试客户端时，Claude 须遵守：
+
+- 长期记忆只走 Memory MCP；不使用 Claude 内置 `MEMORY.md` 或项目 memory 做长期记忆。
+- 主动召回与捕获由 BeforeRun / AfterRun Hook 处理；不要直接调用 `capture_completed_turn`。
+- **业务更新不是记忆管理命令**：用户改变/修正/替换某个研究判断、或说某事实支持/挑战/威胁另一判断，
+  都是普通对话语义，由 AfterRun 自动处理（候选抽取 / 替换 / 生命周期 / 自动关系）。不得因此主动调用
+  `revoke_memory`、`confirm_pending_memory`、`link_memories`、`revoke_memory_relation` 等 mutation 工具。
+- mutation 工具仅在用户**显式要求管理已存储的 Memory MCP 记录**时调用（如「撤销 memory_id=xxx」
+  「确认这条 Pending」「删除这条关系」「手动把 A 和 B 建成 challenges」）。

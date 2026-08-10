@@ -67,7 +67,10 @@ class ReviewTools(ToolSupport):
             description=(
                 "Confirm one owned pending candidate exactly once. "
                 "Set promote_to_team to write the memory as team-shared "
-                "public knowledge instead of personal memory."
+                "public knowledge instead of personal memory. "
+                "Use only when the user explicitly asks to confirm a stored "
+                "pending review; do not auto-confirm pending records based on "
+                "ordinary conversation context."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
@@ -126,7 +129,11 @@ class ReviewTools(ToolSupport):
 
         @server.tool(
             name="reject_pending_memory",
-            description="Reject one owned pending candidate exactly once.",
+            description=(
+                "Reject one owned pending candidate exactly once. "
+                "Use only when the user explicitly asks to reject a stored "
+                "pending review."
+            ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
                 destructiveHint=True,

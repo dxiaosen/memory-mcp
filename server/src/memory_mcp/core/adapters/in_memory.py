@@ -662,13 +662,14 @@ class InMemoryMemoryRepository:
             for entry in self._history[memory_id]
         )
         # 与 replacement/revoke(PG) 对齐：指向该 memory 的 revision-scoped 活动边物化为 stale。
+        # stale_at 用撤销时刻（now），而非 revision.created_at--关系可能在该 revision 之后建立。
         revoked_principal = PrincipalContext(revision.owner_id)
         with self._relation_lock:
             self._relations = _stale_revoked_relations(
                 self._relations,
                 revoked_principal,
                 memory_id,
-                stale_at=revision.created_at,
+                stale_at=datetime.now(UTC),
             )
         return updated
 

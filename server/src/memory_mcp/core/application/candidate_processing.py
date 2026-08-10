@@ -37,6 +37,10 @@ from memory_mcp.core.domain import (
     normalize_memory_text,
     source_expression_matches,
 )
+from memory_mcp.core.exceptions import (
+    InvalidMemoryTypeError,
+    InvalidProfileProgressError,
+)
 from memory_mcp.core.ports import (
     DuplicateEvidenceWrite,
     EmbeddingProvider,
@@ -391,14 +395,50 @@ class CandidateProcessor:
                 )
                 _validation_duration += perf_counter() - _validation_started_at
                 continue
-            self._profile_registry.validate_memory_type(
-                turn.profile_id,
-                proposal.memory_type,
-            )
-            self._profile_registry.validate_business_progress(
-                turn.profile_id,
-                proposal.business_progress,
-            )
+            # 单条 Candidate 的业务字段错误（memory_type / business_progress 等）只丢弃该条，
+            # 不让整轮 Capture 失败（recommend.md §4）。
+            try:
+                self._profile_registry.validate_memory_type(
+                    turn.profile_id,
+                    proposal.memory_type,
+                )
+                self._profile_registry.validate_business_progress(
+                    turn.profile_id,
+                    proposal.business_progress,
+                )
+            except (
+                InvalidMemoryTypeError,
+                InvalidProfileProgressError,
+                ValueError,
+            ) as exc:
+                reason_code = (
+                    "invalid_memory_type"
+                    if isinstance(exc, InvalidMemoryTypeError)
+                    else "invalid_business_progress"
+                    if isinstance(exc, InvalidProfileProgressError)
+                    else "invalid_candidate_field"
+                )
+                rejected.append(
+                    RejectedProposal(
+                        candidate_id=candidate_id,
+                        reason_code=reason_code,
+                        subject=proposal.subject,
+                        memory_type=proposal.memory_type,
+                        content=proposal.content,
+                        source_expression=proposal.source_expression,
+                        assertion_kind=proposal.assertion_kind,
+                        expression_basis=proposal.expression_basis,
+                    )
+                )
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate_id,
+                        decision=AdmissionDecision.DISCARD,
+                        reason_code=reason_code,
+                    )
+                )
+                _validation_duration += perf_counter() - _validation_started_at
+                continue
             metadata_policy = self._profile_registry.metadata_policy(
                 turn.profile_id,
                 proposal.memory_type,

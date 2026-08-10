@@ -181,7 +181,14 @@ class AutomaticRelationPlanner:
                 )
                 if retryable:
                     continue
-                raise
+                # 模型结构化输出连续失败：Relation 降级为 best-effort，不回滚 Candidate（§3）。
+                return self._best_effort_failure_plan(
+                    capture_id=capture_id,
+                    endpoint_count=len(endpoints),
+                    attempts=attempt,
+                    error_code="structured_output_failed",
+                    error_message=str(exc),
+                )
             accepted, skipped, fatal_rejected = self._admit(
                 principal,
                 profile=profile,
@@ -240,10 +247,41 @@ class AutomaticRelationPlanner:
             )
             if not retryable:
                 break
-        # 全部 attempt 均有 fatal rejected -> 原子失败，由 capture 写 incomplete（§2.1 fail-closed）。
-        raise InvalidModelOutputError(
-            f"relation validation failed: {fatal_reasons}"
+        # 全部 attempt 均有 fatal rejected：Relation 降级为 best-effort，不回滚 Candidate（§3）。
+        # Capture 主链（Candidate/Memory/Pending）保持完成；relation_accepted_count=0。
+        return self._best_effort_failure_plan(
+            capture_id=capture_id,
+            endpoint_count=len(endpoints),
+            attempts=max_attempts,
+            error_code="relation_validation_failed",
+            error_message=f"relation validation failed: {fatal_reasons}",
         )
+
+    def _best_effort_failure_plan(
+        self,
+        *,
+        capture_id: UUID,
+        endpoint_count: int,
+        attempts: int,
+        error_code: str,
+        error_message: str,
+    ) -> AutomaticRelationPlan:
+        """Relation 抽取失败时降级为 best-effort：记 failed 事件并返回空计划。
+
+        Relation 是派生增强数据，失败/重试耗尽都不再回滚 Candidate 主链（recommend.md §3）。
+        """
+
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "memory.capture.relation_extraction_failed",
+            capture_id=capture_id,
+            attempts=attempts,
+            error_code=error_code,
+            error_message=error_message[:500],
+            candidate_persistence_preserved=True,
+        )
+        return AutomaticRelationPlan(endpoint_count=endpoint_count)
 
     def _select_endpoint_records(
         self,

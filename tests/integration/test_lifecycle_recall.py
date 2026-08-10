@@ -454,8 +454,14 @@ def test_investment_profile_blocks_transactions_and_invalid_progress() -> None:
         ),
     )
 
-    assert invalid.status is CaptureStatus.FAILED
-    assert invalid.failure_code == "invalid_candidate_output"
+    # invalid business_progress 现在按 candidate-level discard 处理，不再整轮 FAILED（§4）。
+    assert invalid.status is CaptureStatus.COMPLETED
+    assert invalid.failure_code is None
+    invalid_discard = [
+        o for o in invalid.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(invalid_discard) == 1
+    assert invalid_discard[0].reason_code == "invalid_business_progress"
     assert service.list_memories(principal) == ()
 
 

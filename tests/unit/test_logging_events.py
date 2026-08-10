@@ -230,7 +230,8 @@ def test_capture_incomplete_logs_duration_and_failure_code(
     # A capture with invalid model output → FAILED
     expression = "test"
     extractor = FakeCandidateExtractor(
-        (candidate_proposal(expression, content=expression, memory_type="nonexistent_type"),)
+        (candidate_proposal(expression, content=expression),),
+        failures_before_success=10,
     )
     service = _capture_service(extractor=extractor)
 
