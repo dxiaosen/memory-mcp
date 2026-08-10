@@ -175,10 +175,11 @@ class MemoryTools(ToolSupport):
                 "Revoke one owned current memory. Marks it revoked while "
                 "preserving the full traceable revision and evidence history; "
                 "the operation is idempotent and never physically deletes data. "
-                "Use only when the user explicitly asks to revoke or manage a "
-                "stored Memory MCP record; do not call it merely because the "
-                "user changes or corrects a business judgment--normal semantic "
-                "updates are handled by the AfterRun capture lifecycle."
+                "Use only when the user explicitly asks to revoke a specific "
+                "stored Memory MCP record (e.g. 'revoke memory_id=xxx'). "
+                "Business judgment corrections, updates, or replacements are "
+                "handled automatically by the AfterRun lifecycle (replacement/"
+                "supersede)--never call this tool for them."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,

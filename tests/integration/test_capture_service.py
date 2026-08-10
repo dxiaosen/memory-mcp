@@ -1085,6 +1085,83 @@ def test_explicit_uncertainty_goes_pending_not_auto_save() -> None:
     assert len(service.list_pending_reviews(principal)) == 1
 
 
+def test_replacement_fragment_discarded_after_primary_replacement() -> None:
+    """一次修正只产出一个 replacement，后续同 type 碎片候选 discard（不产 Active）。
+
+    用户修正 thesis -> 第 1 条命中 replacement -> 第 2 条同 type 碎片 ->
+    discard replacement_fragment，不膨胀 Active Memory。
+    """
+
+    old_text = "我认为只要收入正增长就说明健康"
+    new_text = "我修正之前的判断，以后我不再只用收入正增长判断，改成收入正增长且毛利率不低于40%才算健康"
+
+    def _turn_with_user(content: str, turn_id: str = "turn-1") -> TurnEnvelope:
+        return TurnEnvelope(
+            profile_id="project-work",
+            conversation_id="conversation-1",
+            source_turn_id=turn_id,
+            content=content,
+            observed_at=_OBSERVED_AT,
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=content,
+                    message_id=f"msg-{turn_id}",
+                ),
+            ),
+        )
+
+    extractor = FakeCandidateExtractor(
+        (
+            # 第 1 条：明确替换 + 同 subject -> replacement
+            candidate_proposal(
+                new_text,
+                subject="health-thesis",
+                memory_type="preference",
+                content="收入正增长且毛利率不低于40%才算健康",
+            ),
+            # 第 2 条：同 type 但只是条件拆解碎片 -> replacement_fragment
+            candidate_proposal(
+                new_text,
+                subject="health-thesis-毛利率条件",
+                memory_type="preference",
+                content="用户将毛利率判断改为定量底线40%",
+            ),
+        )
+    )
+    repository = InMemoryMemoryRepository()
+    # 先存一条旧 thesis 供替换
+    old_service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        candidate_extractor=FakeCandidateExtractor(
+            (candidate_proposal(old_text, subject="health-thesis", content=old_text),)
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+    old_service.capture_turn(principal, _turn_with_user(old_text, "turn-old"))
+    assert len(old_service.list_memories(principal)) == 1
+
+    # 提交修正 turn
+    new_service = create_memory_service(
+        repository,
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    result = new_service.capture_turn(principal, _turn_with_user(new_text, "turn-new"))
+
+    assert result.status is CaptureStatus.COMPLETED
+    # 第 1 条 replacement（revision +1），第 2 条 replacement_fragment discard
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    fragment_discards = [o for o in discard if o.reason_code == "replacement_fragment"]
+    assert len(fragment_discards) == 1
+    # 仍只有 1 条 active memory（旧 thesis 被 superseded）
+    active = [m for m in repository.list(principal, active_only=True)]
+    assert len(active) == 1
+
+
 def test_single_candidate_invalid_memory_type_discarded_not_batch_fail() -> None:
     """单条 Candidate 的 memory_type 非法只丢弃该条，不让整轮 Capture 失败。"""
 

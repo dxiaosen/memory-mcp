@@ -55,7 +55,11 @@ from memory_mcp.core.support import log_event
 # 显式替换意图但字面 subject 未命中时的语义 fallback 阈值。
 # 比 semantic_dedup_threshold 宽松，用于新旧判断措辞不同但仍语义相关的场景；
 # 仅在 _is_explicit_replacement 且 Profile 未配 semantic_dedup_threshold 时启用。
-_REPLACEMENT_FALLBACK_THRESHOLD = 0.45
+# 显式替换意图但字面 subject 未命中时的语义 fallback 阈值。比 semantic_dedup_threshold
+# 宽松，用于新旧判断措辞不同但仍语义相关的场景；0.60 保证只有明显语义相关才命中。
+# 加 top1-top2 margin 约束，避免误伤独立 thesis（宁可 Pending 不替错）。
+_REPLACEMENT_FALLBACK_THRESHOLD = 0.60
+_REPLACEMENT_FALLBACK_MARGIN = 0.08
 
 _EXPLICIT_REPLACEMENT = re.compile(
     r"(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
@@ -351,6 +355,7 @@ class CandidateProcessor:
         rejected: list[RejectedProposal] = []
         lifecycle_target_ids: set[UUID] = set()
         candidate_scopes: set[tuple[str, str]] = set()
+        replacement_types: set[str] = set()  # 本轮已做过 replacement 的 memory_type
         # 分阶段耗时累加：校验/准入/lifecycle 三段在循环内累加。
         _validation_duration = 0.0
         _admission_duration = 0.0
@@ -599,6 +604,23 @@ class CandidateProcessor:
                 )
             _admission_duration += perf_counter() - _admission_started_at
             _lifecycle_started_at = perf_counter()
+            # replacement fragment 丢弃：本轮已有同 memory_type 的 replacement，
+            # 后续同 type 候选视为该 replacement 的碎片（条件拆解/旧状态说明），
+            # discard 不再单独保存（避免一次修正产生多条 Active）。
+            if (
+                candidate.memory_type in replacement_types
+                and admission.decision is AdmissionDecision.AUTO_SAVE
+                and candidate.source_role is MessageRole.USER
+            ):
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate.candidate_id,
+                        decision=AdmissionDecision.DISCARD,
+                        reason_code="replacement_fragment",
+                    )
+                )
+                _lifecycle_duration += perf_counter() - _lifecycle_started_at
+                continue
             candidate_scope = (
                 normalize_memory_text(candidate.subject),
                 candidate.memory_type,
@@ -680,6 +702,7 @@ class CandidateProcessor:
                         self._materializer.replacement(target, candidate)
                     )
                     lifecycle_target_ids.add(target.item.memory_id)
+                    replacement_types.add(candidate.memory_type)
                     outcomes.append(
                         CaptureOutcome(
                             candidate_id=candidate.candidate_id,
@@ -706,6 +729,7 @@ class CandidateProcessor:
                     lifecycle_target_ids,
                     duplicate_evidence,
                     replacements,
+                    replacement_types,
                     outcomes,
                 )
                 if admission is None:
@@ -808,6 +832,7 @@ class CandidateProcessor:
         lifecycle_target_ids: set[UUID],
         duplicate_evidence: list[DuplicateEvidenceWrite],
         replacements: list[ReplacementWrite],
+        replacement_types: set[str],
         outcomes: list[CaptureOutcome],
     ) -> AdmissionOutcome | None:
         """对未匹配字面 subject 的 auto_save 候选尝试语义去重。
@@ -837,7 +862,9 @@ class CandidateProcessor:
             return admission
         if is_explicit_replacement:
             threshold = _REPLACEMENT_FALLBACK_THRESHOLD
-        target = self._repository.find_semantically_similar(
+        # 显式替换 fallback 用 top2 + margin 判定唯一明显目标：
+        # top1 达阈值但 top1-top2 不足 margin -> 歧义 -> Pending，不替错独立 thesis。
+        top1, top2 = self._repository.find_semantically_similar_top2(
             principal,
             profile_id=candidate.profile_id,
             memory_type=candidate.memory_type,
@@ -845,10 +872,16 @@ class CandidateProcessor:
             threshold=threshold,
             effective_at=self._clock(),
         )
-        if target is None:
-            # 显式替换 fallback 仍未找到目标：旧判断可能已不存在或语义差距过大。
-            # 不强行替换，走新增路径（旧判断若仍在则后续语义去重兜底）。
+        if top1 is None:
             return admission
+        if is_explicit_replacement and top2 is not None:
+            if top1[0] - top2[0] < _REPLACEMENT_FALLBACK_MARGIN:
+                # top1 和 top2 太接近，无法确定唯一替换目标 -> 交用户确认。
+                return AdmissionOutcome(
+                    AdmissionDecision.PENDING,
+                    "ambiguous_semantic_replacement_target",
+                )
+        target = top1[1]
         if target.item.memory_id in lifecycle_target_ids:
             return AdmissionOutcome(
                 AdmissionDecision.PENDING,
@@ -875,6 +908,7 @@ class CandidateProcessor:
                 self._materializer.replacement(target, candidate)
             )
             lifecycle_target_ids.add(target.item.memory_id)
+            replacement_types.add(candidate.memory_type)
             outcomes.append(
                 CaptureOutcome(
                     candidate_id=candidate.candidate_id,

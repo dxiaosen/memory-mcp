@@ -218,6 +218,48 @@ class InMemoryMemoryRepository:
                 best = (similarity, record)
         return best[1] if best is not None else None
 
+    def find_semantically_similar_top2(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """返回相似度最高的两条活动记忆及其相似度。"""
+
+        query = tuple(embedding)
+        owner_ids = principal.visible_owner_ids
+        top1: tuple[float, MemoryRecord] | None = None
+        top2: tuple[float, MemoryRecord] | None = None
+        for record in self._records.values():
+            if (
+                record.item.owner_id not in owner_ids
+                or record.item.profile_id != profile_id
+                or record.item.memory_type != memory_type
+                or record.current_revision.lifecycle_status
+                is not LifecycleStatus.ACTIVE
+                or not _is_effective(record.current_revision, effective_at)
+            ):
+                continue
+            similarity = _cosine_similarity(
+                record.current_revision.embedding,
+                query,
+            )
+            if similarity < threshold:
+                continue
+            if top1 is None or similarity > top1[0]:
+                top2 = top1
+                top1 = (similarity, record)
+            elif top2 is None or similarity > top2[0]:
+                top2 = (similarity, record)
+        return top1, top2
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,

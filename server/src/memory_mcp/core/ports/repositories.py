@@ -149,6 +149,27 @@ class MemoryRepository(Protocol):
 
         ...
 
+    def find_semantically_similar_top2(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """返回同 Profile+类型下相似度最高的两条活动记忆及其相似度。
+
+        用于 replacement fallback margin 判定：top1 和 top2 相似度差距不足时
+        视为歧义，避免语义 fallback 误伤独立 thesis（宁可 Pending 不替错）。
+        """
+
+        ...
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,

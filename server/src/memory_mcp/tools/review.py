@@ -68,9 +68,11 @@ class ReviewTools(ToolSupport):
                 "Confirm one owned pending candidate exactly once. "
                 "Set promote_to_team to write the memory as team-shared "
                 "public knowledge instead of personal memory. "
-                "Use only when the user explicitly asks to confirm a stored "
-                "pending review; do not auto-confirm pending records based on "
-                "ordinary conversation context."
+                "Use only when the user explicitly asks to confirm a specific "
+                "stored pending review (e.g. 'confirm this Pending'). "
+                "Business judgment corrections or replacements are handled "
+                "automatically by the AfterRun lifecycle--never call this "
+                "tool for them."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,

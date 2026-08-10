@@ -353,6 +353,77 @@ class PostgreSQLMemoryRepository:
                     )
             return best[1] if best is not None else None
 
+    def find_semantically_similar_top2(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        memory_type: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """返回相似度最高的两条活动记忆及其相似度。"""
+
+        vector = list(embedding)
+        vector_literal = str(vector).replace("'", "''")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.memory_id, i.owner_id, i.profile_id, i.subject,
+                       i.memory_type, i.created_at AS item_created_at,
+                       r.revision_id, r.revision_number, r.content,
+                       r.assertion_kind, r.lifecycle_status, r.business_progress,
+                       r.save_rationale,
+                       r.observed_at AS revision_observed_at,
+                       r.created_at AS revision_created_at, r.is_current,
+                       r.original_time_expression, r.normalized_time,
+                       r.extraction_confidence, r.verification_status,
+                       r.sensitivity_level, r.valid_from, r.valid_until,
+                       (r.embedding <=> %s::vector) AS embedding_distance
+                FROM memory_items AS i
+                JOIN memory_revisions AS r
+                  ON r.memory_id = i.memory_id
+                 AND r.owner_id = i.owner_id
+                 AND r.is_current
+                WHERE i.owner_id = ANY(%s)
+                  AND i.profile_id = %s
+                  AND i.memory_type = %s
+                  AND r.lifecycle_status = 'active'
+                  AND r.valid_from <= %s
+                  AND (r.valid_until IS NULL OR r.valid_until > %s)
+                  AND r.embedding IS NOT NULL
+                ORDER BY r.embedding <=> %s::vector
+                LIMIT 5
+                """,
+                (
+                    vector_literal,
+                    list(principal.visible_owner_ids),
+                    profile_id,
+                    memory_type,
+                    effective_at,
+                    effective_at,
+                    vector_literal,
+                ),
+            ).fetchall()
+            top1: tuple[float, MemoryRecord] | None = None
+            top2: tuple[float, MemoryRecord] | None = None
+            for row in rows:
+                distance = row["embedding_distance"]
+                similarity = 1.0 - float(distance)
+                if similarity < threshold:
+                    continue
+                record = to_record(connection, row, row["owner_id"])
+                if top1 is None or similarity > top1[0]:
+                    top2 = top1
+                    top1 = (similarity, record)
+                elif top2 is None or similarity > top2[0]:
+                    top2 = (similarity, record)
+            return top1, top2
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,
