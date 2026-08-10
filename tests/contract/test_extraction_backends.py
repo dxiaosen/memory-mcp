@@ -286,7 +286,7 @@ def test_normalize_candidate_batch_output_passes_candidate_batch_instance() -> N
 
 
 def test_normalize_candidate_batch_output_unwraps_double_wrapper() -> None:
-    """provider 偶发 {"candidates": {"candidates": [...]}} 应拆为单层（recommend.md §5）。"""
+    """provider 偶发 {"candidates": {"candidates": [...]}} 应拆为单层。"""
 
     assert normalize_candidate_batch_output({"candidates": {"candidates": []}}) == {
         "candidates": []

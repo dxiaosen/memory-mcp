@@ -679,7 +679,7 @@ def test_recall_is_owner_first_empty_safe_and_instruction_precedence_is_explicit
         owner_result.rendered_context
     )
     assert other_result.items == ()
-    # 跨 owner 召回为空时不再注入占位文本（recommend.md §6）：
+    # 跨 owner 召回为空时不再注入占位文本：
     # rendered_context 为空串、estimated_tokens=0，Agent 不注入 additionalContext。
     assert other_result.rendered_context == ""
     assert other_result.estimated_tokens == 0

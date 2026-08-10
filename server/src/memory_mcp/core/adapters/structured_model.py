@@ -83,7 +83,7 @@ class StructuredCandidateExtractor:
             payload = self._backend(request)
             proposals = tuple(_parse_candidate(item) for item in payload)
         except InvalidModelOutputError as exc:
-            # 结构化输出失败：开发态记录 model_id + raw 诊断（recommend.md §3），
+            # 结构化输出失败：开发态记录 model_id + raw 诊断，
             # 便于定位是 None / schema malformed / 重复 wrapper 哪一层。
             log_content_event(
                 "memory.capture.structured_output.invalid",

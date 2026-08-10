@@ -94,7 +94,7 @@ class AgentHookInput(BaseModel):
 
     # Claude Code 在 Stop / UserPromptSubmit 事件提供 transcript_path：指向
     # 会话 JSONL 记录。Host Adapter 据此补全文件/工具来源 provenance
-    # （recommend.md §5），Core/Server 不感知 Claude Code 格式。
+    # ，Core/Server 不感知 Claude Code 格式。
     transcript_path: str | None = Field(default=None, min_length=1)
 
     @property

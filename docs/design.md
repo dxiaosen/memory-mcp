@@ -437,22 +437,33 @@ Streamable HTTP（`stateless_http=true` 默认），JSON response 模式。默�
 
 | 工具 | Scope | 作用 | annotations |
 | --- | --- | --- | --- |
-| `capture_completed_turn` | write | 提交成功完成的顶层轮次 | 非只读/非破坏/幂等 |
+| `capture_completed_turn` | write | 提交成功完成的顶层轮次（Hook runtime only） | 非只读/非破坏/幂等 |
 | `recall_memory` | read | BeforeRun 主动召回（`mode=timeline` 展开演进链） | 只读/幂等 |
 | `list_memories` | read | 列出当前活动记忆 | 只读/幂等 |
 | `get_memory` | read | 查看当前详情和可选 history | 只读/幂等 |
 | `search_memories` | read | 关键词检索当前活动记忆 | 只读/幂等 |
-| `list_pending_reviews` | review | 查看待确认候选 | 只读/幂等 |
+| `list_pending_reviews` | read | 查看待确认候选 | 只读/幂等 |
 | `confirm_pending_memory` | review | 确认 pending（可 `promote_to_team`） | 非只读/非破坏/幂等 |
 | `reject_pending_memory` | review | 拒绝 pending | 非只读/破坏/幂等 |
 | `batch_confirm_pending` | review | 批量确认 pending，返回成功与失败 review_id | 非只读/非破坏/幂等 |
 | `revoke_memory` | review | 幂等撤销当前记忆并保留历史和来源 | 非只读/破坏/幂等 |
-| `link_memories` | write | 按 Profile 策略幂等建立有向关系 | 非只读/非破坏/幂等 |
+| `link_memories` | review | 按 Profile 策略幂等建立有向关系 | 非只读/非破坏/幂等 |
 | `revoke_memory_relation` | review | 幂等撤销关系并保留审计历史 | 非只读/破坏/幂等 |
 | `get_memory_stats` | read | 记忆统计（按 type/profile 聚合 + pending 计数） | 只读/幂等 |
 
+`TOOL_SCOPES`（`tools/shared.py`）是 tool→scope 的权威映射，ListTools 过滤与 CallTool 硬授权
+共用。`link_memories` 从 write 改为 review，使 `memory:write` 真正变为 Runtime-only（Hook
+ingestion）。`MemoryMcpServer.list_tools` 按 principal scopes 过滤可见工具：`capture_completed_turn`
+对仅有 read+review 的 Agent token 不可见；`memory:review` 工具对仅有 write 的 Hook token 不可见。
+CallTool 仍由 `_authorize`→`require_scope` 硬校验，不省略。
+
 `enforce_strict_tool_arguments` 拒绝所有未声明字段（含 owner 参数）。工具参数不接受 owner；
 capture/recall 未传 profile_id 时由认证主体默认值路由。
+
+**业务更新不是记忆管理命令**（recommend.md B2）：用户改变/修正/替换某个研究判断、或说某事实
+支持/挑战/威胁另一判断，都是普通对话语义，由 AfterRun 自动处理（候选抽取/替换/生命周期/自动关系）。
+不得因此主动调用 `revoke_memory`/`confirm_pending_memory`/`link_memories` 等 mutation 工具。
+mutation 工具仅在用户显式要求管理已存储的 Memory MCP 记录时调用。
 
 ### 6.3 CompletedTurnEventV1
 
@@ -505,9 +516,12 @@ capture/recall 未传 profile_id 时由认证主体默认值路由。
 ### 7.1 端到端叙事
 
 一轮捕获：Agent 提交 `CompletedTurnEventV1` → 按事件键加锁（同进程串行）→ 幂等检查
-（已存在且非 reprocess 直接重放）→ 敏感预检与脱敏 → 模型抽取候选 → 候选可信化（来源
-身份由 Core 覆盖，不信模型自报）→ 准入判定 → lifecycle 去重（duplicate/replacement/
-ambiguous）→ 关系规划 → 单事务提交。
+（已存在且非 reprocess 直接重放）→ 敏感预检与脱敏 → 模型抽取候选（有界重试 max=3）→
+候选可信化（来源身份由 Core 覆盖，不信模型自报）→ 单条 Candidate 字段错误（invalid_memory_type/
+business_progress）只 discard 该条，不拖垮整批 → 准入判定 → lifecycle 去重（duplicate/
+replacement/ambiguous；显式替换字面未命中时用语义 fallback `_REPLACEMENT_FALLBACK_THRESHOLD=0.45`）
+→ 关系规划（best-effort：失败不回滚 Candidate）→ 单事务提交（Relation 写入失败则放弃
+relation 重试 commit，Candidate 主链保留）。
 
 ### 7.2 触发条件
 
@@ -536,7 +550,13 @@ source_role/message_id/tool_name/source_type 等，不信任模型自报。`_nor
 ### 7.5 自动关系可信化
 
 `AutomaticRelationPlanner` 把模型关系建议转为符合 Profile 合约的活动关系。保守准入：端点
-必须在可信目录内、关系必须匹配 Profile policy、且通过多重否定证据校验。详细见 §8.5。
+必须在可信目录内、关系必须匹配 Profile policy、且通过多重否定证据校验。**Relation 是 best-effort
+增强**（recommend.md §3）：抽取重试耗尽 / fatal 校验失败 / 模型结构错误 / Relation 写入失败
+均降级为 `relation_extraction_failed`/`relation_commit_failed`（`candidate_persistence_preserved=true`），
+不回滚已合法的 Candidate。校验分级 fatal/non-fatal：fatal（invalid_source_expression/
+endpoint_outside_catalog）重试；non-fatal（policy_mismatch/low_confidence/non_explicit/
+reversed/negated/duplicate/non_user_source）直接 skip。Relation 不参与 Capture 原子边界。
+详细见 §8.5。
 
 ### 7.6 模型抽取设计
 
@@ -554,10 +574,16 @@ source_role/message_id/tool_name/source_type 等，不信任模型自报。`_nor
 | --- | --- | --- | --- |
 | 1 | durability = temporary | discard | temporary_content |
 | 2 | durability = uncertain | pending | uncertain_durability |
-| 3 | assertion_kind = system_inference | pending | system_inference |
-| 4 | expression_basis ≠ explicit | pending | non_explicit_expression |
-| 5 | confidence < 0.9 | pending | low_confidence |
-| 6 | 其余 | auto_save | explicit_durable_statement |
+| 3 | `has_explicit_uncertainty`（source_expression/content 含猜测/也许/暂/不确定/没有足够证据/hypothesis 等） | pending | explicit_uncertainty |
+| 4 | assertion_kind = system_inference | pending | system_inference |
+| 5 | expression_basis ≠ explicit | pending | non_explicit_expression |
+| 6 | confidence < 0.9 | pending | low_confidence |
+| 7 | 其余 | auto_save | explicit_durable_statement |
+
+`explicit_uncertainty` 优先于 `explicit_durable_statement`（recommend.md A1）：用户明确表达
+不确定/猜测/未验证时，即使 explicit + durable + 高置信也降级 Pending。`has_explicit_uncertainty`
+是确定性 regex（只判断邻近原文），不做语义模糊匹配；`research_question`/`ongoing_research` 不
+强制 Pending（仅不确定结论/假设命中）。不新增 epistemic_state 字段、不改 assertion_kind 枚举。
 
 即使通过准入，非用户来源（assistant/tool）的候选也降级为 pending（`non_user_source`），
 避免推断性内容直接自动写入。
@@ -591,8 +617,10 @@ real_holding/transaction_instruction。`RegexSensitiveContentGuard.from_config` 
 | --- | --- |
 | 同 event_id 同 payload | 重放返回，`replayed=true` |
 | 同 event_id 不同 payload | `IdempotencyConflictError` |
-| 模型输出畸形 | `FAILED`/`invalid_candidate_output`，不重处理 |
+| 模型输出畸形（batch 级） | `FAILED`/`invalid_candidate_output`，不重处理 |
+| 单条 Candidate 字段错误（memory_type/business_progress） | candidate-level discard，不拖垮整批 |
 | 模型请求临时失败 | `REPROCESS_REQUIRED`/`processing_interrupted`，允许相同 event 重处理 |
+| Relation 抽取/写入失败 | best-effort：放弃 relation，Candidate 主链 completed，不回滚 |
 | PostgreSQL 不可用（启动/health 时） | health 检查失败、不降级到本地存储；Server 不发布 |
 | PostgreSQL 不可用（捕获处理中） | `except Exception` 转为 `REPROCESS_REQUIRED`，允许相同 event 重处理 |
 | migration 失败 / 模型配置不完整 | 停止发布 / Server 启动失败 |
@@ -611,6 +639,12 @@ real_holding/transaction_instruction。`RegexSensitiveContentGuard.from_config` 
 | explicit_replacement | 用户明确表达替换意图（`_is_explicit_replacement`） | 生成 replacement revision |
 | ambiguous_lifecycle_conflict | 有目标但非明确替换 | 降级 pending |
 | ambiguous_lifecycle_target | 同 subject+type 多条记忆 | 降级 pending |
+
+字面 subject 未命中时，`_resolve_semantic_target` 尝试基于 embedding 的语义去重（阈值由
+Profile `semantic_dedup_threshold` 声明）。对 `_is_explicit_replacement(candidate)` 且字面
+未命中的情况，使用更宽松的 `_REPLACEMENT_FALLBACK_THRESHOLD=0.45` 查同 owner+profile+type
+旧 active memory（新旧判断措辞不同但仍语义相关），找到即作为 replacement 目标
+（recommend.md A2）；未找到或歧义则走新增/ambiguous。
 
 显式替换需同时满足：source_role=USER、expression_basis=EXPLICIT、assertion_kind∈
 {user_view, user_provided_fact}、原文匹配 `_EXPLICIT_REPLACEMENT` 正则（`candidate_processing.py`）：

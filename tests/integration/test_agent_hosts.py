@@ -180,7 +180,7 @@ def test_transcript_path_surfaces_document_messages_in_capture(
 ) -> None:
     """Stop 事件携带 transcript_path 时，文档来源消息应随 capture 请求送达。
 
-    recommend.md §5：Claude Code Stop hook 提供 transcript_path，Host Adapter
+    相关：Claude Code Stop hook 提供 transcript_path，Host Adapter
     解析出文件读取来源，构造 role=tool/source_type=document 的消息，使候选
     Evidence provenance 能映射到真实文档而非一律归到 assistant conversation。
     """
@@ -262,7 +262,7 @@ def test_transcript_path_surfaces_document_messages_in_capture(
 
 
 def test_second_turn_excludes_first_turn_tool_messages(tmp_path: Path) -> None:
-    """两轮 E2E：第二轮不应重复包含第一轮 tool/document 消息（recommend.md §1）。
+    """两轮 E2E：第二轮不应重复包含第一轮 tool/document 消息。
 
     第一轮读文件（transcript 含 Read 工具调用），第二轮仅用户判断 + 回复（无工具调用）。
     第二轮 Stop 时 transcript 已含两轮记录，但 capture 只应发送当前轮次--document_messages

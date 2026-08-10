@@ -1,369 +1,400 @@
-1. 本轮目标
+Memory MCP 最终收敛与边界修复方案
 
-本轮不再扩展 Memory MCP 能力，只修复当前 E2E 中已经暴露出的 4 个边界问题：
+目标：先修复当前剩余的语义与生命周期问题，再做一次“只减不增”的项目收敛，最后从代码层隔离 Hook Runtime API 与模型可见的 Memory Management API，并用一个干净的 Claude Agent 做最终 E2E 验收。
 
-RelationExtractor 失败不应回滚合法 Candidate；
+本轮原则：不再扩展功能，不再增加平台型抽象，不再重写已稳定的 Capture/Recall 主链。
 
-单个 Candidate 的业务字段错误不应让整个 Capture 失败；
+1. 当前状态判断
 
-Claude 主动调用 mutation MCP 的边界需要进一步收紧；
+从最新一轮日志看，Memory MCP 的基础链路已经基本稳定：
 
-revoke_memory 撤销带有 Active Relation 的 Memory 时，应由服务端完成关系级联失效，而不是抛数据库约束错误。
+Candidate structured output 已明显稳定，绝大多数 extraction attempt=1 成功；
 
-本轮完成后，停止继续扩展 Core。
+文档来源候选可以进入 Pending；
 
-2. 当前已确认稳定的部分
+用户明确长期基准可以 Auto-save；
 
-以下能力本轮不再修改：
+新会话 BeforeRun Recall 能命中已保存记忆；
 
-Candidate structured output 基本稳定；
+Relation policy mismatch 已经可以 skip，而不是回滚整个 Capture；
 
-文档事实可以进入 Pending；
+单 Candidate 的非法 source_expression 可以 discard，而不是拖垮整个 Batch；
 
-用户明确长期判断可以 Auto-save；
+Hook 的 capture_completed_turn 和 recall_memory 主流程工作正常。
 
-Fresh-session Recall 可以命中 Active Memory；
+当前真正需要解决的只剩四类问题：
 
-不确定猜测可以进入 Pending，而不是 Auto-save；
+明确不确定/猜测仍可能被 Auto-save
 
-自动 threatens Relation 可以成功建立；
+明确修正旧 thesis 时没有正确 replacement / supersede
 
-自动 challenges Relation 可以成功建立；
+模型会把普通业务语义误判为 Memory MCP 管理命令
 
-普通 relation_policy_mismatch 已能 skip，而不是直接失败；
+manual relation 与 automatic relation 可能重复写入
 
-Hook Capture / Recall 主链正常；
+另外需要补一个单独回归：
 
-PostgreSQL、Embedding、Recall threshold、Admission threshold 暂不调整。
+revoke memory 时 active relation 是否能正确 stale/cascade
 
-因此本轮不要继续修改：
+2. Phase A：修复剩余 P0 语义问题
 
-Candidate Prompt 大框架；
+A1. 明确不确定性优先于 explicit durable
 
-Relation Prompt 大框架；
+问题
 
-Relation threshold；
+当前 Admission 逻辑对：
 
-Recall threshold；
+user + explicit + durable + confidence >= threshold
 
-Admission threshold；
+倾向直接：
 
-Memory types；
+auto_save
 
-Relation policy 类型设计；
+但以下表达虽然是“用户明确表达”，表达的内容本身却是“不确定”：
 
-Timeline；
+我猜 Q3 NRR 可能回到 111%
+这只是猜测
+目前没有足够证据
+暂时不能确认
+不要把它当成已确认长期判断
 
-Team Memory；
+这种内容不能因为 expression_basis=explicit 就进入 Active。
 
-Evidence 多源架构；
+目标语义
 
-PostgreSQL Schema（除非修复 relation terminal-state 约束必须做极小调整）。
+优先级调整为：
 
-3. P0：Relation 必须彻底改成 Best-Effort Enhancement
-
-3.1 当前问题
-
-当前 Capture 主流程中，Candidate 已经合法抽取、验证、Admission，但 RelationExtractor 如果连续产生非法结果，例如：
-
-invalid_source_expression；
-
-unknown / stale endpoint；
-
-malformed relation proposal；
-
-relation validator structural rejection；
-
-最终仍可能导致整个 Capture：
-
-status=failed
-failure_code=invalid_candidate_output
-
-这会造成：
-
-合法 Candidate
-→ 已完成 extraction / validation / admission
-→ RelationExtractor 出错
-→ 整个 Capture rollback
-→ 合法 Memory / Pending 丢失
-
-对于当前项目定位，这个失败语义过重。
-
-3.2 新的责任边界
-
-改成：
-
-Candidate Capture = 主链
-Relation Extraction = best-effort 增强链
-
-目标流程：
-
-CompletedTurn
-    ↓
-Candidate Extraction
-    ↓
-Candidate Validation
-    ↓
-Admission / Lifecycle
-    ↓
-Memory / Pending / Replacement 已确定
-    ↓
-Relation Extraction
-    ├─ success → 保存 relation
-    └─ failure → warning + skip relation
-    ↓
-Capture completed
-
-3.3 Relation 失败语义
-
-以下 Relation 错误全部只影响 Relation，不允许回滚 Candidate：
-
-invalid_source_expression
-unknown endpoint
-stale endpoint
-endpoint type mismatch
-relation type mismatch
-invalid direction
-below threshold
-policy mismatch
-malformed relation proposal
-model structured-output failure
-relation extraction retry exhausted
-
-最终记录：
-
-relation_status=failed/skipped
-relation_error_code=<reason>
-relation_accepted_count=0
-Capture status=completed
-
-3.4 Retry
-
-RelationExtractor 可以继续保留最多 3 次 bounded retry，但 retry exhausted 后：
-
-不要 raise 到 Capture 顶层
-不要 rollback Candidate
-
-建议日志：
-
-memory.capture.relation_extraction_failed
-capture_id
-attempts
-error_code
-error_message
-candidate_persistence_preserved=true
-
-3.5 原子性重新定义
-
-Capture 的原子性只保证：
-
-Candidate / Admission / Lifecycle / Memory persistence 自身一致。
-
-Relation 不再参与主 Capture 的原子事务边界。
-
-Relation 是派生增强数据，可以失败、重试或后续补算。
-
-4. P0：单 Candidate 错误改为 Candidate-Level Reject
-
-4.1 当前问题
-
-模型偶尔可能产生：
-
-memory_type = external_fact
-
-但 external_fact 实际应属于：
-
-assertion_kind
-
-而 investment-research profile 的 memory_type 应为：
-
-research_preference
-research_question
-thesis
-evidence_claim
-risk
-catalyst
-ongoing_research
-research_decision
-
-这种错误目前可能导致整个 CandidateBatch / Capture 失败。
-
-4.2 新规则
-
-只要 CandidateBatch 顶层 schema 可以解析：
-
-单条 Candidate 非法
-→ discard candidate
-→ 其他 Candidate 继续
-
-Candidate-level reject 包括：
-
-invalid_memory_type
-invalid_assertion_kind
-invalid_source_expression
-invalid_profile_value
-invalid_business_progress
-invalid_candidate_field
-unsupported_candidate_semantics
-
-Admission 输出：
-
-decision=discard
-reason_code=invalid_memory_type
-
-4.3 只有这些情况才允许整个 Candidate Extraction fail
-
-provider 返回 None 且 retry exhausted
-CandidateBatch 顶层完全无法解析
-JSON/schema 完全损坏
-返回值不是 CandidateBatch 语义对象
+explicit uncertainty
+    >
+explicit durable statement
 
 即：
 
-Batch structural failure → retry / final fail
-Candidate business validation failure → discard only
+用户明确表达不确定 / 猜测 / 未验证
+→ Pending
 
-5. P0：修复 revoke_memory 与 Active Relation 的级联失效
+否则：
+用户明确表达 durable judgment/preference/fact
+→ 正常进入现有 Admission
 
-5.1 当前问题
+推荐实现
 
-当某个 Active Memory 上存在 Active Relation 时，直接：
+不要新增复杂 EpistemicPolicy 或新的领域层。
 
-revoke_memory(memory_id)
+在现有 Admission / candidate processing 中增加一个小的确定性函数：
 
-可能触发 PostgreSQL：
+def has_explicit_uncertainty(candidate, source_text: str) -> bool:
+    ...
 
-CheckViolation
-memory_relations_terminal_state
+只判断与 Candidate 的 source_expression 邻近的用户原文。
 
-调用者必须手动：
+建议覆盖中文：
 
-revoke_memory_relation
-→ revoke_memory
+猜测
+可能
+也许
+或许
+暂时
+不确定
+未经验证
+没有足够证据
+缺乏证据
+不能确认
+尚不能确认
+不要当成已确认
+不要作为已确认
+只是一个假设
+只是猜测
 
-这暴露了 Service / Repository 边界问题。
+英文可保留少量：
 
-调用者不应该理解 relation terminal-state 的底层约束。
+maybe
+might
+possibly
+uncertain
+unverified
+not enough evidence
+do not treat as confirmed
+hypothesis
 
-5.2 目标行为
+Admission 顺序
 
-revoke_memory 应在同一业务事务内：
+推荐：
 
-revoke_memory(memory A)
-    ↓
-查询所有涉及 A 的 active relations
-    ↓
-将这些 relation 标记为 stale / revoked
-    ↓
-stale_reason = endpoint_revoked
-stale_at = now
-    ↓
-revoke memory A
-    ↓
-commit
+if blocked:
+    BLOCKED
+elif invalid_candidate:
+    DISCARD
+elif explicit_uncertainty:
+    PENDING(reason="explicit_uncertainty")
+elif non_user_source:
+    PENDING(...)
+elif system_inference:
+    PENDING(...)
+elif low_confidence:
+    PENDING(...)
+elif explicit_durable_statement:
+    AUTO_SAVE
+...
 
-建议优先使用：
+重点：
 
-relation.status = stale
-stale_reason = endpoint_revoked
+explicit_durable_statement
 
-因为 Relation 本身不一定是“被用户显式撤销”，只是 endpoint 已失效。
+不能覆盖：
 
-5.3 事务要求
+explicit_uncertainty
 
-必须做到：
+不要做
 
-relation stale
-+
-memory revoke
+不要：
 
-同一事务成功或失败。
+给 Candidate 增加 epistemic_state 新字段；
 
-不能出现：
+新增“假设图谱”；
 
-Memory revoked
-Relation 仍 active
+修改 assertion_kind 枚举；
 
-也不能把数据库 CheckViolation 直接暴露给 MCP Client。
+给所有 research_question 强制 Pending。
 
-5.4 单元测试
+research_question 本身可以是用户明确长期跟踪的研究问题；只有明确不确定的结论/假设需要这条规则。
+
+测试
 
 至少覆盖：
 
-1. revoke 无 relation 的 memory
-   → success
+“我猜 Q3 NRR 可能回到 111%，但目前没有足够证据。”
+→ Pending(explicit_uncertainty)
 
-2. revoke source endpoint
-   → relation stale
-   → memory revoked
+“未来两个季度重点验证 NRR 能否回到 111%。”
+→ 可以作为 ongoing_research / research_question 正常准入
 
-3. revoke target endpoint
-   → relation stale
-   → memory revoked
+“我确认 Q3 NRR 已经回到 111%。”
+→ 不命中 uncertainty
 
-4. 一个 memory 多条 active relations
-   → 全部 stale
-   → memory revoked
+A2. 修复明确 thesis 修正没有 replacement 的问题
 
-5. relation stale 过程中失败
-   → 整个事务 rollback
+问题
 
-6. 重复 revoke
-   → idempotent / 明确 terminal result
+当前 Lifecycle 已有 explicit replacement 机制，但实际测试中：
 
-6. P0：重新定义 Claude 主动调用 MCP Mutation 的边界
+我现在明确修正之前的长期判断
+我不再认为 X
+以后更核心的判断应该是 Y
+以后请以更新后的判断为准
 
-6.1 当前问题
+仍出现：
 
-Claude 会把普通业务语义：
+replacement_count=0
 
-“我修正之前的判断”
-“以后以新判断为准”
-“Q2 NRR 下滑挑战了之前的判断”
+并产生新的独立 thesis / research_decision，而旧 thesis 继续 Active。
 
-错误理解成：
+最终 Recall 就会同时看到旧、新判断，甚至旧 thesis 得分更高。
 
-revoke_memory
-link_memories
-confirm_pending_memory
+根因重点检查
 
-随后模型开始探测 Memory MCP 数据结构和 Relation policy，造成测试状态污染。
+当前设计是：
 
-6.2 正确边界
+同 subject + type
+→ find_current
+→ duplicate / explicit replacement / ambiguous conflict
 
-普通业务语义
+问题很可能不是 _EXPLICIT_REPLACEMENT 正则本身，而是：
 
-下面这些都属于普通对话：
+新 Candidate 的 subject
+!=
+旧 thesis subject
 
-我改变观点了
-我不再认可原判断
-以后以这个新判断为准
-这个事实挑战了之前的 thesis
-这个风险威胁原判断
-这个数据支持之前的逻辑
+导致 lifecycle 根本没有找到旧目标。
 
-正确处理：
+也可能是 CandidateExtractor 把一个“完整修正”拆成多个 Candidate：
 
-Claude 正常回答
-↓
-AfterRun Hook
-↓
-Candidate / Lifecycle / RelationExtractor 自动处理
+research_decision
+thesis
+ongoing_research
 
-Claude 不允许主动调用 mutation MCP。
+从而没有稳定形成一个可以替换旧 thesis 的目标。
 
-显式 Memory 管理语义
+修复原则
 
-只有用户明确表达“管理已存储 Memory MCP 数据”的意图时，才允许主动调用 mutation tools，例如：
+不要引入 version_group、topic graph 或新的 lifecycle engine。
 
-看看 Memory MCP 里存了什么
-把 memory_id=xxx 的记忆撤销
-把这个 Pending 确认掉
-拒绝这条 Pending
-手动把 memory A 和 memory B 建成 challenges
-删除这条存储的关系
+只增强现有 replacement target resolution。
 
-此时才可以调用：
+推荐策略
+
+对于满足明确替换语义的 user Candidate：
+
+source_role=user
+expression_basis=explicit
+memory_type=thesis / research_preference / ongoing_research / decision-like type
+
+在 same subject + same type 精确匹配失败后，允许一次有界 replacement fallback：
+
+same owner
+same profile
+same memory_type
+active/current/effective
+top K <= 5
+
+然后使用现有 embedding / lexical 相似度找最相关旧 Memory。
+
+仅在：
+
+用户原文明确 replacement
++
+候选与旧 memory 高相关
++
+只有一个明显目标
+
+时执行 replacement。
+
+否则：
+
+ambiguous_lifecycle_target
+→ Pending
+
+推荐阈值
+
+不要新做复杂 ranking。
+
+可以复用现有 recall/tokenizer/embedding 能力，或者一个简单组合：
+
+subject lexical overlap
+content embedding similarity
+
+要求明显唯一候选，例如：
+
+top1 >= threshold
+and top1 - top2 >= margin
+
+阈值沿用现有系统习惯，不要为了通过测试无限放宽。
+
+更重要：CandidateExtractor 的行为
+
+Prompt 只补一条，不要继续膨胀：
+
+When the user explicitly replaces or corrects an earlier thesis,
+prefer one complete thesis candidate representing the new current judgment.
+Do not split the replacement itself into multiple overlapping thesis/decision candidates.
+
+Replacement 成功后
+
+必须保持现有语义：
+
+same MemoryItem
+old revision:
+    lifecycle_status=superseded
+    is_current=false
+
+new revision:
+    lifecycle_status=active
+    is_current=true
+
+relations bound to old revision:
+    stale(endpoint_revision_changed)
+
+最终：
+
+replacement_count=1
+
+测试
+
+Round 1:
+“如果订阅占比提升且 NRR >110%，收入质量改善”
+→ thesis active
+
+Round 2:
+“我现在修正之前的判断。我不再认为订阅占比提升本身足够。
+以后只有 NRR≈110%+、OCF 不明显落后利润、AR days 不持续恶化时，
+才认为收入质量改善。以后以这个判断为准。”
+→ same memory_id
+→ revision +1
+→ old superseded
+→ replacement_count=1
+
+Fresh Recall:
+→ 只返回 current/new thesis
+→ 旧 thesis 不参与 active recall
+
+A3. Relation 继续保持 best-effort
+
+当前这一点已经基本修好，不要重新收紧。
+
+目标保持：
+
+Candidate Capture = 主链
+Relation = enhancement
+
+Relation 中：
+
+policy mismatch
+low confidence
+invalid source expression
+malformed proposal
+endpoint unavailable
+
+都只能：
+
+skip / warning
+
+不能回滚已合法的 Candidate。
+
+仅 Repository 主事务本身不可提交时才允许 Capture 失败。
+
+不要再次把 Relation validation 改回 Capture-fatal。
+
+A4. 单 Candidate 错误继续 Candidate-level discard
+
+当前已经可以做到：
+
+invalid_source_expression
+→ candidate discard
+→ capture continues
+
+继续保持。
+
+同理下面这些也应该 Candidate-level：
+
+invalid_memory_type
+invalid_progress
+profile mismatch
+unsupported candidate field semantics
+
+只有整个 structured batch 无法解析时才：
+
+invalid_candidate_output
+
+3. Phase B：修复模型主动调用 MCP 的边界
+
+这是本轮最重要的架构收敛点。
+
+B1. 明确两类 API
+
+Memory MCP 实际上有两个调用面。
+
+Runtime API
+
+只给 Host Hook：
+
+recall_memory
+capture_completed_turn
+
+其中：
+
+capture_completed_turn
+
+必须是 Hook-only。
+
+Memory Management API
+
+给模型在用户明确管理记忆时使用：
+
+list_memories
+get_memory
+search_memories
+list_pending_reviews
+get_memory_stats
 
 confirm_pending_memory
 batch_confirm_pending
@@ -372,283 +403,825 @@ revoke_memory
 link_memories
 revoke_memory_relation
 
-7. 更新 CLAUDE.md
+B2. 普通业务语义不等于 Memory Management
 
-建议项目根目录规则调整为：
+以下都属于普通业务内容：
 
-# Memory MCP Test Rules
+“我现在修改之前的投资判断……”
+“以后以这个判断为准。”
+“Q2 NRR 的下降挑战了我之前的 thesis。”
+“这个风险威胁我的核心判断。”
+“我不再看好海外客户这个逻辑。”
 
-This project uses Memory MCP as its external long-term memory system.
+正确路径：
 
-- Do not use Claude's built-in MEMORY.md or project memory as long-term memory for this test.
-- Automatic memory recall and capture are handled by the configured BeforeRun and AfterRun hooks.
-- Never call `capture_completed_turn` directly.
-- Do not manually persist ordinary conversation content.
+User
+→ Claude 正常业务回答
+→ AfterRun Hook
+→ Candidate / Lifecycle / Relation
 
-## Business updates are not memory-management commands
+不能变成：
 
-- A user changing, correcting, replacing, or updating a business judgment is normal conversation content, not a direct Memory MCP management command.
-- A user saying that one research fact supports, challenges, threatens, or resolves another judgment is normal semantic content.
-- Let the AfterRun hook handle candidate extraction, replacement, lifecycle updates, and automatic relation extraction.
-- Do not call `revoke_memory`, `confirm_pending_memory`, `link_memories`, `revoke_memory_relation`, or other mutation tools merely because the user's business statement implies a memory update.
+Claude
+→ search
+→ confirm
+→ revoke
+→ link
 
-## When mutation tools are allowed
+只有以下明确治理语义才能主动 mutation
 
-- Use Memory MCP mutation tools only when the user explicitly asks to inspect or manage stored Memory MCP records themselves.
-- Examples include explicitly asking to confirm a Pending record, revoke a stored memory, remove a stored relation, or manually link two known stored memories.
+“查看记忆库里有哪些记录”
+“确认这个 Pending”
+“拒绝这条 Pending”
+“把这条已存储的记忆撤销掉”
+“撤销 memory_id=xxx”
+“手工把 memory A 和 memory B 建成 challenges”
 
-8. MCP Tool Description 同时增加 Server-Side 提示
+4. Phase C：从代码层限制模型调用
 
-不要只依赖 CLAUDE.md。
+仅靠 CLAUDE.md 不够。
 
-对 mutation tool 的 description 增加统一提示。
+目标是：
 
-例如 revoke_memory：
+Prompt soft guard
++
+tools/list visibility guard
++
+CallTool authorization hard guard
 
-Use this tool only when the user explicitly asks to revoke or manage a stored Memory MCP record.
-Do not call it merely because the user changes or corrects a business judgment; normal semantic updates are handled by the AfterRun capture lifecycle.
+三层共同生效。
 
-link_memories：
+C1. 最小改造：复用现有 read/write/review scopes
 
-Use this tool only for explicit manual management of stored memory relations.
-Do not call it merely because the user says one fact supports, challenges, or threatens another judgment; automatic relation extraction handles normal conversation semantics.
+当前已有：
 
-confirm_pending_memory：
+memory:read
+memory:write
+memory:review
 
-Use only when the user explicitly asks to confirm a stored pending review.
-Do not auto-confirm pending records based on ordinary conversation context.
+不要再新增一套 RBAC 框架。
 
-目标是让普通 Agent 在 tools/list 阶段就理解工具责任边界。
+建议重新明确其职责：
 
-9. 可选：进一步做 Tool Exposure 隔离
+memory:read
+    = read-only memory inspection
 
-如果当前 MCP Server 容易实现，可以进一步分层：
+memory:write
+    = runtime ingestion only
 
-Hook-only:
-  capture_completed_turn
+memory:review
+    = explicit user memory governance / management
 
-Read:
-  recall_memory
-  list_memories
-  get_memory
-  search_memories
-  list_pending_reviews
-  get_memory_stats
+工具映射调整
 
-Manage:
-  confirm_pending_memory
-  batch_confirm_pending
-  reject_pending_memory
-  revoke_memory
-  link_memories
-  revoke_memory_relation
+capture_completed_turn      → memory:write
 
-最好让：
+recall_memory               → memory:read
 
-Hook token → runtime scope
-Claude token → read + manage scope
+list_memories               → memory:read
+get_memory                  → memory:read
+search_memories             → memory:read
+list_pending_reviews        → memory:read
+get_memory_stats            → memory:read
 
-capture_completed_turn 不出现在普通 Claude 的 tools/list。
+confirm_pending_memory      → memory:review
+batch_confirm_pending       → memory:review
+reject_pending_memory       → memory:review
+revoke_memory               → memory:review
+link_memories               → memory:review
+revoke_memory_relation      → memory:review
 
-但本轮如果实现成本较高，可以先只改 tool description + CLAUDE.md，不做大规模鉴权重构。
+最关键的改动：
 
-10. Replacement / Supersede 验收要求
-
-这是本轮真正需要重新验证的主链。
-
-Step 1：建立旧 thesis
-
-用户：
-
-如果订阅与维护收入占比持续提升，同时 NRR 稳定在 110% 以上，
-那么收入质量和盈利稳定性有望改善。
-
-期望：
-
-thesis auto_save
-old_thesis = active
-
-Step 2：明确修正 thesis
-
-用户：
-
-我现在明确修正之前的长期判断。
-我不再认为订阅收入占比提升本身就足以说明收入质量改善。
-
-以后更核心的判断是：
-只有当 NRR 能持续在 110% 左右或以上、
-经营现金流没有明显落后于利润、
-且应收账款周转天数没有持续恶化时，
-我才会认为公司的收入质量真正改善。
-
-以后以更新后的判断为准。
-
-Claude 不应该主动调用：
-
-revoke_memory
 link_memories
 
-只正常回答。
+不要再使用 memory:write。
 
-AfterRun 应实现：
+这样 memory:write 就可以真正变成 Runtime-only。
 
-new thesis auto_save
-old thesis superseded / replaced
-new thesis active
-Capture completed
+C2. 使用两个 Token
 
-即使 RelationExtractor 失败：
+Hook Token
 
-new thesis 仍必须入库
+{
+  "scopes": [
+    "memory:read",
+    "memory:write"
+  ]
+}
 
-11. Relation E2E 验收
+用于：
 
-用户自然语言：
+BeforeRun recall
+AfterRun capture
 
-2026Q2 NRR 从 112% 降到 109%，
-这挑战了之前“NRR 稳定在 110% 以上时收入质量改善”的判断。
+Interactive Agent Token
 
-Claude：
+{
+  "scopes": [
+    "memory:read",
+    "memory:review"
+  ]
+}
 
-正常回答
-不要主动 link_memories
+用于 Claude MCP。
 
-AfterRun：
+因此 Claude 即使知道：
 
-evidence_claim
-    --challenges-->
-new thesis
+capture_completed_turn
 
-如果 RelationExtractor 失败：
+的名字，也没有 memory:write，调用必须返回：
 
-Candidate Capture completed
-Relation skipped/failed
+permission_denied
 
-不得 rollback。
+C3. ListTools 必须按 Principal 过滤
 
-12. 最终 E2E 只跑 6 步
+不要只在 CallTool 时拒绝。
 
-不再跑复杂的完整压力测试。
+理想状态是 Claude 的 tools/list 根本看不到：
 
-1. Baseline
-   → explicit thesis / risk / ongoing / preference auto-save
+capture_completed_turn
 
-2. Fresh Recall
-   → result_count > 0
+定义一个简单映射即可，不要新建 PolicyEngine：
 
-3. Thesis Revision
-   → new thesis active
-   → old thesis superseded/replaced
-   → no proactive mutation MCP
+TOOL_SCOPES = {
+    "capture_completed_turn": {"memory:write"},
 
-4. Fresh Recall Latest
-   → 最新 thesis 优先召回
-   → 旧 thesis 不应作为当前核心判断返回
+    "recall_memory": {"memory:read"},
+    "list_memories": {"memory:read"},
+    "get_memory": {"memory:read"},
+    "search_memories": {"memory:read"},
+    "list_pending_reviews": {"memory:read"},
+    "get_memory_stats": {"memory:read"},
 
-5. Explicit Semantic Relation
-   → Claude 不主动 link
-   → AfterRun 自动 challenges / threatens
+    "confirm_pending_memory": {"memory:review"},
+    "batch_confirm_pending": {"memory:review"},
+    "reject_pending_memory": {"memory:review"},
+    "revoke_memory": {"memory:review"},
+    "link_memories": {"memory:review"},
+    "revoke_memory_relation": {"memory:review"},
+}
 
-6. Final Recall
-   → 最新 thesis + 当前 risk + ongoing research 正确返回
+ListTools
 
-13. 验收标准
+def visible_tools(principal):
+    return [
+        tool
+        for tool in ALL_TOOLS
+        if TOOL_SCOPES[tool.name] & principal.scopes
+    ]
 
-必须通过
+CallTool
 
-Candidate structured output 稳定
+必须再次校验：
 
-explicit user thesis
-→ auto_save
+def authorize_tool_call(principal, tool_name):
+    required = TOOL_SCOPES[tool_name]
 
-fresh session
-→ recall > 0
+    if not (required & principal.scopes):
+        raise PermissionDenied(...)
 
-uncertain hypothesis
-→ pending
-→ auto_saved = 0
+不能因为 ListTools 已过滤就省略 CallTool 校验。
 
-thesis revision
-→ Capture completed
-→ new thesis active
+C4. 如果 MCP SDK 不方便动态过滤 ListTools
 
-RelationExtractor failure
-→ does not rollback Candidate
+不要为了动态 ListTools 重写 MCP Server。
 
-single invalid Candidate
-→ discard only
-→ does not fail batch
+直接使用两个 façade。
 
-revoke memory with active relation
-→ relation automatically stale
-→ no PostgreSQL CheckViolation
+/mcp/runtime
+    recall_memory
+    capture_completed_turn
 
-normal business update
-→ Claude does not proactively call mutation MCP
+/mcp/agent
+    recall/list/get/search/list_pending/stats
+    confirm/reject/revoke/link/...
 
-semantic relation statement
-→ Claude does not proactively link
-→ AfterRun handles relation
+两个 façade：
 
-可接受 Known Limitations
+共用同一个：
+Application services
+Repository
+PostgreSQL pool
+Profile registry
+Embedding
+Extractor
 
-本轮完成后以下问题允许保留：
+不是两套 Memory MCP。
 
-Candidate 数量偶尔偏多
-Assistant 解释偶尔进入 Pending
-source_expression / Evidence Coverage 仍不完美
-Capture 可能需要 10~30 秒
-RelationExtractor 偶发失败
-复杂 Timeline / Multi-hop 未完全验证
-Team Memory 未做完整 E2E
+只是：
 
-这些不再作为继续修改 Core 的理由。
+two protocol façades
+→ one application core
 
-14. Stop Condition
+推荐优先级
 
-满足下面条件后停止开发 Core：
+如果当前 SDK 很容易按 Principal filter ListTools
+→ 单 endpoint + scope filtering
 
-1. baseline 能稳定 auto-save
-2. fresh recall 能稳定命中
-3. uncertain 能稳定 Pending
-4. thesis revision 不受 Relation 失败影响
-5. latest thesis 能在 fresh recall 中优先返回
-6. semantic relation 能成功建立，或失败时不影响 Candidate
-7. Claude 不再把普通业务更新当成 mutation MCP 命令
-8. revoke_memory 可以安全级联 stale active relations
+如果实现起来需要明显侵入 MCP SDK
+→ 两 façade endpoint
 
-完成以上 8 条后：
+不要自己造 MCP 中间件框架。
 
-Memory MCP Core 进入“功能冻结 / 只修严重 Bug”阶段。
+5. Phase D：限制“隐式治理”
 
-后续如果继续工作，优先做：
+即使模型拥有 memory:review，Server 也不能帮它完成未授权的组合操作。
 
-测试整理
-README / 架构文档
-日志收敛
-Demo
-性能测量
+D1. Pending endpoint 不允许 link 自动确认
 
-而不是继续增加 Memory Core 复杂度。
+当前不应出现：
 
-15. 本轮实现原则
+link needs active endpoint
+→ model calls confirm_pending_memory
+→ link
 
-优先修边界，不扩功能。
-优先降低失败传播，不增加智能逻辑。
-优先让 Candidate 主链稳定，Relation 永远不能喧宾夺主。
-优先让 Hook 处理语义更新，模型 mutation 只处理显式存储管理。
-优先删除错误耦合，而不是新增抽象层。
+除非用户明确说：
 
-禁止为本轮新增：
+“确认这条 Pending，然后建立关系”
+
+Server 侧：
+
+link_memories(endpoint=pending)
+→ relation_endpoint_not_active
+
+即可。
+
+不要：
+
+auto_confirm=True
+
+不要让 link 内部调用 confirm。
+
+D2. Relation semantic dedupe
+
+当前设计已经声称相同：
+
+owner/source/target/type
+
+应该幂等，但 manual/item 与 automatic/revision 仍可能形成两条语义等价边。
+
+本轮修复要区分：
+
+revision lifecycle identity
+
+automatic/revision
+
+需要 source_revision_id / target_revision_id。
+
+semantic active relation identity
+
+对当前 Active 图，应该至少避免：
+
+same owner
+same profile
+same source_memory_id
+same target_memory_id
+same relation_type
+status=active
+
+同时存在两条。
+
+推荐实现
+
+不要删除 origin/scope。
+
+增加 Repository 级 semantic lookup：
+
+find_active_relation(
+    owner_id,
+    profile_id,
+    source_memory_id,
+    target_memory_id,
+    relation_type,
+)
+
+写入前：
+
+已有 active semantic relation
+→ 返回 existing relation
+→ duplicate=true / replayed-like result
+→ 不插入新 row
+
+如果数据库允许，可增加部分唯一索引：
+
+UNIQUE (
+    owner_id,
+    profile_id,
+    source_memory_id,
+    target_memory_id,
+    relation_type
+)
+WHERE status = 'active';
+
+前提是确认 replacement stale 流程能先把旧 relation 转成 stale，再创建针对新 revision 的 relation。
+
+如果现有 schema 因 revision 语义无法直接加这个唯一索引，就在 Repository 事务内做：
+
+SELECT ... FOR UPDATE
+→ semantic dedupe
+→ insert
+
+不要为了这个引入 RelationRegistry / GraphStore 新层。
+
+6. Phase E：补 revoke cascade 回归
+
+现有设计要求：
+
+memory revoked / superseded / expired
+→ relation 不再 active
+
+补单独测试：
+
+Memory A(active)
+Memory B(active)
+A --challenges--> B(active)
+
+revoke_memory(A)
+
+Expected:
+A current revision → revoked
+relation → stale
+stale_reason=endpoint_revoked
+
+get_memory(B)
+→ 默认不返回该 stale relation
+
+include_history=true
+→ 可以看到 stale relation
+
+如果当前 revoke_memory 会碰数据库 CHECK constraint：
+
+修 Repository 事务顺序：
+
+1. lock endpoint
+2. stale active relations referencing endpoint
+3. revoke current revision
+4. commit
+
+不要要求调用者：
+
+先 revoke relation
+再 revoke memory
+
+7. Phase F：项目收敛 / 去冗余
+
+这一阶段的目标不是“重构得更优雅”，而是：
+
+删除不再需要的代码
+合并重复实现
+冻结高级功能
+降低后续维护成本
+
+F1. 明确保留的核心路径
+
+以下不能为了收敛而删除：
+
+Capture
+Recall
+PostgreSQL Repository
+Embedding
+Candidate validation
+Admission
+Pending Review
+Evidence / provenance
+Duplicate
+Replacement / Revision lifecycle
+Relation（自动 + 显式管理）
+Auth / owner isolation
+BeforeRun / AfterRun Agent
+InvestmentResearchProfile
+GeneralWorkProfile
+
+F2. Advanced features：冻结，不继续扩
+
+如果已有测试且没有明显负担，可以保留：
+
+Team Memory
+Maintenance
+expiry materialization
+expiry-derived reminder
+timeline-like metadata
+
+但本轮：
+
+不新增功能
+不继续优化策略
+不为它们新增抽象
+
+如果其中存在完全未引用、无测试、无真实入口的旧实验代码，再删除。
+
+不要因为“不是当前 V2 主线”就贸然删除已经稳定工作的功能。
+
+F3. 重点检查以下冗余
+
+让模型逐项 grep / AST / tests 检查，不要凭名字猜。
+
+1. 重复 normalization
+
+检查：
+
+source_expression normalization
+CJK whitespace normalization
+query normalization
+subject normalization
+relation source normalization
+
+如果完全重复：
+
+→ 保留一个纯函数
+
+不要做 NormalizationService。
+
+2. structured output adapter 重复逻辑
+
+检查：
+
+CandidateExtractor parse
+RelationExtractor parse
+DeepSeek JSON parse
+retry parse
+schema unwrap
+
+如果存在重复 provider parsing：
+
+→ 一个小 helper
+
+但 Candidate 与 Relation schema validation 保持独立。
+
+不要做 BaseExtractor hierarchy。
+
+3. retry 重复
+
+检查：
+
+candidate extraction retry
+relation extraction retry
+agent transport retry
+
+注意它们语义不同。
+
+只合并“完全相同的模型 structured retry”。
+
+Agent transport retry 继续独立。
+
+不要做 GenericRetryManager。
+
+4. relation outcome 分类重复
+
+如果 accepted / skipped / fatal 在多处重复判断：
+
+→ 一个小函数 / enum mapping
+
+不要做 RelationPolicyEngine。
+
+5. tool auth mapping 分散
+
+把：
+
+tool → scope
+
+收敛为一个权威映射。
+
+ListTools 与 CallTool 共同引用。
+
+不要在每个 tool decorator 里散落 scope string。
+
+6. DTO / model 重复
+
+检查：
+
+MemoryView
+MemorySummary
+MemoryRecord
+MemoryHistoryEntry
+RelationView
+internal write models
+
+只有字段与语义完全相同才合并。
+
+不要为了 DRY 把 domain model 直接暴露成 MCP DTO。
+
+7. compatibility / dead branches
+
+搜索：
+
+deprecated
+legacy
+compat
+fallback
+old
+v0
+TODO remove
+temporary
+
+逐项确认是否还有测试/调用方。
+
+无调用、无测试、无外部契约：→ 删除。
+
+有 migration/history 兼容意义：→ 保留并写注释。
+
+8. 配置项
+
+检查 Settings：
+
+是否有永远未读取的 env
+是否有两个配置控制同一件事
+是否有早期实验残留 model setting
+是否存在 v4-pro / v4-flash 多个来源不一致
+
+模型配置必须最终做到：
+
+日志中的 model_id
+=
+实际配置来源
+=
+文档说明
+
+F4. 明确禁止的“收敛方式”
+
+不要新增：
 
 BaseExtractor
 GenericValidationPipeline
 PolicyEngine
 RetryManager
-MemoryCommandClassifier
+PromptBuilder hierarchy
+RepositoryFactory hierarchy
 EventBus
-复杂 Tool Router
-新的 Relation Graph 层
-新的 Multi-Evidence 架构
+Middleware framework
+Service locator
+Plugin system
+Graph abstraction
 
-如果一个修复可以通过局部 service / validator / repository 调整完成，就不要增加新框架。
+当前项目已经够复杂。
+
+优先：
+
+删除
+内联
+小函数
+小映射
+减少分支
+
+8. Phase G：文档同步
+
+修改完代码后，只同步真正的当前设计。
+
+重点更新：
+
+docs/design.md
+docs/agents.md
+docs/testing.md
+docs/config.md
+
+需要明确：
+
+1. automatic recall/capture 是 Hook runtime 行为
+2. capture_completed_turn 不暴露给 interactive model
+3. memory:write 是 runtime ingestion
+4. memory:review 是 explicit memory management
+5. business semantic update 不等于 MCP mutation
+6. Relation 是 best-effort enhancement
+7. explicit uncertainty → Pending
+8. explicit replacement → supersede
+
+删除已经失效的旧描述。
+
+OpenSpec 保留变更历史，不要把历史 change 当作当前设计重复写进 docs。
+
+9. 实施顺序
+
+严格按以下顺序：
+
+Step 1
+explicit uncertainty → Pending
+
+Step 2
+replacement target fallback + thesis revision test
+
+Step 3
+tool scope remap
+link_memories: write → review
+
+Step 4
+interactive/runtime token split
+
+Step 5
+ListTools filtering + CallTool hard authorization
+或两 façade endpoint
+
+Step 6
+relation semantic dedupe
+
+Step 7
+revoke cascade test/fix
+
+Step 8
+项目去冗余
+
+Step 9
+文档同步
+
+Step 10
+最终 E2E
+
+不要把“收敛重构”和 P0 行为修复混在同一个大提交里。
+
+建议至少拆成：
+
+fix: uncertainty and replacement semantics
+fix: isolate runtime and management MCP tools
+fix: dedupe active memory relations
+refactor: remove redundant memory-mcp code paths
+docs: align final memory architecture
+
+10. 最终测试矩阵
+
+Test 1：空库
+
+BeforeRun
+→ result_count=0
+→ rendered_context=""
+
+Test 2：长期基准
+
+用户：
+
+以下是我当前长期研究基准……
+以后以此为准。
+
+期望：
+
+thesis → Auto-save
+risk → Auto-save
+ongoing_research → Auto-save
+durable preference → Auto-save
+
+Test 3：Fresh Recall
+
+新 Claude session，不读 Claude 内置 memory。
+
+期望：
+
+BeforeRun result_count > 0
+Agent recalled_count > 0
+回答使用 Memory MCP context
+
+Test 4：明确猜测
+
+我猜 Q3 NRR 可能回到 111%。
+这只是猜测，目前没有足够证据，
+请不要把它当作已确认长期判断。
+
+期望：
+
+auto_saved_count=0
+Pending(explicit_uncertainty)
+
+Test 5：明确修正 thesis
+
+我现在明确修正之前的长期判断。
+我不再认为订阅收入占比提升本身足够说明收入质量改善。
+以后只有 NRR≈110%+、OCF 不明显落后利润、
+应收账款周转天数不持续恶化时，
+我才认为收入质量改善。
+以后以这个判断为准。
+
+期望：
+
+replacement_count=1
+same memory_id
+new revision active/current
+old revision superseded/non-current
+
+模型不得主动：
+
+revoke_memory
+confirm_pending_memory
+link_memories
+
+Test 6：Fresh Recall latest thesis
+
+新 session：
+
+继续分析恒川。
+基于我最新的长期判断，
+告诉我下一季度最重要的验证指标。
+
+期望：
+
+只使用 current/new thesis
+旧 thesis 不出现在 active Recall
+
+Test 7：自然语言 Relation
+
+用户：
+
+2026Q2 NRR 从 112% 降到 109%，
+这挑战了我之前关于 NRR 稳定性的判断。
+
+期望：
+
+Claude 正常回答
+Claude 不主动 link_memories
+AfterRun automatic relation:
+evidence_claim --challenges--> thesis
+
+Test 8：显式 Memory Management
+
+用户：
+
+查看当前有哪些 Pending 记忆。
+
+允许 Claude：
+
+list_pending_reviews
+
+然后：
+
+确认 review_id=xxx
+
+允许：
+
+confirm_pending_memory
+
+如果用户没有明确确认：
+
+禁止 confirm
+
+Test 9：显式手工 Relation
+
+用户：
+
+请把 memory A 和 memory B 手工建立为 challenges 关系。
+
+允许：
+
+link_memories
+
+若 automatic relation 已存在：
+
+返回 existing
+不创建第二条 active semantic relation
+
+Test 10：revoke cascade
+
+用户：
+
+请撤销 memory A。
+
+期望：
+
+Memory A → revoked
+关联 active relations → stale(endpoint_revoked)
+无 DB constraint error
+
+11. Stop Condition
+
+满足以下条件后停止 Core 功能开发：
+
+1. explicit user durable statement 稳定 Auto-save
+2. explicit uncertainty 稳定 Pending
+3. fresh-session Recall 稳定命中
+4. explicit thesis correction 稳定 replacement
+5. old revision 不参与 active Recall
+6. Relation failure 不影响 Candidate Capture
+7. automatic/manual semantic relation 不重复
+8. model 无法调用 capture_completed_turn
+9. 普通业务语义不会触发 memory mutation
+10. explicit memory governance 可以正常调用管理工具
+11. revoke endpoint 不破坏 relation 约束
+
+剩余以下问题全部列为 Known Limitations，不继续扩：
+
+文档 Candidate 偶尔不够原子
+source_expression coverage 不完美
+Assistant inference Pending 偏多
+Capture latency 10~30s
+复杂多跳 Relation
+Team Memory 策略精细化
+复杂 Timeline
+
+到这里项目应进入：
+
+freeze core
+→ clean docs
+→ final demo
+→ write evaluation/report
+
+12. 给编码模型的最终执行要求
+
+请直接基于现有代码实施本方案。
+
+要求：
+
+- 先读现有 design / tests / implementation，再修改。
+- 保持 MCP DTO、数据库核心 schema、owner 隔离和现有外部行为。
+- 不引入新的通用框架或大层级抽象。
+- 优先复用现有 Principal/scopes、Lifecycle、Repository 和 structured model adapter。
+- 每个修复先补/改测试，再改代码。
+- 对已有稳定功能只做必要修改。
+- 最后做一次 dead code / duplicate helper / unused setting 检查。
+- 删除冗余必须有 grep/test 证据，不凭主观判断删除。
+- 所有测试通过后同步当前设计文档。

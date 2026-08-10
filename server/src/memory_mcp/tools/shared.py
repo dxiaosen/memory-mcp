@@ -40,6 +40,35 @@ READ_ONLY = ToolAnnotations(
     openWorldHint=False,
 )
 
+# 权威工具→scope 映射。ListTools 过滤与 CallTool 校验共同引用。
+# memory:write 仅 Hook runtime ingestion（capture_completed_turn）；memory:review 是显式
+# 记忆管理。link_memories 从 write 改为 review，使 memory:write 可真正变为 Runtime-only。
+TOOL_SCOPES: dict[str, frozenset[MemoryScope]] = {
+    "capture_completed_turn": frozenset({MemoryScope.WRITE}),
+    "recall_memory": frozenset({MemoryScope.READ}),
+    "list_memories": frozenset({MemoryScope.READ}),
+    "get_memory": frozenset({MemoryScope.READ}),
+    "search_memories": frozenset({MemoryScope.READ}),
+    "list_pending_reviews": frozenset({MemoryScope.READ}),
+    "get_memory_stats": frozenset({MemoryScope.READ}),
+    "confirm_pending_memory": frozenset({MemoryScope.REVIEW}),
+    "batch_confirm_pending": frozenset({MemoryScope.REVIEW}),
+    "reject_pending_memory": frozenset({MemoryScope.REVIEW}),
+    "revoke_memory": frozenset({MemoryScope.REVIEW}),
+    "link_memories": frozenset({MemoryScope.REVIEW}),
+    "revoke_memory_relation": frozenset({MemoryScope.REVIEW}),
+}
+
+
+def visible_tool_names(principal: RequestPrincipal) -> list[str]:
+    """按 principal scopes 过滤可见工具名。"""
+
+    return [
+        name
+        for name in sorted(TOOL_SCOPES)
+        if TOOL_SCOPES[name] & principal.scopes
+    ]
+
 
 class ToolSupport:
     """各工具组共享的无状态边界能力。"""
@@ -54,7 +83,11 @@ class ToolSupport:
 
     @staticmethod
     def _authorize(required_scope: MemoryScope) -> RequestPrincipal:
-        """解析当前请求身份并校验所需 scope，返回已授权的 principal。"""
+        """解析当前请求身份并校验所需 scope，返回已授权的 principal。
+
+        复用权威 TOOL_SCOPES 映射做 CallTool 硬授权。``required_scope``
+        来自各工具的 _authorize 调用，与 TOOL_SCOPES 一致；这里用 require_scope 做单点校验。
+        """
 
         principal = current_request_principal()
         require_scope(principal, required_scope)

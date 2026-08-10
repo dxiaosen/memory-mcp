@@ -536,7 +536,7 @@ def test_retryable_failure_is_reprocessed_without_duplicates() -> None:
 
 
 def test_invalid_model_type_discarded_safely() -> None:
-    """单条 Candidate 的 memory_type 非法 -> discard 该条，Capture 完成（recommend.md §4）。
+    """单条 Candidate 的 memory_type 非法 -> discard 该条，Capture 完成。
 
     旧实现整轮 FAILED + reprocess；现改为 candidate-level discard，不产生记忆/待确认。
     """
@@ -574,7 +574,7 @@ def test_unmatched_source_expression_discards_only_that_candidate() -> None:
     """单条候选 source_expression 不匹配脱敏原文时只丢弃该条，不拖垮整轮。
 
     用户研究基准输入若因模型一次编造 source_expression 而整轮失败，是真实联调中
-    已出现的 P0 问题（recommend.md §P0-B）。该条降级为 DISCARD + reason_code
+    已出现的 P0 问题（相关-B）。该条降级为 DISCARD + reason_code
     invalid_source_expression，其余候选正常处理。
     """
 
@@ -665,7 +665,7 @@ def test_capture_counts_reconcile_across_stages() -> None:
 
 
 def test_source_expression_with_only_whitespace_difference_is_accepted() -> None:
-    """真实原文仅换行/空格差异的 source_expression 不应被误杀（recommend.md §3）。
+    """真实原文仅换行/空格差异的 source_expression 不应被误杀。
 
     原文跨行「优化\n保持」，模型 source_expression 用空格「优化 保持」。精确子串匹配会
     误判 invalid_source_expression；空白归一化后应通过校验进入准入。
@@ -698,7 +698,7 @@ def test_source_expression_with_only_whitespace_difference_is_accepted() -> None
 
 
 def test_spliced_bullet_source_expression_still_rejected() -> None:
-    """模型拼接多个独立 bullet（丢掉 bullet 标记）仍应判 invalid（recommend.md §4）。
+    """模型拼接多个独立 bullet（丢掉 bullet 标记）仍应判 invalid。
 
     归一化只放过「真实原文 + 仅空白差异」，不放过跨独立 bullet 的拼接改写。
     """
@@ -738,7 +738,7 @@ def test_spliced_bullet_source_expression_still_rejected() -> None:
 
 
 def test_user_original_expression_binds_to_user_and_auto_saves() -> None:
-    """用户明确长期判断优先绑定 user 原文并 auto_save（recommend.md §2/§6/§7）。
+    """用户明确长期判断优先绑定 user 原文并 auto_save（相关/§6/§7）。
 
     同一表达同时出现在 user 与 assistant 消息时，source 优先绑定 user；user_view +
     explicit + 高 confidence 且来源为 user -> 不被 non_user_source 降级，直接 auto_save。
@@ -801,7 +801,7 @@ def test_user_original_expression_binds_to_user_and_auto_saves() -> None:
 
 
 def test_source_expression_with_deleted_newline_accepted_by_compact() -> None:
-    """模型把换行**删除**（非替换为空格）时，compact 级归一化应放过（recommend.md §1）。
+    """模型把换行**删除**（非替换为空格）时，compact 级归一化应放过。
 
     原文「较高毛利率，\\n可能」，表达式「较高毛利率，可能」（逗号后无空格也无换行）。
     whitespace 级不匹配（原文有「， 」表达式有「，」），compact 级移除全部空白后一致 -> valid。
@@ -836,7 +836,7 @@ def test_source_expression_with_deleted_newline_accepted_by_compact() -> None:
 
 
 def test_source_expression_crlf_and_consecutive_spaces_accepted() -> None:
-    """CRLF / 连续空格差异在 whitespace 级归一化即通过（recommend.md §1）。"""
+    """CRLF / 连续空格差异在 whitespace 级归一化即通过。"""
 
     extractor = FakeCandidateExtractor(
         (
@@ -888,7 +888,7 @@ def test_extraction_retry_recovers_within_capture() -> None:
 
 
 def test_extraction_retry_exhausted_fails_capture() -> None:
-    """所有重试均失败后才写 incomplete + invalid_candidate_output（recommend.md §3）。"""
+    """所有重试均失败后才写 incomplete + invalid_candidate_output。"""
 
     extractor = FakeCandidateExtractor(
         (candidate_proposal("以后项目周报默认用表格"),),
@@ -911,7 +911,7 @@ def test_extraction_retry_exhausted_fails_capture() -> None:
 
 
 def test_operational_instruction_discarded_not_saved_as_preference() -> None:
-    """操作指令（不要使用内置记忆工具）不应存为长期偏好（recommend.md §4 Case B）。
+    """操作指令（不要使用内置记忆工具）不应存为长期偏好。
 
     默认 discard `operational_instruction`，不 auto_save、不建 Pending；
     除非用户显式表达跨会话持久。
@@ -976,8 +976,49 @@ def test_explicit_durable_preference_not_treated_as_operational() -> None:
     assert len(service.list_memories(principal)) == 1
 
 
+def test_explicit_uncertainty_goes_pending_not_auto_save() -> None:
+    """用户明确表达不确定/猜测 -> Pending(explicit_uncertainty)，不 Auto-save。
+
+    即使 explicit + durable + 高置信，只要 source_expression/content 含明确不确定表达，
+    优先级高于 explicit_durable_statement -> Pending。
+    """
+
+    uncertain_text = "我猜 Q3 NRR 可能回到 111%，但这只是猜测，目前没有足够证据"
+    source_expr = "我猜 Q3 NRR 可能回到 111%，但这只是猜测"
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                source_expr,
+                subject="nrr-q3-guess",
+                memory_type="preference",
+                content=source_expr,
+                confidence=0.95,
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn(uncertain_text)
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    pending = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.PENDING
+    ]
+    assert len(pending) == 1
+    assert pending[0].reason_code == "explicit_uncertainty"
+    # 不 auto-save，不进 active memory。
+    assert len(service.list_memories(principal)) == 0
+    assert len(service.list_pending_reviews(principal)) == 1
+
+
 def test_single_candidate_invalid_memory_type_discarded_not_batch_fail() -> None:
-    """单条 Candidate 的 memory_type 非法只丢弃该条，不让整轮 Capture 失败（recommend.md §4）。"""
+    """单条 Candidate 的 memory_type 非法只丢弃该条，不让整轮 Capture 失败。"""
 
     extractor = FakeCandidateExtractor(
         (
@@ -1091,7 +1132,7 @@ def test_assistant_restatement_of_existing_memory_is_discarded() -> None:
 def test_assistant_assertion_kind_is_normalized_to_system_inference() -> None:
     """模型把 Assistant 自己的分析标成 user_view/user_provided_fact 时应纠正。
 
-    recommend.md §4：Assistant 阅读材料后形成的 thesis 是 system_inference，不是
+    相关：Assistant 阅读材料后形成的 thesis 是 system_inference，不是
     user_view。可信化阶段按 source_role=assistant 把 user_* 纠正为 system_inference。
     """
 
@@ -1182,7 +1223,7 @@ def test_external_source_assertion_kind_is_normalized_to_external_fact() -> None
 def test_document_inferred_assertion_kind_normalized_to_system_inference() -> None:
     """document 来源 + inferred 基础应纠正为 system_inference，而非 external_fact。
 
-    recommend.md §3：从材料推断出的结论不是原始事实。本次日志"资本开支强度"即
+    相关：从材料推断出的结论不是原始事实。本次日志"资本开支强度"即
     external_fact+inferred 违规，按 expression_basis=inferred 归为 system_inference。
     """
 
@@ -1741,6 +1782,43 @@ def test_relation_admission_is_explicit_high_confidence_and_deduplicated() -> No
     assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
 
 
+def test_manual_link_dedupes_with_existing_active_semantic_relation() -> None:
+    """manual(item) 与 automatic(revision) 语义等价边应去重，不产生第二条 active。"""
+
+    text = "周报偏好明确支持持续事项"
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [_relation_profile()],
+        candidate_extractor=_two_relation_candidates(),
+        relation_extractor=FakeRelationExtractor(
+            lambda request: (_relation_proposal(request, text),)
+        ),
+    )
+    principal = PrincipalContext("analyst-a")
+    service.capture_turn(principal, _turn(text))
+    source = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "preference"
+    )
+    target = next(
+        record
+        for record in service.list_memories(principal)
+        if record.item.memory_type == "ongoing_item"
+    )
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+    # 手动 link 同一语义边（same source/target/type）应返回 existing，不新建第二条 active。
+    existing = service.link_memories(
+        principal,
+        source_memory_id=source.item.memory_id,
+        target_memory_id=target.item.memory_id,
+        relation_type="supports",
+    )
+    assert existing.origin is RelationOrigin.AUTOMATIC  # 返回 existing 而非新建 manual
+    assert len(service.list_memory_relations(principal, source.item.memory_id)) == 1
+
+
 def test_untrusted_relation_evidence_is_not_auto_saved() -> None:
     cases = (
         ("周报偏好不能支持持续事项", "周报偏好不能支持持续事项"),
@@ -2159,7 +2237,7 @@ def test_replacement_and_stale_transition_roll_back_together() -> None:
     )
 
     # Relation 写入失败（endpoints unavailable）-> best-effort：放弃 relation，
-    # Candidate 主链（含 replacement）仍持久化（recommend.md §3.5）。
+    # Candidate 主链（含 replacement）仍持久化。
     result = service.capture_turn(
         principal,
         TurnEnvelope(

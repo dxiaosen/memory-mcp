@@ -374,7 +374,7 @@ def test_team_extraction_service_run_once_collects_results() -> None:
 
 
 def test_duplicate_team_owner_configs_are_deduped_with_member_union() -> None:
-    """同一 team_owner_id 按成员重复配置时去重并合并成员（recommend.md §9）。
+    """同一 team_owner_id 按成员重复配置时去重并合并成员。
 
     三条配置指向同一 team 但成员不同（模拟按成员展开产生同一 team owner）。去重后只跑一次，
     成员取并集，使两成员的相似记忆能满足 min_cluster_size=2 聚成一簇。

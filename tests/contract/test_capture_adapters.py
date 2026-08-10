@@ -75,7 +75,7 @@ def test_structured_model_adapter_rejects_invalid_payload() -> None:
 def test_structured_model_adapter_trims_to_soft_limit_by_confidence() -> None:
     """超过软上限 12 的候选按 confidence 降序裁剪，避免淹没准入管线。
 
-    recommend.md §3：模型偶尔返回过多候选时，软裁剪（非整轮失败）+ 日志
+    相关：模型偶尔返回过多候选时，软裁剪（非整轮失败）+ 日志
     可观测。硬上限 MAX_CANDIDATES=20 仍由 schema 强制，这里验证 12< N ≤20
     的裁剪路径。
     """

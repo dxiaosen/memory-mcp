@@ -35,8 +35,8 @@ class TeamExtractionService:
         self._repository = repository
         self._profile_registry = profile_registry
         self._clock = clock
-        # 按 team_owner_id 去重并合并成员（recommend.md §9）：避免按成员重复产生同一
-        # team owner 导致 batch team_count 虚高、同一团队被反复提取。
+        # 按 team_owner_id 去重并合并成员：避免按成员重复产生同一 team owner 导致
+        # batch team_count 虚高、同一团队被反复提取。
         self._team_configs = _dedup_team_configs(team_configs or ())
         self._similarity_threshold = similarity_threshold
         self._min_cluster_size = min_cluster_size
@@ -101,9 +101,8 @@ def _dedup_team_configs(
 ) -> tuple[tuple[str, tuple[str, ...], str], ...]:
     """按 team_owner_id 去重，合并同 team 的 member_owner_ids（并集保序）。
 
-    recommend.md §9：同一 team_owner_id 可能因按成员展开而重复出现，batch 前需合并，
-    否则 team_count 虚高且同一团队被反复提取。同一 team_owner_id 取首个 profile_id，
-    members 取并集并保持首次出现顺序。
+    同一 team_owner_id 可能因按成员展开而重复出现，batch 前需合并，否则 team_count 虚高
+    且同一团队被反复提取。同一 team_owner_id 取首个 profile_id，members 取并集并保持首次出现顺序。
     """
 
     members_by_team: dict[str, list[str]] = {}

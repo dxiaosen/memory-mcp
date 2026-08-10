@@ -27,9 +27,12 @@
 | 生产代码 | 不导入 `tests/`；组合根不用 Fake |
 
 高风险边界必须保留回归覆盖：可信 Principal 派生、Token 默认 Profile、跨 owner 不可见、
-scope、跨 Profile 版本幂等与冲突、事务回滚、pending review、记忆/关系撤销、PostgreSQL
+scope（`memory:write` runtime-only / `memory:review` 管理；ListTools 过滤 + CallTool 硬授权）、
+跨 Profile 版本幂等与冲突、事务回滚、pending review、记忆/关系撤销、PostgreSQL
 migration 与重启、MCP 错误合同、Hook 顶层轮次生命周期、候选/关系 schema、
-向量降级、关系感知召回、团队提取幂等、revoke stale 关系。
+向量降级、关系感知召回、团队提取幂等、revoke stale 关系级联、explicit_uncertainty→Pending、
+explicit replacement fallback、Relation best-effort（不回滚 Candidate）、candidate-level discard、
+Relation semantic dedupe（manual+automatic 语义等价边去重）。
 
 ## 2. 日常检查
 

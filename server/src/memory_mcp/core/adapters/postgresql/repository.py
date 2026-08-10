@@ -513,7 +513,7 @@ class PostgreSQLMemoryRepository:
             # stale_at 必须用「撤销时刻」而非 revision_created_at：关系可能在
             # 该 revision 创建之后才建立，用 revision_created_at 会令
             # stale_at < relation.created_at，违反 memory_relations_terminal_state
-            # 的 stale_at >= created_at 约束（recommend.md §5）。
+            # 的 stale_at >= created_at 约束。
             revoked_principal = PrincipalContext(row["owner_id"])
             _stale_revision_relations(
                 connection,

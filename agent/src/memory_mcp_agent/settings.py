@@ -23,7 +23,7 @@ class MemoryHookSettings(BaseSettings):
     )
     profile_id: str | None = Field(default=None, min_length=1)
     # 已弃用：单一 timeout_seconds 同时用于 recall 与 capture。真实联调暴露
-    # capture 真实处理 ~33s 而超时仅 15s，导致并发重发（recommend.md §2）。
+    # capture 真实处理 ~33s 而超时仅 15s，导致并发重发。
     # 新代码用 recall_timeout_seconds / capture_timeout_seconds 分别控制。
     # 保留字段仅为向后兼容，旧 env MEMORY_HOOK_TIMEOUT_SECONDS 仍被吸收但不再生效。
     timeout_seconds: float = Field(default=15.0, gt=0, le=300)

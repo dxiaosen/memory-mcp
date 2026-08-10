@@ -201,7 +201,7 @@ class MemoryMcpClient:
         ]
         # 文件/文档来源消息插在 user 与 assistant 之间，使候选的 Evidence
         # provenance 能映射到真实文档而非一律归到 assistant conversation
-        # （recommend.md §5）。
+        # 。
         for doc in document_messages or []:
             messages.append(
                 {

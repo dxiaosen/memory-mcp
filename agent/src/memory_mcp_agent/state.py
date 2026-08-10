@@ -46,7 +46,7 @@ class TurnState(BaseModel):
     final_output: str | None = Field(default=None, min_length=1)
     capture_observed_at: datetime | None = None
     # AfterRun 从 transcript 解析出的文件/文档来源消息，随 outbox 持久化，
-    # 使重投不依赖 transcript 文件是否仍存在（recommend.md §5）。
+    # 使重投不依赖 transcript 文件是否仍存在。
     document_messages: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

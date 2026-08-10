@@ -73,13 +73,23 @@ Capture 流程内自动发生：
 
 | 阶段 | 行为 |
 | --- | --- |
-| 候选准入 | 先完成候选准入 |
+| 候选准入 | 先完成候选准入（单条字段错误只 discard 该条，不拖垮整批） |
 | 端点选择 | 从本轮 auto-save 和同 owner/Profile 有效记忆中选择有界端点 |
-| 关系保存 | 只保存显式、高置信且符合 Profile 方向的关系 |
+| 关系保存 | 只保存显式、高置信（`>=0.90`）且符合 Profile 方向的关系 |
 
 关系原文必须命中用户消息；Assistant/Tool 自行得出的关系、pending、blocked 和歧义
-关系不会自动建边。`link_memories` 继续作为治理工具。自动边绑定当时两端 revision，
+关系不会自动建边。`link_memories` 是显式管理工具（`memory:review` scope）。**Relation 是
+best-effort 增强**：抽取/写入失败不回滚已合法的 Candidate。自动边绑定当时两端 revision，
 后续 replacement 在 Server 事务内把旧边转为 stale，不需要 Agent 补发关系生命周期事件。
+`revoke_memory` 撤销端点时自动级联 stale 相关 active relation，不抛约束错误。
+
+### Runtime vs 管理工具边界
+
+`capture_completed_turn` 是 Hook runtime 工具（`memory:write`），交互 Agent token 通常无
+`memory:write` scope，故其在 `tools/list` 不可见、CallTool 被拒。`memory:review` 工具
+（`revoke_memory`/`link_memories`/`confirm_pending_memory` 等）仅在用户显式要求管理已存储
+记录时调用；普通业务语义（改变/修正判断、说某事实支持/挑战另一判断）由 AfterRun 自动处理，
+不主动调用 mutation 工具。
 
 ### 配置职责不要混合
 

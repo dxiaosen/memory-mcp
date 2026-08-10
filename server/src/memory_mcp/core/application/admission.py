@@ -1,5 +1,6 @@
 """不依赖具体记忆配置业务词义的确定性候选准入策略：保守、可解释。"""
 
+import re
 from dataclasses import dataclass
 
 from memory_mcp.core.domain import (
@@ -8,6 +9,20 @@ from memory_mcp.core.domain import (
     Candidate,
     CandidateDurability,
     ExpressionBasis,
+)
+
+# 用户明确表达不确定/猜测/未验证。只判断 source_expression 与 content
+# 邻近原文，确定性函数，不做语义模糊匹配。命中 -> PENDING(explicit_uncertainty)，
+# 优先级高于 explicit_durable_statement：explicit uncertainty > explicit durable。
+# 注意：「可能」单独出现时中文歧义（可能推动=can drive vs 可能是=maybe），需限定为
+# 不确定语境（「可能...但」「只是可能」「只是猜测/也许/暂/不确定/没有证据」等明确表达）。
+_EXPLICIT_UNCERTAINTY_RE = re.compile(
+    r"(?:只是?猜测|仅仅是?假设|只是?可能|也许|或许|猜测|暂[时定]|不确定|未经验证|"
+    r"没有足够证据|缺乏证据|不能确认|尚不能确认|不要当成已确认|不要作为已确认|"
+    r"只是一个假设|只是猜测|"
+    r"\bmaybe\b|\bmight\b|\bpossibly\b|\buncertain\b|\bunverified\b|"
+    r"\bnot enough evidence\b|\bdo not treat as confirmed\b|\bhypothesis\b)",
+    re.IGNORECASE,
 )
 
 
@@ -31,7 +46,11 @@ class ConservativeAdmissionPolicy:
         self._auto_save_confidence = auto_save_confidence
 
     def decide(self, candidate: Candidate) -> AdmissionOutcome:
-        """按持久性 -> 断言来源 -> 显式性 -> 置信度的顺序判定准入决策。"""
+        """按持久性 -> 不确定性 -> 断言来源 -> 显式性 -> 置信度的顺序判定准入决策。
+
+        explicit uncertainty 优先于 explicit durable：用户明确表达
+        猜测/未验证时，即使 explicit + durable + 高置信也降级为 Pending，不进入 Active。
+        """
         if candidate.durability is CandidateDurability.TEMPORARY:
             return AdmissionOutcome(
                 AdmissionDecision.DISCARD,
@@ -41,6 +60,11 @@ class ConservativeAdmissionPolicy:
             return AdmissionOutcome(
                 AdmissionDecision.PENDING,
                 "uncertain_durability",
+            )
+        if has_explicit_uncertainty(candidate):
+            return AdmissionOutcome(
+                AdmissionDecision.PENDING,
+                "explicit_uncertainty",
             )
         if candidate.assertion_kind is AssertionKind.SYSTEM_INFERENCE:
             return AdmissionOutcome(
@@ -61,3 +85,14 @@ class ConservativeAdmissionPolicy:
             AdmissionDecision.AUTO_SAVE,
             "explicit_durable_statement",
         )
+
+
+def has_explicit_uncertainty(candidate: Candidate) -> bool:
+    """Candidate 的 source_expression/content 是否表达明确不确定/猜测/未验证。
+
+    只判断邻近原文，确定性，不做语义模糊匹配。
+    """
+
+    return _EXPLICIT_UNCERTAINTY_RE.search(candidate.source_expression) is not None or (
+        _EXPLICIT_UNCERTAINTY_RE.search(candidate.content) is not None
+    )

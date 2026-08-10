@@ -41,8 +41,8 @@ from memory_mcp.core.support import log_content_event, log_event
 _LOGGER = logging.getLogger(__name__)
 
 AUTO_RELATION_CONFIDENCE_THRESHOLD = 0.90
-# 关系抽取有界重试上限（recommend.md §1），与 CandidateExtractor 对齐。仅对 InvalidModelOutputError
-# （模型结构错误或 admit 校验拒绝）重试；全部 attempt 均有 rejected proposal 才让 capture 原子失败。
+# 关系抽取有界重试上限，与 CandidateExtractor 对齐。仅对 InvalidModelOutputError（模型结构错误
+# 或 admit fatal 校验拒绝）重试；non-fatal（policy mismatch/低置信等）直接 skip 不重试。
 _RELATION_EXTRACTION_MAX_ATTEMPTS = 3
 _NEGATED_RELATION_EVIDENCE = re.compile(
     r"(?:不|并不|不能|无法|未能|没有|并未|不再)\s*"
@@ -57,7 +57,7 @@ _NEGATED_RELATION_EVIDENCE = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class RejectedRelation:
-    """被前置校验拒绝的关系建议，保留字段供开发 content 日志调试（recommend.md §1）。"""
+    """被前置校验拒绝的关系建议，保留字段供开发 content 日志调试。"""
 
     source_memory_id: UUID
     target_memory_id: UUID
@@ -124,11 +124,10 @@ class AutomaticRelationPlanner:
     ) -> AutomaticRelationPlan:
         """在有合法端点组合时调用模型抽取关系，并保守准入通过的建议。
 
-        对关系抽取做有界重试（recommend.md §1）：某次 attempt 产出被前置校验拒绝的 proposal
-        （invalid_source_expression/endpoint/policy）时记 ``relation_validation_rejected`` 并重试；
-        仅当全部 attempt 均有 rejected 才向上抛 ``InvalidModelOutputError``，由 capture 写
-        ``incomplete``（保留原子失败安全语义，不静默忽略）。模型结构错误（InvalidModelOutputError）
-        同样重试。
+        对关系抽取做有界重试：fatal 校验失败（invalid_source_expression/endpoint 不存在/
+        模型结构错误）时记 ``relation_validation_rejected`` 并重试；non-fatal（policy mismatch/
+        低置信等）直接 skip。全部 attempt 均有 fatal 失败时降级为 best-effort（记
+        ``relation_extraction_failed``，返回空 plan），**不回滚 Candidate 主链**。
         """
 
         if not profile.relation_policies:
@@ -181,7 +180,7 @@ class AutomaticRelationPlanner:
                 )
                 if retryable:
                     continue
-                # 模型结构化输出连续失败：Relation 降级为 best-effort，不回滚 Candidate（§3）。
+                # 模型结构化输出连续失败：Relation 降级为 best-effort，不回滚 Candidate。
                 return self._best_effort_failure_plan(
                     capture_id=capture_id,
                     endpoint_count=len(endpoints),
@@ -200,7 +199,7 @@ class AutomaticRelationPlanner:
                 proposals=proposals,
                 trusted_user_sources=trusted_user_sources,
             )
-            # 记录全部被拒/跳过 proposal（fatal + non-fatal）的真实 reason_code（§4）。
+            # 记录全部被拒/跳过 proposal（fatal + non-fatal）的真实 reason_code。
             all_rejected = (*fatal_rejected, *skipped)
             if all_rejected:
                 log_content_event(
@@ -211,7 +210,7 @@ class AutomaticRelationPlanner:
                 )
             if not fatal_rejected:
                 # 无 fatal：non-fatal（policy mismatch / 低置信 / 反向 / 非用户来源等）只 skip，
-                # 不 retry、不让 Capture 失败--Memory 主链优先于 Relation 增强（§2.2）。
+                # 不 retry、不让 Capture 失败--Memory 主链优先于 Relation 增强。
                 log_event(
                     _LOGGER,
                     logging.INFO,
@@ -228,7 +227,7 @@ class AutomaticRelationPlanner:
                     relations=accepted,
                     proposals=proposals,
                 )
-            # fatal rejected（invalid_source_expression / endpoint 不存在等不可信输出）-> retry（§5）。
+            # fatal rejected（invalid_source_expression / endpoint 不存在等不可信输出）-> retry。
             fatal_reasons = ",".join(
                 sorted({item.reason_code for item in fatal_rejected})
             )
@@ -247,7 +246,7 @@ class AutomaticRelationPlanner:
             )
             if not retryable:
                 break
-        # 全部 attempt 均有 fatal rejected：Relation 降级为 best-effort，不回滚 Candidate（§3）。
+        # 全部 attempt 均有 fatal rejected：Relation 降级为 best-effort，不回滚 Candidate。
         # Capture 主链（Candidate/Memory/Pending）保持完成；relation_accepted_count=0。
         return self._best_effort_failure_plan(
             capture_id=capture_id,
@@ -268,7 +267,7 @@ class AutomaticRelationPlanner:
     ) -> AutomaticRelationPlan:
         """Relation 抽取失败时降级为 best-effort：记 failed 事件并返回空计划。
 
-        Relation 是派生增强数据，失败/重试耗尽都不再回滚 Candidate 主链（recommend.md §3）。
+        Relation 是派生增强数据，失败/重试耗尽都不再回滚 Candidate 主链。
         """
 
         log_event(
@@ -357,16 +356,16 @@ class AutomaticRelationPlanner:
         tuple[RejectedRelation, ...],
         tuple[RejectedRelation, ...],
     ]:
-        """对模型建议逐条做保守准入校验，按可重试性分级（recommend.md §2）。
+        """对模型建议逐条做保守准入校验，按可重试性分级。
 
         返回 ``(accepted, skipped, fatal_rejected)``：
 
-        - ``fatal_rejected``（不可信模型输出，retry / 可使 Capture 失败）：``invalid_source_expression``
-          （伪造 / 原文找不到）、``relation_endpoint_outside_catalog``（端点不存在）。
-        - ``skipped``（non-fatal，直接 skip、Capture 继续、不 retry）：``relation_policy_mismatch``
-          （类型组合不符合 Profile 策略）、``relation_not_explicit``、``relation_low_confidence``、
-          ``relation_insufficient_evidence``、``relation_negated``、``relation_reversed_direction``、
-          ``relation_duplicate``、``relation_non_user_source``。
+        - ``fatal_rejected``（不可信模型输出，retry）：``invalid_source_expression``、
+          ``relation_endpoint_outside_catalog``。
+        - ``skipped``（non-fatal，直接 skip、不 retry）：``relation_policy_mismatch``、
+          ``relation_not_explicit``、``relation_low_confidence``、``relation_insufficient_evidence``、
+          ``relation_negated``、``relation_reversed_direction``、``relation_duplicate``、
+          ``relation_non_user_source``。
         """
 
         endpoint_by_id = {record.item.memory_id: record for record in endpoint_records}
@@ -408,7 +407,7 @@ class AutomaticRelationPlanner:
                     target.item.memory_type,
                 )
             except InvalidMemoryRelationError:
-                # 类型组合不符合 Profile 策略属 non-fatal：skip，不 retry、不拖垮 Capture（§2.2）。
+                # 类型组合不符合 Profile 策略属 non-fatal：skip，不 retry、不拖垮 Capture。
                 skipped.append(
                     replace(rejected_item, reason_code="relation_policy_mismatch")
                 )
@@ -536,7 +535,7 @@ def _relation_skip_reason(
     accepted_keys: set[tuple[UUID, UUID, str]],
     trusted_user_sources: tuple[str, ...] | None,
 ) -> str | None:
-    """返回 non-fatal skip 的 reason_code（recommend.md §2.2），无 skip 则 None。
+    """返回 non-fatal skip 的 reason_code，无 skip 则 None。
 
     这些都是「合法但不符合自动保存规则」的跳过：直接 skip、不 retry、不让 Capture 失败。
     按优先级返回首个命中原因。

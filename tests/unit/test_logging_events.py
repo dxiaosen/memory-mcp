@@ -157,7 +157,7 @@ def test_capture_completed_logs_aggregate_counts(
     assert "replacement_count" in fields
     assert "relation_proposal_count" in fields
     assert "relation_accepted_count" in fields
-    # 计数语义互相对上（recommend.md §1）
+    # 计数语义互相对上
     assert fields["extracted_candidate_count"] == 1
     assert fields["outcome_count"] == 1
     assert fields["candidate_count"] == 1
@@ -168,7 +168,7 @@ def test_capture_completed_logs_aggregate_counts(
         + fields["discarded_count"]
         + fields["blocked_count"]
     )
-    # 分阶段耗时（recommend.md §5）
+    # 分阶段耗时
     for stage in (
         "candidate_extraction_duration_ms",
         "candidate_validation_duration_ms",
@@ -249,7 +249,7 @@ def test_capture_incomplete_logs_duration_and_failure_code(
 def test_capture_invalid_output_logs_error_detail_not_null(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """结构化输出违规时 error_detail 不应为 null（开发期排障，recommend.md §P0-C）。
+    """结构化输出违规时 error_detail 不应为 null（开发期排障，相关-C）。
 
     直接 raise 的 InvalidModelOutputError 路径无 __cause__ 链，旧实现 error_detail
     恒为 null。现 _validation_errors 优先读 exc.context，其次走 cause 链，最后
@@ -278,7 +278,7 @@ def test_capture_invalid_output_logs_error_detail_not_null(
 def test_capture_extraction_attempt_events_logged_with_retry(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """结构化抽取重试记 started/failed/completed 事件（recommend.md §3）。
+    """结构化抽取重试记 started/failed/completed 事件。
 
     首次 InvalidModelOutputError 失败（retryable=true），第二次成功：2 次 started、
     1 次 failed、1 次 completed，attempt/max_attempts/error_type 字段齐全。
@@ -413,7 +413,7 @@ def test_recall_completed_logs_aggregate_counts_and_duration(
     assert "candidate_count" in fields
     assert "embedding_enabled" in fields
     assert "embedding_degraded" in fields
-    # 分阶段耗时（recommend.md §9.3）
+    # 分阶段耗时
     assert fields["query_embedding_duration_ms"] >= 0
     assert fields["repository_candidate_duration_ms"] >= 0
     assert fields["ranking_duration_ms"] >= 0

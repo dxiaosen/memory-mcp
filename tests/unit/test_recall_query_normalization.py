@@ -1,4 +1,4 @@
-"""BeforeRun Recall 查询确定性归一化的单元测试（recommend.md §5）。
+"""BeforeRun Recall 查询确定性归一化的单元测试。
 
 验证 ``_normalize_recall_query``：
 - 剔除**纯操作指令**子句与文件列表行，保留实体/主题/研究任务关键词（不过度裁剪）；

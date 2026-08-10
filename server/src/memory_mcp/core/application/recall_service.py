@@ -46,16 +46,16 @@ _SAFE_CONTEXT_HEADER = (
     "The current user request always takes priority. "
     "User views are unverified preferences, not verified facts."
 )
-# 无相关记忆时不再向 Agent 注入占位文本（recommend.md §6）；零结果走
-# rendered_context="" + estimated_tokens=0，由 zero_result 事件字段提供可观测性。
+# 无相关记忆时不注入占位文本；零结果走 rendered_context="" + estimated_tokens=0，
+# 由 zero_result 事件字段提供可观测性。
 _NO_RELEVANT_CONTEXT = "No relevant historical user context was recalled."
 _RELEVANCE_THRESHOLD = 0.18
 
-# Recall 查询归一化（recommend.md §5）：完整用户 Prompt 中的操作/工具/格式指令会稀释
-# embedding 与 lexical 检索。按子句（标点/换行切分）剔除**纯操作指令**子句，保留实体/主题/
-# 研究任务关键词。确定性、无 LLM。注意：只剔纯指令（不要使用工具/读取文件/联网/请阅读/按格式/
-# 输出一份/文件列表），不剔「请基于…研究判断」等带实体的子句，避免过度裁剪（§5 上一轮过度裁剪
-# 丢了启明先进材料等实体）。全部子句被剔除时返回空串，由 recall 判定 operational-only 跳过。
+# Recall 查询归一化：完整用户 Prompt 中的操作/工具/格式指令会稀释 embedding 与 lexical
+# 检索。按子句（标点/换行切分）剔除纯操作指令子句，保留实体/主题/研究任务关键词。
+# 确定性、无 LLM。只剔纯指令（不要使用工具/读取文件/联网/请阅读/按格式/输出一份/文件列表），
+# 不剔「请基于…研究判断」等带实体的子句。全部子句被剔除时返回空串，
+# 由 recall 判定 operational-only 跳过 semantic recall。
 _RECALL_CLAUSE_SPLIT_RE = re.compile(r"[，。；！？\n]+")
 _RECALL_INSTRUCTION_CLAUSE_RE = re.compile(
     r"(?:"
@@ -70,7 +70,7 @@ _RECALL_INSTRUCTION_CLAUSE_RE = re.compile(
 
 
 def _normalize_recall_query(raw: str) -> str:
-    """去除纯操作/工具/格式指令子句，保留实体/主题/研究任务关键词（recommend.md §5）。
+    """去除纯操作/工具/格式指令子句，保留实体/主题/研究任务关键词。
 
     按中文/英文句末标点与换行切分子句，剔除命中纯指令模式的子句；保留的子句以单空格拼接。
     全部子句被剔除时返回空串（operational-only），由 recall 跳过 semantic recall。
@@ -168,7 +168,7 @@ class RecallService:
             max_items=query.max_items,
             token_budget=query.token_budget,
         )
-        # 归一化 Recall 查询：剔除操作/工具/格式指令子句，保留实体/主题（recommend.md §7）。
+        # 归一化 Recall 查询：剔除操作/工具/格式指令子句，保留实体/主题。
         normalized_query = _normalize_recall_query(query.query or "")
         log_content_event(
             "memory.recall.input",
@@ -189,7 +189,7 @@ class RecallService:
             if value is not None
         )
         # operational-only 查询（归一化后无业务内容且无 subject/task_intent）无检索价值，
-        # 跳过 semantic recall，避免不必要的 embedding 请求（recommend.md §5）。
+        # 跳过 semantic recall，避免不必要的 embedding 请求。
         if (
             not normalized_query.strip()
             and not (query.subject or "").strip()
@@ -435,7 +435,7 @@ class RecallService:
             used_tokens = prospective_tokens
 
         if not selected:
-            # 候选存在但无一进入 token 预算：不注入占位文本（recommend.md §6）。
+            # 候选存在但无一进入 token 预算：不注入占位文本。
             return _traced_result(
                 RecallResult(
                     items=(),
@@ -729,7 +729,7 @@ class RecallService:
 
 
 def _empty_result(token_budget: int) -> RecallResult:
-    """无相关记忆时的空结果：不向 Agent 注入占位文本（recommend.md §6）。
+    """无相关记忆时的空结果：不向 Agent 注入占位文本。
 
     items 为空时 rendered_context 返回空串、estimated_tokens=0，让 Agent 不注入
     additionalContext。``zero_result`` 仍在 completed 事件中标记，可观测性不受影响。
@@ -880,7 +880,7 @@ def _traced_result(
         truncated=result.truncated,
     )
     # accounted = 各 stage duration 之和；unaccounted = 总耗时 - accounted（连接/序列化等，
-    # recommend.md §8：定位「总耗时 > 各 stage 之和」的缺口，不改 Recall 架构）。
+    # 定位「总耗时 > 各 stage 之和」的缺口，不改 Recall 架构）。
     accounted_duration_ms = (
         query_embedding_duration_ms
         + repository_candidate_duration_ms

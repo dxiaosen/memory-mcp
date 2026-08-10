@@ -52,13 +52,18 @@ from memory_mcp.core.ports import (
 )
 from memory_mcp.core.support import log_event
 
+# 显式替换意图但字面 subject 未命中时的语义 fallback 阈值。
+# 比 semantic_dedup_threshold 宽松，用于新旧判断措辞不同但仍语义相关的场景；
+# 仅在 _is_explicit_replacement 且 Profile 未配 semantic_dedup_threshold 时启用。
+_REPLACEMENT_FALLBACK_THRESHOLD = 0.45
+
 _EXPLICIT_REPLACEMENT = re.compile(
     r"(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
     r"\bno longer\b|\binstead\b|\breplace\b|\bnew default\b|"
     r"\bchange\b.+\bto\b)",
     re.IGNORECASE,
 )
-# 操作指令模式（recommend.md §4）：不要使用/读取/调用/打开工具、文件、skill、memory、联网。
+# 操作指令模式：不要使用/读取/调用/打开工具、文件、skill、memory、联网。
 # 这类指令不是投研长期偏好，默认丢弃；除非用户显式表达跨会话持久（下方 _EXPLICIT_DURABLE）。
 _OPERATIONAL_INSTRUCTION_RE = re.compile(
     r"(?:不(?:要|需|需要)?|别|勿)"
@@ -68,7 +73,7 @@ _OPERATIONAL_INSTRUCTION_RE = re.compile(
     r"|(?:不(?:要|需|需要)?|别|勿)联网"
     r"|(?:不(?:要|需|需要)?|别|勿)打开[^，。；！？\n]{0,10}?文件"
 )
-# 用户显式跨会话持久偏好（recommend.md §4）：即便含操作指令词，也视为长期偏好保留。
+# 用户显式跨会话持久偏好：即便含操作指令词，也视为长期偏好保留。
 _EXPLICIT_DURABLE_PREFERENCE_RE = re.compile(
     r"以后所有会话|今后始终|长期默认|从今以后|每次都|以后(?:分析|研究|输出|默认|都|用)"
 )
@@ -81,7 +86,7 @@ class RejectedProposal:
     """前置校验阶段被拒绝的候选建议，保留 proposal 关键字段供开发日志调试。
 
     被拒候选未进入 ``Candidate`` 构造（缺少可信 source_metadata），但记录其
-    subject/content/source_expression 等便于定位模型为何被拒（recommend.md §1）。
+    subject/content/source_expression 等便于定位模型为何被拒。
     """
 
     candidate_id: UUID
@@ -335,7 +340,7 @@ class CandidateProcessor:
         rejected: list[RejectedProposal] = []
         lifecycle_target_ids: set[UUID] = set()
         candidate_scopes: set[tuple[str, str]] = set()
-        # 分阶段耗时累加（recommend.md §5）：校验/准入/lifecycle 三段在循环内累加。
+        # 分阶段耗时累加：校验/准入/lifecycle 三段在循环内累加。
         _validation_duration = 0.0
         _admission_duration = 0.0
         _lifecycle_duration = 0.0
@@ -347,8 +352,8 @@ class CandidateProcessor:
                 proposal.source_expression, redacted_source
             ):
                 # 单条候选的 source_expression 不匹配脱敏后原文时，只丢弃该条，
-                # 不让一条坏候选拖垮整轮（recommend.md P0-B：用户研究基准不应因
-                # 模型一次编造 source_expression 而整轮丢失）。
+                # 不让一条坏候选拖垮整轮：单条 source_expression 不匹配只丢弃该条，
+                # 用户研究基准不应因模型一次编造而整轮丢失。
                 rejected.append(
                     RejectedProposal(
                         candidate_id=candidate_id,
@@ -372,7 +377,7 @@ class CandidateProcessor:
                 continue
             if _is_operational_instruction(proposal):
                 # 操作指令（不要使用工具/读取文件/联网等）不是长期研究偏好：默认丢弃，
-                # 除非用户显式表达跨会话持久（recommend.md §4）。类型无关，不在 Core 硬编码
+                # 除非用户显式表达跨会话持久。类型无关，不在 Core 硬编码
                 # research_preference（尊重 Profile 边界铁律）。
                 rejected.append(
                     RejectedProposal(
@@ -396,7 +401,7 @@ class CandidateProcessor:
                 _validation_duration += perf_counter() - _validation_started_at
                 continue
             # 单条 Candidate 的业务字段错误（memory_type / business_progress 等）只丢弃该条，
-            # 不让整轮 Capture 失败（recommend.md §4）。
+            # 不让整轮 Capture 失败：单条字段错误只 discard 该条。
             try:
                 self._profile_registry.validate_memory_type(
                     turn.profile_id,
@@ -480,7 +485,7 @@ class CandidateProcessor:
             )
             if normalized_assertion_kind is not None:
                 # 模型把 Assistant 推断标成 user_view/user_provided_fact，或把
-                # 外部材料事实标成 user_*：按可信来源纠正，避免语义污染（recommend.md §3）。
+                # 外部材料事实标成 user_*：按可信来源纠正，避免语义污染。
                 log_event(
                     _LOGGER,
                     logging.DEBUG,
@@ -612,7 +617,7 @@ class CandidateProcessor:
                 and self._is_assistant_restatement(principal, candidate, current_scope)
             ):
                 # Assistant 复述已有 active memory（Recall 后回声）-> 丢弃，不建 Pending、
-                # 也不当已有 Memory 的新 Evidence（recommend.md §4）。用户本人重述走既有
+                # 也不当已有 Memory 的新 Evidence。用户本人重述走既有
                 # duplicate/evidence 规则，不触发本规则。
                 outcomes.append(
                     CaptureOutcome(
@@ -754,7 +759,7 @@ class CandidateProcessor:
         candidate: Candidate,
         current_scope: Sequence[MemoryRecord],
     ) -> bool:
-        """assistant 来源候选是否高度重复已有 active memory（recommend.md §4）。
+        """assistant 来源候选是否高度重复已有 active memory。
 
         先看同 subject+type 的精确命中里 content 是否构成复述（归一等价或包含）；
         未命中且 Profile 该类型配了 ``semantic_dedup_threshold`` 时，再用语义相似度兜底，
@@ -809,11 +814,18 @@ class CandidateProcessor:
             candidate.memory_type,
         )
         threshold = metadata_policy.semantic_dedup_threshold
-        if threshold is None:
+        # 显式替换意图但字面 subject 未命中（新旧判断措辞不同）时，允许一次有界
+        # replacement fallback：用更宽松的阈值查同 owner+profile+type 的旧 active
+        # memory，找到明显目标即作为替换目标。非替换场景下
+        # threshold=None 表示该类型不启用语义去重，直接返回。
+        is_explicit_replacement = _is_explicit_replacement(candidate)
+        if threshold is None and not is_explicit_replacement:
             return admission
         embedding = self._materializer._compute_embedding(candidate.content)
         if embedding is None:
             return admission
+        if is_explicit_replacement:
+            threshold = _REPLACEMENT_FALLBACK_THRESHOLD
         target = self._repository.find_semantically_similar(
             principal,
             profile_id=candidate.profile_id,
@@ -823,6 +835,8 @@ class CandidateProcessor:
             effective_at=self._clock(),
         )
         if target is None:
+            # 显式替换 fallback 仍未找到目标：旧判断可能已不存在或语义差距过大。
+            # 不强行替换，走新增路径（旧判断若仍在则后续语义去重兜底）。
             return admission
         if target.item.memory_id in lifecycle_target_ids:
             return AdmissionOutcome(
@@ -866,7 +880,7 @@ class CandidateProcessor:
 
 
 def _select_source_message(matching: list[TurnMessage]) -> TurnMessage:
-    """同一 source_expression 命中多条消息时按 recommend.md §2 优先级选择绑定来源。
+    """同一 source_expression 命中多条消息时按 user > tool > assistant 优先级选择绑定来源。
 
     优先级：user explicit > tool/document original source > assistant paraphrase。
     模型对同一语义既出现在用户原文又出现在 assistant 复述时，优先绑定用户原始消息，
@@ -937,8 +951,8 @@ def _normalize_assertion_kind(
 ) -> AssertionKind | None:
     """按可信来源角色/类型与表达基础修正模型自报的 assertion_kind，消除语义冲突。
 
-    recommend.md §3：assertion_kind 必须与 expression_basis 一致。这里只纠正
-    明确的语义冲突，对无冲突的标注返回 None（保持原值）：
+    assertion_kind 必须与 expression_basis 一致。这里只纠正明确的语义冲突，
+    对无冲突的标注返回 None（保持原值）：
 
     - tool/document/web 来源 + inferred 基础 -> system_inference（从材料推断出的
       结论不是原始事实；本次日志"资本开支强度"即 external_fact+inferred 违规）。
@@ -988,8 +1002,8 @@ def _is_explicit_replacement(candidate: Candidate) -> bool:
 def _is_operational_instruction(proposal: CandidateProposal) -> bool:
     """候选是否为操作指令（不要使用工具/读取文件/联网等），且非显式跨会话持久偏好。
 
-    recommend.md §4：操作指令不是投研长期偏好，默认丢弃；但用户显式表达「以后所有会话都…」
-    等跨会话持久时保留。检查 source_expression 与 content。
+    操作指令不是投研长期偏好，默认丢弃；但用户显式表达「以后所有会话都…」等跨会话
+    持久时保留。检查 source_expression 与 content。
     """
 
     text = f"{proposal.source_expression}\n{proposal.content}"
@@ -1001,7 +1015,7 @@ def _is_operational_instruction(proposal: CandidateProposal) -> bool:
 def _content_restates(target: MemoryRecord, candidate: Candidate) -> bool:
     """候选 content 是否为已有记忆 content 的复述（归一后等价或一方包含另一方）。
 
-    用于 §4 识别 Assistant 回声：归一（NFKC+casefold+空白压缩）后等价、或候选是已有记忆
+    用于识别 Assistant 回声：归一（NFKC+casefold+空白压缩）后等价、或候选是已有记忆
     的摘录、或已有记忆是候选的摘录，均视为高度重复。
     """
 

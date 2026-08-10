@@ -60,7 +60,7 @@ from memory_mcp.core.support import log_content_event, log_event, stable_referen
 
 _LOGGER = logging.getLogger(__name__)
 _REDACTION_MARKER = re.compile(r"\[REDACTED:[^\]]+\]")
-# 结构化抽取失败时的有界重试上限（recommend.md §3）。仅对可恢复的模型结构错误
+# 结构化抽取失败时的有界重试上限。仅对可恢复的模型结构错误
 # （null/parse/schema/validation）重试，不对业务校验（invalid_source_expression）重试。
 _EXTRACTION_MAX_ATTEMPTS = 3
 
@@ -442,7 +442,7 @@ class CaptureService:
             if not relation_plan.relations:
                 raise
             # Relation 写入失败（端点失效 / 约束等）-> best-effort：放弃 relation，
-            # 仅提交 Candidate 主链（recommend.md §3.5，Relation 不参与主 Capture 原子边界）。
+            # 仅提交 Candidate 主链（Relation 不参与主 Capture 原子边界）。
             log_event(
                 _LOGGER,
                 logging.WARNING,
@@ -562,7 +562,7 @@ class CaptureService:
         inspection: SensitiveInspection,
         subject_hint_inspection: SensitiveInspection,
     ) -> tuple[CandidateProposal, ...]:
-        """对结构化抽取做有界重试（recommend.md §3）。
+        """对结构化抽取做有界重试。
 
         仅对 ``InvalidModelOutputError``（null/parse/schema/validation 等可恢复结构错误）
         重试，最多 ``_EXTRACTION_MAX_ATTEMPTS`` 次。每次 attempt 记 started/failed/completed
@@ -733,7 +733,7 @@ def _validation_errors(exc: BaseException) -> str | None:
     ``{"field": "confidence", "value": 1.5}``）→ pydantic ``ValidationError.errors()``
     （经 ``raise ... from`` 包装时位于 ``__cause__``）→ 异常消息兜底。
 
-    开发阶段（recommend.md §0 已放开完整内容日志）需暴露具体失败字段，
+    开发阶段需暴露具体失败字段（开发阶段已放开完整内容日志），
     避免 ``memory.capture.invalid_output.error_detail`` 恒为 null。
     """
 

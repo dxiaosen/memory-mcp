@@ -220,7 +220,7 @@ def test_recall_ranks_newer_evidence_above_older_of_equal_relevance() -> None:
 
 
 def test_operational_only_query_skips_semantic_recall() -> None:
-    """operational-only 查询跳过 semantic recall：不调 embedding、返回空（recommend.md §5）。
+    """operational-only 查询跳过 semantic recall：不调 embedding、返回空。
 
     归一化后查询为空（纯操作指令）且无 subject/task_intent -> 跳过 embedding 与候选检索，
     result_count=0 / rendered_context=""，即便仓库里有活动记忆也不召回。

@@ -14,7 +14,7 @@ from psycopg_pool import PoolTimeout
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from memory_mcp.auth import StaticTokenVerifier
+from memory_mcp.auth import StaticTokenVerifier, current_request_principal
 from memory_mcp.core import (
     CandidateExtractor,
     MaintenanceResult,
@@ -32,6 +32,7 @@ from memory_mcp.core.adapters.postgresql.schema import (
 from memory_mcp.core.adapters.sensitive import RegexSensitiveContentGuard
 from memory_mcp.core.application.team_extraction_service import TeamExtractionService
 from memory_mcp.core.composition import create_memory_service
+from memory_mcp.errors import UnauthenticatedError
 from memory_mcp.extraction.embedding import EmbeddingError, QwenEmbeddingProvider
 from memory_mcp.extraction.factory import create_configured_extractors
 from memory_mcp.extraction.settings import EmbeddingSettings, ExtractionSettings
@@ -43,6 +44,7 @@ from memory_mcp.settings import (
     derive_team_owner_key,
 )
 from memory_mcp.tools import MemoryMcpTools
+from memory_mcp.tools.shared import visible_tool_names
 
 _LOGGER = logging.getLogger(__name__)
 # 连续 has_more 续批的软上限与触发后的退避秒数；见 _run_maintenance_loop。
@@ -129,6 +131,22 @@ class MemoryMcpServer(FastMCP[Any]):
         """返回当前进程维护健康状态。"""
 
         return self._maintenance_health
+
+    async def list_tools(self) -> list[Any]:
+        """按 principal scopes 过滤可见工具。
+
+        capture_completed_turn 仅 memory:write 可见；memory:review 工具对仅有
+        memory:write 的 Hook token 不可见。无认证上下文时回退到全部工具（兼容
+        既有非授权路径与测试）。CallTool 仍由 _authorize 做硬校验，不省略。
+        """
+
+        tools = await super().list_tools()
+        try:
+            principal = current_request_principal()
+        except UnauthenticatedError:
+            return tools
+        allowed = set(visible_tool_names(principal))
+        return [tool for tool in tools if tool.name in allowed]
 
     def streamable_http_app(self):
         """构建并缓存 Streamable HTTP ASGI 应用，注入存储与维护生命周期。"""

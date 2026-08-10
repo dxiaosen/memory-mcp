@@ -6,7 +6,7 @@ Claude Code 的 Stop / UserPromptSubmit Hook 通过 stdin 提供 ``transcript_pa
 tool/document 消息，供 Host Adapter 纳入 ``capture_completed_turn`` 的 messages。
 
 本模块只依赖标准库与通用 dict 结构，不导入 Claude Code 私有格式，也不被
-Server/Core 引用——按 recommend.md §5.4，来源可信化只发生在 Host Adapter。
+Server/Core 引用——来源可信化只发生在 Host Adapter。
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def extract_document_messages(
         }
 
     ``user_prompt`` 给出当前轮次的用户输入时，只提取**当前轮次**（最近一次该 prompt 之后）
-    产生的 tool/document 消息，不把历史轮次的文档重复纳入（recommend.md §1）。定位不到时
+    产生的 tool/document 消息，不把历史轮次的文档重复纳入。定位不到时
     回退到最近一条用户文本消息之后；仍无则返回全部（保持旧行为）。
 
     解析失败或无文件读取工具调用时返回空列表，不抛出——provenance 增强是
@@ -169,7 +169,7 @@ def _slice_current_turn(
 
     定位最近一条「用户文本消息」（非 tool_result）作为当前轮次边界，只保留其后的条目
     （含本轮 tool_use / tool_result / assistant 回复），避免把历史轮次的文档重复纳入
-    （recommend.md §1）。``user_prompt`` 提供时优先按内容匹配定位边界；找不到则回退到
+    。``user_prompt`` 提供时优先按内容匹配定位边界；找不到则回退到
     最近一条用户文本消息；都没有则返回全部条目（保持旧行为）。
     """
 
@@ -279,7 +279,7 @@ def _workspace_relative(
     file_path: str,
     cwd: str | os.PathLike[str] | None,
 ) -> str:
-    """把绝对文件路径转为相对 cwd 的 workspace-relative URI（recommend.md §4）。
+    """把绝对文件路径转为相对 cwd 的 workspace-relative URI。
 
     cwd 为空或无法计算相对路径（如跨盘符）时保留原路径，不强行截断。
     """

@@ -54,7 +54,7 @@ def test_empty_agent_token_is_rejected_during_configuration() -> None:
 
 
 def test_agent_uses_separate_recall_and_capture_timeouts() -> None:
-    """recall 与 capture 使用各自超时（recommend.md §2 / P0-A）。
+    """recall 与 capture 使用各自超时（相关 / P0-A）。
 
     单一 timeout_seconds=15s 会导致 capture（真实 ~33s）超时后并发重发。
     现拆为 recall_timeout_seconds（默认 15）与 capture_timeout_seconds（默认 70），

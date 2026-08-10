@@ -119,7 +119,7 @@ class SupportsStructuredOutput(Protocol):
 
 
 def normalize_candidate_batch_output(value: Any) -> Any:
-    """对结构化候选输出做窄范围 canonicalization（recommend.md §5）。
+    """对结构化候选输出做窄范围 canonicalization。
 
     处理 provider/SDK 偶发的单层重复 wrapper：
     ``{"candidates": {"candidates": [...]}}`` -> ``{"candidates": [...]}``。
@@ -147,7 +147,7 @@ def normalize_candidate_batch_output(value: Any) -> Any:
 
 
 def _structured_output_diagnostic(raw: Any, exc: BaseException) -> dict[str, Any]:
-    """构造结构化输出失败时的开发态诊断 context（recommend.md §3）。"""
+    """构造结构化输出失败时的开发态诊断 context。"""
 
     try:
         preview = json.dumps(raw, ensure_ascii=False, default=str)
@@ -320,7 +320,10 @@ def _system_prompt(request: ExtractionRequest) -> str:
         "assistant restatements of recalled memory or source material, "
         "memory-system/review/timeline state, missing-node/meta commentary, or "
         "assistant frameworks the user has not explicitly adopted. "
-        # D. 数量与 Profile 约束。
+        # D. replacement 与数量。
+        "When the user explicitly replaces or corrects an earlier thesis, prefer one "
+        "complete thesis candidate representing the new current judgment; do not split "
+        "the replacement into multiple overlapping thesis/decision candidates. "
         "Aim for 5 to 10 candidates on dense durable turns and never exceed 12; "
         "prefer fewer or zero when evidence is weak, ambiguous, or temporary. "
         f"Allowed memory_type values: {allowed_types}. {progress_clause} "

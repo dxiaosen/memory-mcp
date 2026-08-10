@@ -249,7 +249,7 @@ class MemoryTools(ToolSupport):
         ) -> MemoryRelationReceipt | ErrorResponse:
             current_request_id = request_id(ctx)
             try:
-                principal = self._authorize(MemoryScope.WRITE)
+                principal = self._authorize(MemoryScope.REVIEW)
                 started_at = self._log_started(
                     current_request_id,
                     principal,
