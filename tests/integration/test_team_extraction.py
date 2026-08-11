@@ -45,6 +45,7 @@ def _member_record(
     content: str,
     embedding: tuple[float, ...],
     memory_type: str = "preference",
+    business_progress: str | None = None,
 ) -> MemoryRecord:
     """构造一条带 embedding 的成员个人活动记忆。"""
 
@@ -67,7 +68,7 @@ def _member_record(
             content=content,
             assertion_kind=AssertionKind.USER_VIEW,
             lifecycle_status=LifecycleStatus.ACTIVE,
-            business_progress=None,
+            business_progress=business_progress,
             save_rationale="成员个人记忆",
             observed_at=_NOW,
             created_at=_NOW,
@@ -431,3 +432,196 @@ def _profile_registry_with_test_profile():
     registry = ProfileRegistry()
     registry.register(TestMemoryProfile())
     return registry
+
+
+# 两段语义正交的 embedding：主题归并测试里让 risk 与 thesis 的 embedding 相似度
+# 低于阈值（不聚成 embedding 簇），仅靠 subject 关键词重叠归并。
+def test_subject_tie_break_is_deterministic_across_runs() -> None:
+    """两成员不同 subject 各一次，subject 字典序最小者胜出且两次运行一致。"""
+
+    repository = _repo_with_members()
+    for owner, subject in ((_MEMBERS[0], "周报格式B"), (_MEMBERS[1], "周报格式A")):
+        repository.add(
+            PrincipalContext(owner),
+            _member_record(
+                owner_id=owner,
+                subject=subject,
+                content="项目周报用表格",
+                embedding=_EMBEDDING_SEMANTIC_A,
+            ),
+        )
+    args = dict(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    repository.extract_team_common_memories(**args)
+    pending = repository.list_reviews(
+        PrincipalContext(_TEAM_OWNER),
+        status=ReviewStatus.PENDING,
+    )
+    assert len(pending) == 1
+    # 字典序最小的 "周报格式A" 胜出，非依赖 set 哈希顺序。
+    assert pending[0].candidate.subject == "周报格式A"
+
+
+def test_divergence_rationale_preserves_minority_view() -> None:
+    """簇内存在少数视角时 save_rationale 追加分歧摘要并引用少数成员 content。"""
+
+    repository = _repo_with_members()
+    # 主内容更长（被选为主表达），少数视角更短（被引用为分歧）。
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="周报格式",
+            content="周报用 Markdown 列表并附变更说明",
+            embedding=_EMBEDDING_SEMANTIC_A,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMBEDDING_SEMANTIC_A_DRIFT,
+        ),
+    )
+    repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    pending = repository.list_reviews(
+        PrincipalContext(_TEAM_OWNER),
+        status=ReviewStatus.PENDING,
+    )
+    assert len(pending) == 1
+    candidate = pending[0].candidate
+    rationale = candidate.save_rationale
+    # 主内容（更长者）作为候选 content，其来源不被引用为分歧。
+    assert candidate.content == "周报用 Markdown 列表并附变更说明"
+    assert "分歧视角" in rationale
+    # 少数视角（较短者）被保留在分歧摘要里。
+    assert "项目周报用表格" in rationale
+    # 主内容本身不出现在分歧引用中。
+    assert "周报用 Markdown 列表并附变更说明（" not in rationale
+
+
+def test_conflicting_business_progress_drops_cluster() -> None:
+    """簇内成员 business_progress 出现 resolved/invalidated 对立时不产出团队候选。"""
+
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="毛利率判断",
+            content="毛利率企稳回升，风险已解除",
+            embedding=_EMBEDDING_SEMANTIC_A,
+            business_progress="resolved",
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="毛利率判断",
+            content="毛利率下行压力兑现，风险已兑现击穿",
+            embedding=_EMBEDDING_SEMANTIC_A_DRIFT,
+            business_progress="invalidated",
+        ),
+    )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    # 立场对立（resolved vs invalidated）的簇被丢弃，不产出候选。
+    assert result.candidate_count == 0
+
+
+def test_same_side_business_progress_clusters_normally() -> None:
+    """簇内 business_progress 同侧（如都 resolved）时正常聚簇，弱校验不误拦。"""
+
+    repository = _repo_with_members()
+    for owner, progress in ((_MEMBERS[0], "resolved"), (_MEMBERS[1], "monitoring")):
+        repository.add(
+            PrincipalContext(owner),
+            _member_record(
+                owner_id=owner,
+                subject="毛利率判断",
+                content="毛利率企稳回升",
+                embedding=_EMBEDDING_SEMANTIC_A,
+                business_progress=progress,
+            ),
+        )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    assert result.candidate_count == 1
+
+
+def test_idempotent_after_confirmed_no_duplicate_pending() -> None:
+    """候选被 confirmed 后，同 subject+type 不再产出新 pending（幂等扩到 confirmed）。"""
+
+    from dataclasses import replace as dc_replace
+
+    repository = _repo_with_members()
+    for owner in _MEMBERS[:2]:
+        repository.add(
+            PrincipalContext(owner),
+            _member_record(
+                owner_id=owner,
+                subject="周报格式",
+                content="项目周报用表格",
+                embedding=_EMBEDDING_SEMANTIC_A,
+            ),
+        )
+    args = dict(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.85,
+        min_cluster_size=2,
+    )
+    # 第一次提取产出 1 个 pending。
+    repository.extract_team_common_memories(**args)
+    pending = repository.list_reviews(
+        PrincipalContext(_TEAM_OWNER),
+        status=ReviewStatus.PENDING,
+    )
+    assert len(pending) == 1
+    review = pending[0]
+    # 模拟该 pending 被确认（把状态置为 confirmed），复现"已沉淀为团队记忆"的状态。
+    from uuid import uuid4
+
+    repository._reviews[review.review_id] = dc_replace(
+        review,
+        status=ReviewStatus.CONFIRMED,
+        decided_at=_NOW,
+        resolved_memory_id=uuid4(),
+    )
+    # 第二次提取：同 subject+type 已 confirmed，不再产出新 pending。
+    repository.extract_team_common_memories(**args)
+    pending_after = repository.list_reviews(
+        PrincipalContext(_TEAM_OWNER),
+        status=ReviewStatus.PENDING,
+    )
+    assert len(pending_after) == 0

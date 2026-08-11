@@ -419,11 +419,18 @@ reference，不参与授权。`current_request_principal()` 只根据已验证 M
 | --- | --- |
 | 触发 | Server lifespan 内 `_run_team_extraction_loop` 按 `MEMORY_MCP_TEAM_EXTRACTION_INTERVAL_SECONDS`（默认 3600，0 关闭）周期运行 |
 | 团队配置 | 从认证主体的 `team_ids` 派生 `team_owner_key`；同 tenant 下配相同 team_id 的成员构成一个团队 |
-| 聚类 | `Repository.extract_team_common_memories` 按 embedding 余弦相似度（默认阈值 0.85）聚类成员记忆，最小簇大小默认 2 |
+| embedding 聚类 | `Repository.extract_team_common_memories` 按 `memory_type` 分组后，组内按 embedding 余弦相似度（默认阈值 0.70；投研共性提取场景语义近似但措辞不同是常态，0.85 过严导致漏聚）贪心聚类成员记忆，最小簇大小默认 2 |
+| 簇门槛 | 簇需同时满足最小尺寸且至少 2 个不同成员，避免单成员回声室；簇内同时出现对立 `business_progress`（`resolved` 与 `invalidated`）时丢弃该簇——弱方向校验，避免把立场相反的判断并成共性 |
+| 候选向量 | 候选 embedding 取簇内成员均值（簇中心），代表性优于任一成员原始向量，且不随成员写新东西/排序变化而漂移，使幂等比对的 embedding 稳定 |
+| 簇内字段 | subject/content 用确定性纯函数选择（频次优先 + 字典序兜底，跨进程可复现）；当簇内存在与主表达分叉的少数视角时，在 `save_rationale` 追加分歧摘要（引用成员 content 前 40 字符 + owner 标识） |
 | 产出 | 共性候选写入团队 owner 的 pending review；`TeamExtractionResult` 记录成员数/记忆数/簇数/候选数 |
 | 隔离 | 提取只读成员个人记忆、只写团队公共空间；不改变个人记忆 |
-| 幂等 | 同 subject+type 已有团队 pending 不重复创建 |
+| 幂等 | 同 subject+type 已有团队 pending **或 confirmed** 不重复创建；PG 版本额外按 embedding 余弦距离 < 0.05 检测语义重复。扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending |
 | 依赖向量 | 聚类用 embedding 相似度，未配置 provider 时该服务不产出候选但不影响主链路 |
+
+提取阶段不做 LLM 合成——原文保留在个人记忆里、分歧摘要在 rationale 给人审阅，人决定是否
+接受与改写。弱方向校验只拦截成员显式标注了 `resolved`/`invalidated` 且互斥的少数情况
+（`business_progress` 多数为空时放行），覆盖有限但零误判，不引入 LLM 判断。
 
 ## 6. MCP 契约
 

@@ -159,6 +159,7 @@
 - 团队成员从 `MEMORY_MCP_AUTH_TOKENS` 的 `team_ids` 派生；同 tenant 下配相同 team_id 的成员构成团队。
 - 不自动确认——候选需成员人工确认后沉淀为团队公共记忆。
 - 模型不可用不影响已有记忆的维护或召回。
+- 候选级幂等覆盖 pending 与 confirmed：同 subject+type 已有团队 pending 或 confirmed 记忆时不重复创建，避免已确认共识被重复提交为 pending。
 
 ### 3.7 日志
 

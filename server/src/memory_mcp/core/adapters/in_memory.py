@@ -36,7 +36,11 @@ from memory_mcp.core.domain import (
     SensitivityLevel,
     TeamExtractionResult,
     VerificationStatus,
+    format_divergence_rationale,
+    has_conflicting_business_progress,
     normalize_memory_text,
+    select_cluster_content,
+    select_cluster_subject,
 )
 from memory_mcp.core.exceptions import (
     IdempotencyConflictError,
@@ -539,9 +543,10 @@ class InMemoryMemoryRepository:
         """扫描成员个人记忆，用 embedding 余弦相似度聚类并写团队 pending review。
 
         语义与 PostgreSQL 版本对齐：仅纳入有 embedding 的 active/effective 成员
-        记忆；按 memory_type 分组后贪心聚类；簇内聚合 subject/content/
-        assertion/sensitivity/validity，confidence 取不同 owner 数 / 成员数；
-        同 subject+type 的已有团队 pending 不重复创建。Run 级幂等：同
+        记忆；按 memory_type 分组后贪心聚类；簇需满足最小尺寸且至少 2 个不同成员，
+        簇内同时出现对立 business_progress（resolved/invalidated）时丢弃（弱方向校验）；
+        簇内聚合 subject/content/assertion/sensitivity/validity，confidence 取不同 owner 数 / 成员数；
+        同 subject+type 的已有团队 pending 或 confirmed 不重复创建。Run 级幂等：同
         (team, profile, effective_at) 已运行则直接返回既有计数，不重复扫描。
         """
 
@@ -589,6 +594,7 @@ class InMemoryMemoryRepository:
                     "sensitivity_level": revision.sensitivity_level,
                     "valid_from": revision.valid_from,
                     "valid_until": revision.valid_until,
+                    "business_progress": revision.business_progress,
                 }
             )
 
@@ -614,36 +620,52 @@ class InMemoryMemoryRepository:
         groups: dict[str, list[dict[str, Any]]] = {}
         for entry in eligible:
             groups.setdefault(entry["memory_type"], []).append(entry)
-        clusters: list[list[dict[str, Any]]] = []
+        embedding_clusters: list[list[dict[str, Any]]] = []
         for group in groups.values():
-            clusters.extend(_greedy_cluster(group, similarity_threshold))
+            for cluster in _greedy_cluster(group, similarity_threshold):
+                embedding_clusters.append(cluster)
         # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室。
-        valid_clusters = [
+        # 弱方向校验：簇内同时出现 resolved/invalidated 对立 business_progress 时丢弃，
+        # 避免把立场相反的判断并成同一条团队共性候选。
+        valid_embedding_clusters = [
             c
-            for c in clusters
+            for c in embedding_clusters
             if len(c) >= min_cluster_size
             and len({m["owner_id"] for m in c}) >= 2
+            and not has_conflicting_business_progress(c)
         ]
+        cluster_count = len(valid_embedding_clusters)
 
         candidate_count = 0
-        for cluster in valid_clusters:
-            subjects = [m["subject"] for m in cluster]
-            subject = max(set(subjects), key=subjects.count)
-            content = max((m["content"] for m in cluster), key=len)
+        for cluster in valid_embedding_clusters:
+            # embedding 簇组内单类型。
             memory_type = cluster[0]["memory_type"]
-            # 幂等：同 subject+type 的 pending 不重复创建。
+            # 确定性 subject/content 选择（频次优先 + 字典序兜底），替换非确定性 max(set,...)。
+            subject = select_cluster_subject(cluster)
+            content = select_cluster_content(cluster)
+            unique_owners = len({m["owner_id"] for m in cluster})
+            base_rationale = f"团队共性提取：{unique_owners} 个成员写了相似内容"
+            save_rationale = format_divergence_rationale(
+                cluster,
+                base=base_rationale,
+                subject=subject,
+                content=content,
+            )
+            # 幂等：同 subject+type 的 pending 或 confirmed 不重复创建。
+            # 扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。
             # 注：生产 PostgreSQL 版本额外按 embedding 余弦距离做语义去重，
             # in_memory 版本因 Candidate 无 embedding 字段只做精确 subject 匹配。
-            already_pending = any(
+            already_exists = any(
                 review.owner_id == team_owner_id
                 and review.candidate.subject == subject
                 and review.candidate.memory_type == memory_type
-                and review.status is ReviewStatus.PENDING
+                and review.status
+                in (ReviewStatus.PENDING, ReviewStatus.CONFIRMED)
                 for review in self._reviews.values()
             )
-            if already_pending:
+            if already_exists:
                 continue
-            unique_owners = len({m["owner_id"] for m in cluster})
+            confidence = round(unique_owners / len(members), 6)
             confidence = round(unique_owners / len(members), 6)
             candidate = _team_candidate_from_cluster(
                 cluster,
@@ -654,6 +676,7 @@ class InMemoryMemoryRepository:
                 memory_type=memory_type,
                 confidence=confidence,
                 observed_at=effective_at,
+                save_rationale=save_rationale,
             )
             review = ReviewItem(
                 review_id=self._id_factory(),
@@ -672,7 +695,7 @@ class InMemoryMemoryRepository:
             team_owner_id=team_owner_id,
             member_count=len(members),
             memory_count=memory_count,
-            cluster_count=len(valid_clusters),
+            cluster_count=cluster_count,
             candidate_count=candidate_count,
             completed_at=effective_at,
         )
@@ -1667,6 +1690,7 @@ def _team_candidate_from_cluster(
     memory_type: str,
     confidence: float,
     observed_at: datetime,
+    save_rationale: str,
 ) -> Candidate:
     """从聚类结果聚合出团队 pending 候选，字段选择与 PostgreSQL 版本对齐。"""
 
@@ -1688,7 +1712,6 @@ def _team_candidate_from_cluster(
             valid_until is None or member_until < valid_until
         ):
             valid_until = member_until
-    unique_owners = len({m["owner_id"] for m in cluster})
     return Candidate(
         candidate_id=uuid4(),
         owner_id=team_owner_id,
@@ -1700,7 +1723,7 @@ def _team_candidate_from_cluster(
         conversation_id="team-extraction",
         source_turn_id="team-extraction",
         source_expression=content,
-        save_rationale=f"团队共性提取：{unique_owners} 个成员写了相似内容",
+        save_rationale=save_rationale,
         confidence=confidence,
         durability=CandidateDurability.DURABLE,
         expression_basis=ExpressionBasis.EXPLICIT,
@@ -1719,7 +1742,28 @@ def _cluster_mode(
     field: str,
     enum: type,
 ) -> object:
-    """取簇内某枚举字段的众数。"""
+    """取簇内某枚举字段的众数（频次优先 + 字典序兜底，跨进程可复现）。
+
+    替换原 ``max(set(...), key=count)`` 的非确定性平局兜底。平局时按值的字符串
+    表示字典序升序取最小，保证不同进程/Python 版本下结果一致。
+    """
 
     values = [member[field] for member in cluster]
-    return max(set(values), key=values.count)
+    if not values:
+        return None
+    counts: dict[object, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return min(counts, key=lambda v: (-counts[v], str(v)))
+
+
+def _cluster_mode_str(cluster: list[dict[str, Any]], field: str) -> str:
+    """取簇内某字符串字段的众数（频次优先 + 字典序兜底），跨进程可复现。"""
+
+    values = [str(member[field]) for member in cluster]
+    if not values:
+        return ""
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return min(counts, key=lambda v: (-counts[v], v))

@@ -57,7 +57,12 @@ from memory_mcp.core.domain import (
     TurnEnvelope,
     TurnMessage,
     VerificationStatus,
+    average_embedding,
+    format_divergence_rationale,
+    has_conflicting_business_progress,
     normalize_memory_text,
+    select_cluster_content,
+    select_cluster_subject,
     tokenize_memory_text,
 )
 from memory_mcp.core.exceptions import (
@@ -190,8 +195,13 @@ __all__ = [
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",
+    "average_embedding",
     "embed_single",
+    "format_divergence_rationale",
+    "has_conflicting_business_progress",
     "normalize_memory_text",
     "profile_fingerprint",
+    "select_cluster_content",
+    "select_cluster_subject",
     "tokenize_memory_text",
 ]

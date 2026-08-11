@@ -58,7 +58,12 @@ from memory_mcp.core.domain import (
     ReviewItem,
     ReviewStatus,
     TeamExtractionResult,
+    average_embedding,
+    format_divergence_rationale,
+    has_conflicting_business_progress,
     normalize_memory_text,
+    select_cluster_content,
+    select_cluster_subject,
 )
 from memory_mcp.core.exceptions import (
     IdempotencyConflictError,
@@ -1907,6 +1912,7 @@ def _load_relation(row: Mapping[str, Any]) -> MemoryRelation:
     )
 
 
+
 def _extract_team_common(
     connection,
     *,
@@ -1922,6 +1928,11 @@ def _extract_team_common(
 
     Run 级幂等：插入 run 行用 ``ON CONFLICT DO NOTHING``，若同 (team, profile,
     completed_at) 已有 run 则加载其计数直接返回，不重复扫描/聚类/写 pending。
+
+    按 ``memory_type`` 分组后做 embedding 余弦相似度贪心聚类；簇需满足最小尺寸且
+    至少 2 个不同成员。簇内 subject/content 选择用确定性纯函数（频次优先 + 字典序
+    兜底），并在 save_rationale 保留分歧摘要。簇内同时出现对立 business_progress
+    （resolved/invalidated）时丢弃该簇——弱方向校验，避免把立场相反的判断并成共性。
     """
 
     from uuid import uuid4
@@ -1965,13 +1976,14 @@ def _extract_team_common(
             candidate_count=0,
             completed_at=effective_at,
         )
-    # 查成员的个人 active 记忆（含 embedding）
+    # 查成员的个人 active 记忆（含 embedding）。business_progress 用于弱方向校验。
     rows = connection.execute(
         """
         SELECT i.memory_id, i.owner_id, i.subject, i.memory_type,
                r.revision_id, r.content, r.embedding,
                r.assertion_kind, r.observed_at, r.extraction_confidence,
-               r.sensitivity_level, r.valid_from, r.valid_until
+               r.sensitivity_level, r.valid_from, r.valid_until,
+               r.business_progress
         FROM memory_items i
         JOIN memory_revisions r
           ON r.memory_id = i.memory_id AND r.owner_id = i.owner_id AND r.is_current
@@ -2023,44 +2035,54 @@ def _extract_team_common(
                 "valid_from": row["valid_from"],
                 "valid_until": row["valid_until"],
                 "revision_id": row["revision_id"],
+                "business_progress": row["business_progress"],
             }
         )
 
-    # 组内聚类
-    clusters: list[list[dict]] = []
+    # 组内 embedding 聚类
+    embedding_clusters: list[list[dict]] = []
     for group in groups.values():
-        clusters.extend(_greedy_cluster(group, similarity_threshold))
+        for cluster in _greedy_cluster(group, similarity_threshold):
+            embedding_clusters.append(cluster)
 
     # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室产生虚假团队候选。
-    valid_clusters = [
+    # 弱方向校验：簇内同时出现 resolved/invalidated 对立 business_progress 时丢弃，
+    # 避免把立场相反的判断（如"风险已解除"与"风险已兑现击穿"）并成同一条团队共性候选。
+    valid_embedding_clusters = [
         c
-        for c in clusters
+        for c in embedding_clusters
         if len(c) >= min_cluster_size
         and len({m["owner_id"] for m in c}) >= 2
+        and not has_conflicting_business_progress(c)
     ]
+
+    cluster_count = len(valid_embedding_clusters)
     candidate_count = 0
 
-    for cluster in valid_clusters:
-        # 选最频繁的 subject
-        subjects = [m["subject"] for m in cluster]
-        subject = max(set(subjects), key=subjects.count)
-        # 最长 content
-        content = max((m["content"] for m in cluster), key=len)
+    for cluster in valid_embedding_clusters:
+        # embedding 簇组内单类型。
         memory_type = cluster[0]["memory_type"]
-        # 幂等：同 subject+type 的 pending 不重复；并按 embedding 余弦相似度
-        # 检测语义重复（距离 < 0.05 视为同义），避免近似候选淹没 pending 列表。
-        cluster_embedding = cluster[0]["embedding"]
+        # 确定性 subject/content 选择（频次优先 + 字典序兜底），替换非确定性 max(set,...)。
+        subject = select_cluster_subject(cluster)
+        content = select_cluster_content(cluster)
+        # 候选 embedding 取簇内成员均值（簇中心），代表性优于 cluster[0] 原始向量，
+        # 且不随成员写新东西/排序变化而漂移，使幂等比对的 embedding 稳定。
+        cluster_embedding = average_embedding([m["embedding"] for m in cluster])
+        # 幂等：同 subject+type 的 pending 或 confirmed 不重复；并按 embedding 余弦相似度
+        # 检测语义重复（距离 < 0.05 视为同义）。扩到 confirmed 防止一条共识被确认后、
+        # 成员继续写同样东西时又产出新 pending（确认时才撞 subject 槽位冲突，但垃圾已留）。
         existing = connection.execute(
             """
             SELECT 1 FROM memory_reviews
-            WHERE owner_id = %s AND memory_type = %s AND status = 'pending'
+            WHERE owner_id = %s AND memory_type = %s
+              AND status IN ('pending', 'confirmed')
               AND (
                   subject = %s
                   OR (embedding IS NOT NULL
                       AND embedding <=> %s::vector < 0.05)
               )
             """,
-            (team_owner_id, memory_type, subject, cluster_embedding),
+            (team_owner_id, memory_type, subject, _embedding_param(cluster_embedding)),
         ).fetchone()
         if existing is not None:
             continue
@@ -2071,20 +2093,22 @@ def _extract_team_common(
         # confidence = 簇内不同 owner 数 / 成员总数
         unique_owners = len(set(m["owner_id"] for m in cluster))
         confidence = round(unique_owners / len(members), 6)
-        assertion_kind = max(
-            set(m["assertion_kind"] for m in cluster),
-            key=lambda k: sum(1 for m in cluster if m["assertion_kind"] == k),
-        )
-        sensitivity = max(
-            set(m["sensitivity_level"] for m in cluster),
-            key=lambda k: sum(1 for m in cluster if m["sensitivity_level"] == k),
-        )
+        # assertion_kind/sensitivity 取众数（频次优先 + 字典序兜底，跨进程可复现）。
+        assertion_kind = _cluster_mode_str(cluster, "assertion_kind")
+        sensitivity = _cluster_mode_str(cluster, "sensitivity_level")
         valid_from = min(m["valid_from"] for m in cluster)
         valid_until = None
         for m in cluster:
             if m["valid_until"] is not None:
                 if valid_until is None or m["valid_until"] < valid_until:
                     valid_until = m["valid_until"]
+        base_rationale = f"团队共性提取：{unique_owners} 个成员写了相似内容"
+        save_rationale = format_divergence_rationale(
+            cluster,
+            base=base_rationale,
+            subject=subject,
+            content=content,
+        )
 
         connection.execute(
             """
@@ -2119,7 +2143,7 @@ def _extract_team_common(
                 "team-extraction",
                 "team-extraction",
                 content,
-                f"团队共性提取：{unique_owners} 个成员写了相似内容",
+                save_rationale,
                 confidence,
                 "durable",
                 "explicit",
@@ -2131,7 +2155,7 @@ def _extract_team_common(
                 valid_from,
                 valid_until,
                 "conversation",
-                cluster_embedding,
+                _embedding_param(cluster_embedding),
             ),
         )
         candidate_count += 1
@@ -2141,17 +2165,48 @@ def _extract_team_common(
         run_id,
         member_count=len(members),
         memory_count=memory_count,
-        cluster_count=len(valid_clusters),
+        cluster_count=cluster_count,
         candidate_count=candidate_count,
     )
     return TeamExtractionResult(
         team_owner_id=team_owner_id,
         member_count=len(members),
         memory_count=memory_count,
-        cluster_count=len(valid_clusters),
+        cluster_count=cluster_count,
         candidate_count=candidate_count,
         completed_at=effective_at,
     )
+
+
+def _cluster_mode_str(cluster: list[dict], field: str) -> str:
+    """取簇内某字符串字段的众数（频次优先 + 字典序兜底），跨进程可复现。
+
+    替换原 ``max(set(...), key=count)`` 的非确定性平局兜底。
+    """
+
+    values = [str(m[field]) for m in cluster]
+    if not values:
+        return ""
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return min(counts, key=lambda v: (-counts[v], v))
+
+
+def _embedding_param(embedding: object) -> object:
+    """把 average_embedding 的 tuple 结果适配为 pgvector 文本格式的 SQL 参数。
+
+    embedding 簇候选用 average_embedding 返回的簇中心 tuple，需转 pgvector 文本格式
+    绑定。None 时返回 None（memory_reviews.embedding 允许 NULL）。
+    """
+
+    if embedding is None:
+        return None
+    if isinstance(embedding, tuple):
+        if not embedding:
+            return None
+        return "[" + ",".join(repr(float(v)) for v in embedding) + "]"
+    return embedding
 
 
 def _greedy_cluster(

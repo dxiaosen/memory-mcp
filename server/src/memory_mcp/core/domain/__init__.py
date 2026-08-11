@@ -65,6 +65,13 @@ from memory_mcp.core.domain.relations import (
     RelationStatus,
 )
 from memory_mcp.core.domain.team_extraction import TeamExtractionResult
+from memory_mcp.core.domain.team_extraction_helpers import (
+    average_embedding,
+    format_divergence_rationale,
+    has_conflicting_business_progress,
+    select_cluster_content,
+    select_cluster_subject,
+)
 
 __all__ = [
     "AdmissionDecision",
@@ -115,9 +122,14 @@ __all__ = [
     "TurnEnvelope",
     "TurnMessage",
     "VerificationStatus",
+    "average_embedding",
+    "format_divergence_rationale",
+    "has_conflicting_business_progress",
     "normalize_compact",
     "normalize_memory_text",
     "normalize_whitespace",
+    "select_cluster_content",
+    "select_cluster_subject",
     "source_expression_matches",
     "tokenize_memory_text",
 ]
