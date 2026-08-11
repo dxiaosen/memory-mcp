@@ -229,17 +229,8 @@ Core 读取内容模式事件：
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
 | `agent_hook.recall.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
 | `agent_hook.after_run.noop` | INFO | `run_ref`（Phase 1：AfterRun 对 capture 完全 no-op，捕获由模型自主调用 `capture_completed_turn`） |
-| `agent_hook.capture.attempt.started` | INFO | `event_ref`, `attempt`, `timeout_seconds`（仅 bridge 编程式路径，hook 进程 AfterRun 不再触发） |
-| `agent_hook.capture.attempt.completed` | INFO | `event_ref`, `attempt`, `duration_ms`, `replayed`, `status` |
-| `agent_hook.capture.attempt.failed` | WARNING | `event_ref`, `attempt`, `duration_ms`, `error_type`, `error_code`, `retryable` |
-| `agent_hook.capture.retry` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
-| `agent_hook.capture.exhausted` | WARNING | `attempt`, `error_code`, `retryable`, `error_type`, `error_message` |
-| `agent_hook.capture.fail_open` | WARNING | `attempts`, `error_code`, `error_type`, `error_message` |
-| `agent_hook.transcript.parse_failed` | WARNING | `transcript_path`, `error_type`, `error_message`（Claude Code transcript JSONL 不可读或结构非法时 best-effort 跳过，不阻断 capture） |
-| `agent_hook.transcript.document_messages_extracted` | DEBUG | `transcript_path`, `document_message_count`（从 transcript 解析出文件读取来源消息数） |
 | `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 的「字段: 原因」摘要）, `error_cause_type`, `error_cause_message`, `encoding`/`byte_position`（仅 `stdin_decode_error`）, `raw_head`/`raw_len`（stdin 解析失败时的原始输入前缀） |
-| `turn_state.read_failed` / `.invalid` | WARNING | `path`, `error_type`, `error_message` |
-| `turn_state.cleanup_corrupt` | WARNING | `path`, `error_type`, `error_message` |
+| `turn_state.cleanup_corrupt` | WARNING | `path`, `error_type`, `error_message`（清理残留旧版本状态文件时的损坏条目） |
 | `mcp_client.http_status_error` | WARNING | `tool`, `status_code`, `error_type`, `error_message` |
 | `mcp_client.http_error` | WARNING | `tool`, `error_type`, `error_message` |
 | `mcp_client.unexpected_error` | ERROR | `tool`, `error_type`, `error_message` |

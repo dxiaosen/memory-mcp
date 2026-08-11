@@ -45,18 +45,15 @@ curl --fail http://127.0.0.1:8765/health
 ## 4. 真实模型闭环
 
 ```text
-写入记忆 ──hook_runner.py──▶ capture_status 已完成, created_memory_ids 非空
-召回记忆 ──hook_runner.py──▶ 返回匹配记忆
+召回记忆 ──hook_runner.py──▶ 返回匹配记忆（BeforeRun 召回注入）
+写入记忆 ──模型自主调用 capture_completed_turn──▶ created_memory_ids 非空
 ```
 
-```bash
-# 写入
-.venv/bin/python examples/hook_runner.py \
-  --env-file examples/agent.env \
-  --conversation-id atlas-write --turn-id atlas-write-1 \
-  --input '在 Atlas 项目中，架构决策记录默认使用中文，并长期保持。'
+Phase 1 后 `hook_runner.py` 只演示 BeforeRun 召回；capture 由模型在轮次中自主
+调用 `capture_completed_turn` MCP 工具触发，不经本脚本。
 
-# 召回
+```bash
+# 召回（写入由模型在对话中自主调用 capture_completed_turn 完成）
 .venv/bin/python examples/hook_runner.py \
   --env-file examples/agent.env \
   --conversation-id atlas-read --turn-id atlas-read-1 \

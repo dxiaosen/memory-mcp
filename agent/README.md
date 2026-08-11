@@ -26,7 +26,7 @@ command -v memory-mcp-hook
 ```
 
 Python Framework 直接集成时安装同一个发行包，然后从 `memory_mcp_agent` 导入
-`MemoryMcpClient`、`MemoryHookBridge` 和 `HookedAgentRunner`。
+`MemoryMcpClient`、`MemoryHookBridge`（BeforeRun 召回注入）。
 
 完整配置和 Codex、Claude Code、通用宿主接入步骤见源码仓库
 `docs/agents.md`。

@@ -155,11 +155,11 @@ MEMORY_MCP_TOKEN=REPLACE_WITH_THIS_AGENT_TOKEN_AT_LEAST_32_CHARACTERS
 
 ```text
 BeforeRun → recall_memory → 注入 rendered_context
-AfterRun  → capture_completed_turn（仅成功完成的轮次）
+AfterRun  → no-op（Phase 1 后 capture 由模型自主调用 capture_completed_turn）
 ```
 
 - 投研 Profile 启用 `relation_policies` 时，Server 在同一 Capture 事务完成候选准入、关系抽取和保存。Agent 不主动调用 `link_memories`。
-- `memory-mcp-hook` 内置 Codex/Claude Code 字段兼容。单进程 Agent Framework 直接使用 `MemoryHookBridge`/`HookedAgentRunner`。详见 [Agent 主动记忆接入](agents.md)。
+- `memory-mcp-hook` 内置 Codex/Claude Code 字段兼容。单进程 Agent Framework 直接使用 `MemoryHookBridge`（BeforeRun 召回）。详见 [Agent 主动记忆接入](agents.md)。
 
 ## 10. 发布与回滚
 

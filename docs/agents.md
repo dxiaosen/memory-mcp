@@ -13,16 +13,17 @@ Codex 和 Claude Code 是首批提供可复制配置的宿主，不是实现边�
 调用仍由模型判断。主动记忆额外依赖宿主 Hook：
 
 ```text
-用户提交顶层输入 → BeforeRun：保存最小轮次状态 → recall_memory → 注入 additional_context
+用户提交顶层输入 → BeforeRun：recall_memory → 注入 additional_context
   │
   Agent 执行模型、工具和子 Agent
   │
-  → AfterRun（顶层最终回复已形成）：读取本轮原始输入 → capture_completed_turn → 删除轮次状态
+  → AfterRun：no-op（Phase 1 后 capture 由模型自主调用 capture_completed_turn）
 ```
 
-AfterRun 是每个顶层用户轮次结束，不是会话关闭。工具调用和子 Agent 不单独捕获；
-用户中断或无最终回复的轮次不提交成功捕获。实现分三个边界，新增宿主无需修改 MCP
-Client、Bridge、状态存储或 Memory Core，也不通过 `turn_id`/`prompt_id` 猜测宿主类型：
+Phase 1 后 Hook 只做 BeforeRun 召回注入；AfterRun 对 capture 完全 no-op，捕获由
+模型在轮次中自主调用 `capture_completed_turn` MCP 工具触发。实现分三个边界，新增宿主
+无需修改 MCP Client、Bridge、状态存储或 Memory Core，也不通过 `turn_id`/`prompt_id`
+猜测宿主类型：
 
 | 边界 | 职责 |
 | --- | --- |
@@ -188,13 +189,13 @@ Agent 包要求 Python 3.11+（Server 的 Python 3.14 不传递）。共享 `.ve
 
 ### 4.2 直接嵌入 Agent Framework
 
-框架能在单进程内包住顶层调用时，优先使用 `HookedAgentRunner`，不需要 command Hook
-或跨进程状态文件：
+框架能在单进程内包住顶层调用时，可直接用 `MemoryHookBridge` 做 BeforeRun 召回注入，
+不需要 command Hook 或跨进程状态文件。Phase 1 后 capture 由模型自主调用
+`capture_completed_turn`，不再经 bridge：
 
 ```python
 from memory_mcp_agent import (
     HookContext,
-    HookedAgentRunner,
     MemoryHookBridge,
     MemoryHookSettings,
     MemoryMcpClient,
@@ -206,11 +207,12 @@ context = HookContext(
 )  # 通用 general-work；投研 investment-research
 async with MemoryMcpClient(settings) as client:
     bridge = MemoryHookBridge(client, settings)
-    result = await HookedAgentRunner(bridge, call_agent).run(context, user_input)
+    recalled = await bridge.before_run(context, user_input)
+    # recalled.memory_context 注入 Agent；Agent 自主决定是否调用 capture_completed_turn
 ```
 
-`call_agent(user_input, memory_context)` 应把记忆当作不可信历史上下文，并返回顶层最终
-回复。可运行示例见 [`examples/hook_runner.py`](../examples/hook_runner.py)。
+`memory_context` 应被当作不可信历史上下文。可运行示例见
+[`examples/hook_runner.py`](../examples/hook_runner.py)。
 
 ### 4.3 新宿主兼容性检查
 

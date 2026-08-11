@@ -1,4 +1,9 @@
-"""与 Agent 框架无关的 BeforeRun/AfterRun 生命周期语义。"""
+"""与 Agent 框架无关的 BeforeRun/AfterRun 生命周期语义。
+
+Phase 1（模型自主调用 capture）后，capture 不再由 hook 触发，bridge 只保留
+BeforeRun 召回链。AfterRun capture 由模型自主调用 ``capture_completed_turn``
+MCP 工具，不再经过 bridge。
+"""
 
 from __future__ import annotations
 
@@ -8,11 +13,8 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from time import perf_counter
-from uuid import NAMESPACE_URL, uuid5
 
 from memory_mcp_agent.client import (
-    CaptureSummary,
     MemoryHookClient,
     MemoryHookClientError,
 )
@@ -33,22 +35,6 @@ class BeforeRunResult:
     warning_code: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AfterRunResult:
-    """AfterRun 的结果：顶层任务成功后返回一次的捕获回执。"""
-
-    event_ref: str
-    status: str
-    attempts: int
-    replayed: bool = False
-    capture_id: str | None = None
-    summary: CaptureSummary | None = None
-    created_memory_ids: tuple[str, ...] = ()
-    pending_review_ids: tuple[str, ...] = ()
-    failure_code: str | None = None
-    warning_code: str | None = None
-
-
 class MemoryHookRunConflictError(ValueError):
     """同一个顶层任务标识被不同 payload 重用时抛出，用于保护幂等语义。"""
 
@@ -63,18 +49,12 @@ class _BeforeTask:
     task: asyncio.Task[BeforeRunResult]
 
 
-@dataclass(frozen=True, slots=True)
-class _AfterTask:
-    fingerprint: str
-    task: asyncio.Task[AfterRunResult]
-
-
 class MemoryHookBridge:
-    """按顶层任务去重 Hook，并执行有界 fail-open 重试。
+    """按顶层任务去重 BeforeRun 召回，并执行有界 fail-open 重试。
 
-    同一个 run_key 的 Before/After 各只执行一次；若调用方以不同 payload
-    重用同一 run_key，则抛出 MemoryHookRunConflictError 以保证幂等。
-    当 fail_open 开启时，记忆服务的异常不会中断上层 Agent 任务。
+    同一个 run_key 的 BeforeRun 只执行一次；若调用方以不同 payload 重用同一
+    run_key，则抛出 MemoryHookRunConflictError 以保证幂等。当 fail_open 开启时，
+    记忆服务的异常不会中断上层 Agent 任务。
     """
 
     def __init__(
@@ -89,10 +69,6 @@ class MemoryHookBridge:
         self._before_tasks: OrderedDict[
             tuple[str, str, str],
             _BeforeTask,
-        ] = OrderedDict()
-        self._after_tasks: OrderedDict[
-            tuple[str, str, str],
-            _AfterTask,
         ] = OrderedDict()
 
     async def before_run(
@@ -121,49 +97,6 @@ class MemoryHookBridge:
                 raise MemoryHookRunConflictError("BeforeRun")
             else:
                 self._before_tasks.move_to_end(context.run_key)
-        return await asyncio.shield(entry.task)
-
-    async def after_run_success(
-        self,
-        context: HookContext,
-        *,
-        user_input: str,
-        final_output: str,
-        subject_hint: str | None = None,
-    ) -> AfterRunResult:
-        """顶层任务成功产生最终响应后捕获一次。
-
-        Phase 1（模型自主调用 capture）后，此方法仅供编程式接入参考
-        （``HookedAgentRunner``）。身份与幂等字段（event_id/observed_at/
-        contract_version）由服务器组装，客户端不再生成。
-        """
-
-        fingerprint = _fingerprint(
-            {
-                "user_input": user_input,
-                "final_output": final_output,
-                "subject_hint": subject_hint,
-            }
-        )
-        async with self._lock:
-            entry = self._after_tasks.get(context.run_key)
-            if entry is None:
-                task = asyncio.create_task(
-                    self._capture(
-                        context,
-                        user_input=user_input,
-                        final_output=final_output,
-                        subject_hint=subject_hint,
-                    )
-                )
-                task.add_done_callback(self._after_task_done)
-                entry = _AfterTask(fingerprint=fingerprint, task=task)
-                self._after_tasks[context.run_key] = entry
-                self._trim_completed(self._after_tasks)
-            elif entry.fingerprint != fingerprint:
-                raise MemoryHookRunConflictError("AfterRun")
-            else:
-                self._after_tasks.move_to_end(context.run_key)
         return await asyncio.shield(entry.task)
 
     async def _recall(
@@ -213,130 +146,11 @@ class MemoryHookBridge:
             truncated=response.truncated,
         )
 
-    async def _capture(
-        self,
-        context: HookContext,
-        *,
-        user_input: str,
-        final_output: str,
-        subject_hint: str | None = None,
-    ) -> AfterRunResult:
-        """对可重试错误做有界重试，最终失败则按 fail_open 决定抛出或降级。"""
-        event_ref = _event_ref(context)
-        final_error: MemoryHookClientError | None = None
-        attempts = 0
-        for attempt in range(1, self._settings.capture_max_attempts + 1):
-            attempts = attempt
-            _attempt_started_at = perf_counter()
-            log_event(
-                _LOGGER,
-                logging.INFO,
-                "agent_hook.capture.attempt.started",
-                event_ref=event_ref,
-                attempt=attempt,
-                timeout_seconds=self._settings.capture_timeout_seconds,
-            )
-            try:
-                response = await self._client.capture_completed_turn(
-                    profile_id=context.profile_id,
-                    conversation_id=context.conversation_id,
-                    turn_id=context.turn_id,
-                    user_input=user_input,
-                    final_output=final_output,
-                    subject_hint=subject_hint,
-                )
-                log_event(
-                    _LOGGER,
-                    logging.INFO,
-                    "agent_hook.capture.attempt.completed",
-                    event_ref=event_ref,
-                    attempt=attempt,
-                    duration_ms=round(
-                        (perf_counter() - _attempt_started_at) * 1000, 3
-                    ),
-                    replayed=response.replayed,
-                    status=response.status,
-                )
-                return AfterRunResult(
-                    event_ref=event_ref,
-                    status=response.status,
-                    attempts=attempt,
-                    replayed=response.replayed,
-                    capture_id=response.capture_id,
-                    summary=response.summary,
-                    created_memory_ids=response.created_memory_ids,
-                    pending_review_ids=response.pending_review_ids,
-                    failure_code=response.failure_code,
-                )
-            except MemoryHookClientError as exc:
-                final_error = exc
-                log_event(
-                    _LOGGER,
-                    logging.WARNING,
-                    "agent_hook.capture.attempt.failed",
-                    event_ref=event_ref,
-                    attempt=attempt,
-                    duration_ms=round(
-                        (perf_counter() - _attempt_started_at) * 1000, 3
-                    ),
-                    error_type=type(exc).__name__,
-                    error_code=exc.code,
-                    retryable=exc.retryable,
-                )
-                if exc.retryable and attempt < self._settings.capture_max_attempts:
-                    # 每次重试前记全：第几次、错误码、是否可重试、异常链。
-                    cause = exc.__cause__
-                    log_event(
-                        _LOGGER,
-                        logging.WARNING,
-                        "agent_hook.capture.retry",
-                        attempt=attempt,
-                        error_code=exc.code,
-                        retryable=exc.retryable,
-                        error_type=type(exc).__name__,
-                        error_message=str(exc),
-                        cause_type=type(cause).__name__ if cause else None,
-                        cause_message=str(cause) if cause else None,
-                    )
-                    await asyncio.sleep(self._settings.capture_retry_delay_seconds)
-                    continue
-                # 重试耗尽：记最终失败码与原因，再决定抛出还是降级。
-                log_event(
-                    _LOGGER,
-                    logging.WARNING,
-                    "agent_hook.capture.exhausted",
-                    attempt=attempt,
-                    error_code=exc.code,
-                    retryable=exc.retryable,
-                    error_type=type(exc).__name__,
-                    error_message=str(exc),
-                )
-                break
-        assert final_error is not None
-        if not self._settings.fail_open:
-            raise final_error
-        # fail-open 吞掉最终错误前记全，否则捕获失败原因丢失。
-        log_event(
-            _LOGGER,
-            logging.WARNING,
-            "agent_hook.capture.fail_open",
-            attempts=attempts,
-            error_code=final_error.code,
-            error_type=type(final_error).__name__,
-            error_message=str(final_error),
-        )
-        return AfterRunResult(
-            event_ref=event_ref,
-            status="warning",
-            attempts=attempts,
-            warning_code=final_error.code,
-        )
-
     def _trim_completed(
         self,
         cache: OrderedDict[
             tuple[str, str, str],
-            _BeforeTask | _AfterTask,
+            _BeforeTask,
         ],
     ) -> None:
         """限制已保留回执数量，但不取消正在执行的 Hook。"""
@@ -356,29 +170,9 @@ class MemoryHookBridge:
         self._maintenance_tasks.add(task)
         task.add_done_callback(self._maintenance_tasks.discard)
 
-    def _after_task_done(self, _: asyncio.Task[AfterRunResult]) -> None:
-        task = asyncio.create_task(self._trim_after_cache())
-        self._maintenance_tasks.add(task)
-        task.add_done_callback(self._maintenance_tasks.discard)
-
     async def _trim_before_cache(self) -> None:
         async with self._lock:
             self._trim_completed(self._before_tasks)
-
-    async def _trim_after_cache(self) -> None:
-        async with self._lock:
-            self._trim_completed(self._after_tasks)
-
-
-def _event_ref(context: HookContext) -> str:
-    """由 run_key 生成确定性日志关联标识。
-
-    Phase 1 后 event_id 由服务器组装，客户端只生成用于日志关联的稳定
-    event_ref（同一轮次重复调用产生同一标识），不再用于幂等键。
-    """
-
-    identity = "\x1f".join(context.run_key)
-    return f"memory-bridge:{uuid5(NAMESPACE_URL, identity)}"
 
 
 def _fingerprint(payload: dict[str, object]) -> str:

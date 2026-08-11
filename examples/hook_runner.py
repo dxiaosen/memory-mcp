@@ -1,4 +1,9 @@
-"""使用主动记忆 Hook 运行一个框架无关的 Agent 顶层轮次。"""
+"""使用主动记忆 Hook 运行一个框架无关的 Agent 顶层轮次（BeforeRun 召回）。
+
+Phase 1（模型自主调用 capture）后，Hook 只保留 BeforeRun 召回注入；AfterRun
+capture 由模型自主调用 ``capture_completed_turn`` MCP 工具，不再经本脚本。
+本示例展示 BeforeRun 召回链：从 Memory MCP 召回相关记忆并注入上下文。
+"""
 
 import argparse
 import asyncio
@@ -8,19 +13,10 @@ from uuid import uuid4
 
 from memory_mcp_agent import (
     HookContext,
-    HookedAgentRunner,
     MemoryHookBridge,
     MemoryHookSettings,
     MemoryMcpClient,
 )
-
-
-async def _agent(user_input: str, memory_context: str | None) -> str:
-    """实际接入时把此函数替换为应用自己的 Agent 调用。"""
-
-    if memory_context:
-        return f"已结合长期记忆处理：{user_input}"
-    return f"已处理：{user_input}"
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -34,24 +30,16 @@ async def _run(args: argparse.Namespace) -> None:
     )
     async with MemoryMcpClient(settings) as client:
         bridge = MemoryHookBridge(client, settings)
-        result = await HookedAgentRunner(bridge, _agent).run(
-            context,
-            args.input,
-        )
+        result = await bridge.before_run(context, args.input)
     print(
         json.dumps(
             {
                 "conversation_id": context.conversation_id,
                 "turn_id": context.turn_id,
-                "recalled_count": result.before_run.recalled_count,
-                "memory_context": result.before_run.memory_context,
-                "recall_warning": result.before_run.warning_code,
-                "final_output": result.final_output,
-                "capture_status": result.after_run.status,
-                "capture_attempts": result.after_run.attempts,
-                "capture_replayed": result.after_run.replayed,
-                "created_memory_ids": result.after_run.created_memory_ids,
-                "capture_warning": result.after_run.warning_code,
+                "recalled_count": result.recalled_count,
+                "memory_context": result.memory_context,
+                "truncated": result.truncated,
+                "warning_code": result.warning_code,
             },
             ensure_ascii=False,
             indent=2,
@@ -61,7 +49,7 @@ async def _run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a top-level Agent turn with Memory MCP hooks."
+        description="Run a top-level Agent turn with Memory MCP BeforeRun recall."
     )
     parser.add_argument(
         "--env-file",

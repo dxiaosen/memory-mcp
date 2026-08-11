@@ -5,7 +5,6 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import UTC, datetime
 
 import anyio
 import httpx
@@ -57,19 +56,11 @@ def _tokens() -> SecretStr:
 
 def _event() -> dict[str, object]:
     return {
-        "event_id": "postgresql-event-1",
-        "contract_version": "1",
         "profile_id": "general-work",
         "conversation_id": "postgresql-conversation",
         "turn_id": "postgresql-turn-1",
-        "observed_at": datetime(2026, 7, 30, 10, tzinfo=UTC).isoformat(),
-        "messages": [
-            {
-                "role": "user",
-                "content": "以后项目周报默认用表格",
-                "message_id": "postgresql-message-1",
-            }
-        ],
+        "user_input": "以后项目周报默认用表格",
+        "final_output": "好的，已记录周报默认使用表格格式。",
     }
 
 
@@ -247,7 +238,7 @@ def test_postgresql_mcp_three_turn_recall_and_restart() -> None:
         _truncate(database_url)
 
 
-def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
+def test_postgresql_cross_agent_capture_and_recall_end_to_end() -> None:
     configured_database_url = os.environ.get(_DATABASE_ENV)
     if not configured_database_url:
         pytest.skip(f"{_DATABASE_ENV} is not configured")
@@ -258,13 +249,6 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
             pytest.fail(f"{_DATABASE_ENV} must select a disposable test database")
 
     from memory_mcp.core.adapters.postgresql.schema import apply_migrations
-    from memory_mcp_agent import (
-        HookContext,
-        HookedAgentRunner,
-        MemoryHookBridge,
-        MemoryHookSettings,
-        MemoryMcpClient,
-    )
 
     extractor = FakeCandidateExtractor(
         (
@@ -277,75 +261,52 @@ def test_postgresql_hook_runner_cross_agent_end_to_end() -> None:
         )
     )
 
-    async def agent(
-        user_input: str,
-        memory_context: str | None,
-    ) -> str:
-        return (
-            f"已结合长期记忆处理：{user_input}"
-            if memory_context
-            else f"已处理：{user_input}"
-        )
-
-    def runner(
-        url: str,
-        token: str,
-    ) -> tuple[MemoryMcpClient, HookedAgentRunner]:
-        settings = MemoryHookSettings(
-            mcp_url=url,
-            bearer_token=token,
-            fail_open=False,
-            capture_retry_delay_seconds=0,
-            _env_file=None,
-        )
-        client = MemoryMcpClient(settings)
-        return (
-            client,
-            HookedAgentRunner(
-                MemoryHookBridge(client, settings),
-                agent,
-            ),
-        )
-
     async def profile_id(url: str) -> None:
-        first_client, first_runner = runner(url, _OWNER_A_AGENT_A_TOKEN)
-        async with first_client:
-            first = await first_runner.run(
-                HookContext(
-                    conversation_id="hook-agent-a",
-                    turn_id="hook-turn-a-1",
-                    subject="weekly-report",
-                ),
-                "以后项目周报默认用表格",
+        # Agent A 捕获一条长期格式偏好。
+        async with _session(url, _OWNER_A_AGENT_A_TOKEN) as session:
+            captured = _payload(
+                await session.call_tool(
+                    "capture_completed_turn",
+                    arguments={
+                        "profile_id": "general-work",
+                        "conversation_id": "hook-agent-a",
+                        "turn_id": "hook-turn-a-1",
+                        "user_input": "以后项目周报默认用表格",
+                        "final_output": "好的，已记录。",
+                    },
+                )
             )
-        assert first.before_run.recalled_count == 0
-        assert len(first.after_run.created_memory_ids) == 1
+            assert captured["replayed"] is False
+            assert len(captured["created_memory_ids"]) == 1
 
-        shared_client, shared_runner = runner(url, _OWNER_A_AGENT_B_TOKEN)
-        async with shared_client:
-            shared = await shared_runner.run(
-                HookContext(
-                    conversation_id="hook-agent-b",
-                    turn_id="hook-turn-b-1",
-                    subject="weekly-report",
-                ),
-                "项目周报 表格",
+        # 同 owner 的 Agent B 召回到该记忆。
+        async with _session(url, _OWNER_A_AGENT_B_TOKEN) as session:
+            recalled = _payload(
+                await session.call_tool(
+                    "recall_memory",
+                    arguments={
+                        "profile_id": "general-work",
+                        "query": "项目周报 表格",
+                        "subject": "weekly-report",
+                    },
+                )
             )
-        assert shared.before_run.recalled_count == 1
-        assert "项目周报默认使用表格" in (shared.before_run.memory_context or "")
+            assert len(recalled["items"]) == 1
+            assert "项目周报默认使用表格" in recalled["rendered_context"]
 
-        isolated_client, isolated_runner = runner(url, _OWNER_B_AGENT_TOKEN)
-        async with isolated_client:
-            isolated = await isolated_runner.run(
-                HookContext(
-                    conversation_id="hook-owner-b",
-                    turn_id="hook-turn-owner-b-1",
-                    subject="weekly-report",
-                ),
-                "项目周报 表格",
+        # 隔离 owner 的 Agent 召回不到。
+        async with _session(url, _OWNER_B_AGENT_TOKEN) as session:
+            isolated = _payload(
+                await session.call_tool(
+                    "recall_memory",
+                    arguments={
+                        "profile_id": "general-work",
+                        "query": "项目周报 表格",
+                        "subject": "weekly-report",
+                    },
+                )
             )
-        assert isolated.before_run.recalled_count == 0
-        assert isolated.before_run.memory_context is None
+            assert isolated["items"] == []
 
     apply_migrations(database_url.get_secret_value())
     _truncate(database_url)

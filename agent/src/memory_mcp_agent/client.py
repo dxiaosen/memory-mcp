@@ -58,30 +58,6 @@ class RecallResponse(_Receipt):
     truncated: bool
 
 
-class CaptureSummary(BaseModel):
-    """捕获阶段的记忆处置计数：自动保存、待审核、丢弃、被拦截。"""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    auto_saved_count: int = 0
-    pending_count: int = 0
-    discarded_count: int = 0
-    blocked_count: int = 0
-
-
-class CaptureResponse(_Receipt):
-    """capture_completed_turn 的结构化响应，描述本轮捕获的终态与产物。"""
-
-    ok: Literal[True] = True
-    capture_id: str
-    status: Literal["completed", "failed", "reprocess_required"]
-    replayed: bool
-    summary: CaptureSummary
-    created_memory_ids: tuple[str, ...] = ()
-    pending_review_ids: tuple[str, ...] = ()
-    failure_code: str | None = None
-
-
 class MemoryHookClientError(RuntimeError):
     """客户端对外暴露的稳定错误，只含稳定的错误码，不泄漏敏感信息。"""
 
@@ -97,7 +73,11 @@ class MemoryHookClientError(RuntimeError):
 
 
 class MemoryHookClient(Protocol):
-    """主动记忆客户端协议：只暴露 recall 与 capture 两个 Tool 的调用契约。"""
+    """主动记忆客户端协议：Phase 1 后只暴露 recall_memory 调用契约。
+
+    capture 由模型自主调用 ``capture_completed_turn`` MCP 工具，不再经过
+    本客户端协议。
+    """
 
     async def recall_memory(
         self,
@@ -109,17 +89,6 @@ class MemoryHookClient(Protocol):
         max_items: int,
         token_budget: int,
     ) -> RecallResponse: ...
-
-    async def capture_completed_turn(
-        self,
-        *,
-        conversation_id: str,
-        turn_id: str,
-        user_input: str,
-        final_output: str,
-        profile_id: str | None = None,
-        subject_hint: str | None = None,
-    ) -> CaptureResponse: ...
 
 
 class MemoryMcpClient:
@@ -176,42 +145,6 @@ class MemoryMcpClient:
             return RecallResponse.model_validate(payload)
         except ValueError as exc:
             raise MemoryHookClientError("invalid_recall_response") from exc
-
-    async def capture_completed_turn(
-        self,
-        *,
-        conversation_id: str,
-        turn_id: str,
-        user_input: str,
-        final_output: str,
-        profile_id: str | None = None,
-        subject_hint: str | None = None,
-    ) -> CaptureResponse:
-        """调用 capture_completed_turn MCP 工具。
-
-        Phase 1（模型自主调用）后，身份与幂等字段（event_id/observed_at/
-        contract_version）由服务器组装，客户端只传对话内容与对话/轮次标识。
-        """
-
-        arguments: dict[str, Any] = {
-            "conversation_id": conversation_id,
-            "turn_id": turn_id,
-            "user_input": user_input,
-            "final_output": final_output,
-        }
-        if profile_id is not None:
-            arguments["profile_id"] = profile_id
-        if subject_hint is not None:
-            arguments["subject_hint"] = subject_hint
-        payload = await self._call_tool(
-            "capture_completed_turn",
-            arguments,
-            timeout=self._settings.capture_timeout_seconds,
-        )
-        try:
-            return CaptureResponse.model_validate(payload)
-        except ValueError as exc:
-            raise MemoryHookClientError("invalid_capture_response") from exc
 
     async def _call_tool(
         self,

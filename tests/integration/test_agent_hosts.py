@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Literal
 
 import anyio
 import pytest
@@ -9,7 +8,6 @@ from memory_mcp_agent import (
     AgentHookInputError,
     AgentHookOutcome,
     AgentTurnEvent,
-    CaptureResponse,
     MemoryHookBridge,
     MemoryHookClientError,
     MemoryHookSettings,
@@ -19,14 +17,13 @@ from memory_mcp_agent import (
     render_command_hook_output,
 )
 from memory_mcp_agent.cli import render_hook_output
-from memory_mcp_agent.client import CaptureSummary, RecalledItem
+from memory_mcp_agent.client import RecalledItem
 
 
 def _settings() -> MemoryHookSettings:
     return MemoryHookSettings(
         mcp_url="http://127.0.0.1:8765/mcp",
         bearer_token="configured-token",
-        capture_retry_delay_seconds=0,
         _env_file=None,
     )
 
@@ -37,19 +34,10 @@ class _FakeClient:
         *,
         with_memory: bool = True,
         recall_error: MemoryHookClientError | None = None,
-        capture_error: MemoryHookClientError | None = None,
-        capture_status: Literal[
-            "completed", "failed", "reprocess_required"
-        ] = "completed",
-        capture_failure_code: str | None = None,
     ) -> None:
         self.with_memory = with_memory
         self.recall_error = recall_error
-        self.capture_error = capture_error
-        self.capture_status = capture_status
-        self.capture_failure_code = capture_failure_code
         self.recall_calls: list[dict[str, object]] = []
-        self.capture_calls: list[dict[str, object]] = []
 
     async def recall_memory(self, **arguments: object) -> RecallResponse:
         self.recall_calls.append(arguments)
@@ -78,23 +66,6 @@ class _FakeClient:
             truncated=False,
         )
 
-    async def capture_completed_turn(
-        self,
-        **arguments: object,
-    ) -> CaptureResponse:
-        self.capture_calls.append(arguments)
-        if self.capture_error is not None:
-            raise self.capture_error
-        return CaptureResponse(
-            ok=True,
-            request_id="request-capture",
-            capture_id="capture-1",
-            status=self.capture_status,
-            replayed=False,
-            summary=CaptureSummary(auto_saved_count=1),
-            created_memory_ids=("memory-1",),
-            failure_code=self.capture_failure_code,
-        )
 
 
 def _adapter(
@@ -165,7 +136,7 @@ def test_supported_hosts_share_active_memory_flow(
 
         # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
         assert after_outcome == AgentHookOutcome()
-        assert client.capture_calls == []
+        assert len(client.recall_calls) == 1
 
     anyio.run(profile_id)
 
@@ -218,7 +189,7 @@ def test_after_run_is_noop_regardless_of_transcript(tmp_path: Path) -> None:
         )
 
         assert output == AgentHookOutcome()
-        assert client.capture_calls == []
+        # AfterRun no-op: 仅 BeforeRun 召回一次，无 capture 调用。
 
     anyio.run(profile_id)
 
@@ -372,7 +343,7 @@ def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
         assert after.phase == "after_run"
         # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
         assert after_outcome == AgentHookOutcome()
-        assert client.capture_calls == []
+        assert len(client.recall_calls) == 1
 
     anyio.run(profile_id)
 

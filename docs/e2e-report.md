@@ -2,7 +2,10 @@
 
 > 测试时间：2026-08-06  
 > 测试人：AI 编程助手（Claude Code）  
-> 测试范围：以「真实模型 + 真实 PostgreSQL」为核心的投研场景端到端验证
+> 测试范围：以「真实模型 + 真实 PostgreSQL」为核心的投研场景端到端验证  
+> **注**：本报告记录 Phase 1 前的 hook runner 闭环测试。Phase 1 后
+> `HookedAgentRunner` 已移除，AfterRun capture 改由模型自主调用
+> `capture_completed_turn` MCP 工具触发；本报告中的 runner 路径仅作历史参考。
 
 ## 1. 测试目标与约束
 
@@ -37,7 +40,7 @@
 | Embedding | Qwen（`MEMORY_MCP_EMBEDDING_*`，`.env` 实配） |
 | 存储 | 真实 PostgreSQL + pgvector（`MEMORY_MCP_POSTGRES_*`，`.env` 实配） |
 | MCP Server | `create_memory_mcp_server(settings)` → ASGI HTTP，host/port 取自 settings |
-| Agent Hook | `MemoryHookSettings(mcp_url=..., bearer_token=..., profile_id="investment-research", recall_max_items=8, recall_token_budget=1200, capture_max_attempts=2)` |
+| Agent Hook | `MemoryHookSettings(mcp_url=..., bearer_token=..., profile_id="investment-research", recall_max_items=8, recall_token_budget=1200)` |
 | 身份 | StaticTokenVerifier 派生 `PrincipalContext`：subject-001 / subject-002（隔离验证）/ team:research-dept |
 | Profile | `investment-research`（8 memory_type、6 relation_type）、`general-work` |
 

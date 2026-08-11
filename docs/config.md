@@ -181,14 +181,13 @@
 | `MEMORY_MCP_URL` | 无 | 是 | 完整 `/mcp` URL |
 | `MEMORY_MCP_TOKEN` | 无 | 是 | Server 已映射的 Bearer Token；Secret |
 | `MEMORY_HOOK_RECALL_TIMEOUT_SECONDS` | `15` | 否 | recall HTTP 超时；需在用户请求开始前返回 |
-| `MEMORY_HOOK_CAPTURE_TIMEOUT_SECONDS` | `70` | 否 | capture HTTP 超时；需覆盖真实结构化抽取 + DB 延迟 |
 
 - Agent 默认不发送 `profile_id`，由 Token 的 `default_profile_id` 决定策略。
-- recall 与 capture 使用各自超时（recommend.md §2）：满足 Claude Stop Hook 90s > Agent capture 70s > Server P95 <60s。fail-open 默认开启，召回最多 5 条/600 token，capture 最多尝试 3 次。
+- Phase 1（模型自主调用 capture）后，capture 由模型自主调用 `capture_completed_turn` MCP 工具，不再经 Agent 客户端，故 capture 超时/重试设置已移除。recall fail-open 默认开启，召回最多 5 条/600 token。
 - `MEMORY_HOOK_PROFILE_ID` 可作进程级高级覆盖，不进入普通 Agent 模板。
 - Agent Token 只在 HTTP Authorization 边界解封，不能放进 CLI 参数、模型上下文或日志。
 - 同一用户跨 Agent 发放不同 Token，映射到相同 tenant/subject。
-- command Hook 本地 outbox（`cwd/.memory-mcp/hooks`，`0700/0600`）：网络 warning 或 `reprocess_required` 时保留 payload，后续 Stop 最多补送一条，24 小时后清理。
+- command Hook 本地状态目录（`cwd/.memory-mcp/hooks`，`0700/0600`）仅保留 24h TTL 清理残留旧版本文件，不再写入新状态。
 - 不需要 Redis、消息队列或常驻 Agent daemon。
 
 ## 5. 最小模板

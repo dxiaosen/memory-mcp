@@ -23,14 +23,14 @@
   - 证据：grep 确认这些符号已不在 hosts.py
 - [x] hosts.py `_before` 不再 `self._state.save(TurnState(...))`
   - 证据：`_before` 内无 `self._state.save` 调用
-- [x] transcript.py 删 `collect_turn_tool_uses`（保留 `extract_document_messages`）
-  - 证据：`agent/src/memory_mcp_agent/transcript.py` 无 `collect_turn_tool_uses`，`extract_document_messages` 仍在
-- [x] bridge.py `after_run_success` 删 `observed_at`/`document_messages` 参数
-  - 证据：`agent/src/memory_mcp_agent/bridge.py` `async def after_run_success(self, context, *, user_input, final_output, subject_hint=None)`
-- [x] bridge.py `AfterRunResult.event_id` 改名 `event_ref`，`_capture` 不再生成 event_id/observed_at
-  - 证据：同文件 `@dataclass class AfterRunResult: event_ref: str`，`_capture` 调 `client.capture_completed_turn(conversation_id=, turn_id=, user_input=, final_output=, subject_hint=)`
-- [x] client.py `capture_completed_turn` Protocol + MemoryMcpClient 签名简化
-  - 证据：`agent/src/memory_mcp_agent/client.py` Protocol 与 impl 均为 `(conversation_id, turn_id, user_input, final_output, profile_id=None, subject_hint=None)`，不再传 event_id/contract_version/observed_at/messages
+- [x] transcript.py 删 `collect_turn_tool_uses`（后续整文件删除见 §6）
+  - 证据：`agent/src/memory_mcp_agent/transcript.py` 不存在
+- [x] bridge.py `after_run_success` 删 `observed_at`/`document_messages` 参数（后续整方法删除见 §6）
+  - 证据：`agent/src/memory_mcp_agent/bridge.py` 无 `after_run_success`
+- [x] bridge.py `AfterRunResult.event_id` 改名 `event_ref`，`_capture` 不再生成 event_id/observed_at（后续 `AfterRunResult`/`_capture` 整体删除见 §6）
+  - 证据：同文件无 `AfterRunResult`/`_capture`
+- [x] client.py `capture_completed_turn` Protocol + MemoryMcpClient 签名简化（后续整体删除见 §6）
+  - 证据：`agent/src/memory_mcp_agent/client.py` 无 `capture_completed_turn`
 
 ## 3. 测试更新
 
@@ -62,9 +62,35 @@
 
 - [x] `uv run ruff check .` 通过
   - 证据：本地运行 `All checks passed!`
+- [x] `uv run pyright agent/src/memory_mcp_agent/` 通过
+  - 证据：本地运行 `0 errors, 0 warnings, 0 informations`
 - [x] `uv run pytest tests/contract/test_dependency_boundaries.py` 通过（core 不动）
   - 证据：本地运行 `4 passed`
 - [x] `uv run pytest -q` 全量通过
-  - 证据：本地运行 `342 passed, 13 skipped`
+  - 证据：本地运行 `325 passed, 13 skipped`（死代码测试删除后较 Phase 1 初版 342 减少）
 - [x] `uv run python -m evals.runner --mode deterministic` 通过（无回归）
   - 证据：本地运行 isolation/lifecycle/safety pass_rate=1.0，failed_count=0
+
+## 6. Agent 死代码清理（Phase 1 收尾）
+
+Phase 1 移除 Stop hook capture 路径后，agent 包留下约 1200 行无生产调用方的死代码。
+本节记录清理范围（§2 中"保留"的过渡表述以此为准）：
+
+- [x] `bridge.py` 删 `after_run_success`/`_capture`/`AfterRunResult`/`_AfterTask`/`_event_ref`，仅保留 BeforeRun 召回链
+  - 证据：`agent/src/memory_mcp_agent/bridge.py` 仅有 `before_run`/`_recall`/`BeforeRunResult`/`_BeforeTask`，无 after_run_success
+- [x] `runner.py` 整文件删除（`HookedAgentRunner`/`RunnerResult` 无生产调用方）
+  - 证据：`agent/src/memory_mcp_agent/runner.py` 不存在；`__init__.py` 不导出 `HookedAgentRunner`/`RunnerResult`
+- [x] `client.py` 删 `capture_completed_turn`（Protocol + impl）/`CaptureSummary`/`CaptureResponse`，保留 `recall_memory`
+  - 证据：`agent/src/memory_mcp_agent/client.py` 无 capture_completed_turn/CaptureResponse/CaptureSummary
+- [x] `transcript.py` 整文件删除（`extract_document_messages` 无生产调用方）
+  - 证据：`agent/src/memory_mcp_agent/transcript.py` 不存在
+- [x] `state.py` 瘦身：删 `TurnState`/`TurnStateConflictError`/`save`/`load`/`stage_capture`/`pending_captures`/`delete`，仅保留 `TurnStateStore` 构造 + `for_working_directory` + `cleanup_expired`（过渡期清理残留旧文件）
+  - 证据：`agent/src/memory_mcp_agent/state.py` 仅含 `TurnStateError`/`_LegacyTurnState`/`TurnStateStore.cleanup_expired`
+- [x] `settings.py` 删 `timeout_seconds`/`capture_timeout_seconds`/`capture_max_attempts`/`capture_retry_delay_seconds`（capture 不再经 agent 客户端）
+  - 证据：`agent/src/memory_mcp_agent/settings.py` 仅含 `recall_timeout_seconds` 等召回侧设置
+- [x] `__init__.py` 导出表清理死符号
+  - 证据：`agent/src/memory_mcp_agent/__init__.py` `__all__` 不含 AfterRunResult/CaptureResponse/HookedAgentRunner/RunnerResult/TurnStateConflictError
+- [x] 测试清理：删 `test_agent_transcript.py`（整文件）、`test_agent_bridge.py` 删 AfterRun/runner 测试保留 BeforeRun、`test_agent_state.py` 仅保留 cleanup_expired、`test_agent_settings.py` 删 capture 超时/capture 工具测试、`test_agent_hosts.py` 删 `_FakeClient.capture_completed_turn`、`test_postgresql_transport.py` `_event()` 改新契约 + HookedAgentRunner 测试改直接 MCP 调用
+  - 证据：上述文件 grep 无 capture_completed_turn（agent 侧）/HookedAgentRunner/extract_document_messages
+- [x] 文档清理：`logging.md` 删 capture.attempt/capture.retry/capture.exhausted/capture.fail_open/transcript.*/turn_state.read_failed/turn_state.invalid 事件；`config.md`/`.env.example` 删 capture 超时；`design.md` §10.3-10.5 去重 + 删 capture 重试常量；`agents.md` §1/§4.2、`deploy.md`、`README.md`、`usage.md`、`e2e-report.md` 去 HookedAgentRunner 引用；`examples/hook_runner.py` 改 BeforeRun-only
+  - 证据：grep 全仓 `HookedAgentRunner` 仅余 `docs/e2e-report.md` 历史标注（已加 Phase 1 注记）

@@ -957,16 +957,14 @@ Phase 1（模型自主调用 capture）后，AfterRun 阶段对 capture **完全
 
 ### 10.3 Agent callable
 
-`runner.py` 提供通用 Agent 生命周期合同（BeforeRun 召回 + AfterRun 编程式捕获参考接入），
 宿主适配在 `hosts.py`（Codex/Claude Code）。`memory-mcp-hook` CLI 入口接受通用
 BeforeRun/AfterRun 合同；Phase 1 后 AfterRun 为 no-op，捕获走模型自主调用。
 
 ### 10.4 Fail-open 与 fail-closed
 
 `fail_open` 默认 `true`：记忆服务不可用时降级为 warning，不阻断 Agent 任务。关闭则异常
-向上传播。`recall_max_items=5`、`recall_token_budget=600`、`capture_max_attempts=3`、
-`capture_retry_delay_seconds=0.1`（capture 重试仅 bridge 编程式路径有效；hook 进程
-AfterRun 已 no-op）。
+向上传播。`recall_max_items=5`、`recall_token_budget=600`（Phase 1 后 capture 不再经
+agent 客户端，capture 重试/超时设置已移除）。
 
 ### 10.5 为什么暂不使用队列
 
@@ -989,27 +987,6 @@ Phase 1 从"AfterRun hook 强制每轮捕获"转向"模型自主决定是否调�
 债务，Phase 2 或独立机制恢复）。服务端二次抽取保留（`StructuredCandidateExtractor`），
 候选由服务端产出，模型不带候选；若 Phase 1 PoC 证明 gate 准确但仍过度抽取，Phase 2 再加
 "模型携带候选跳过二次抽取"。
-
-### 10.3 Agent callable
-
-`runner.py` 提供通用 Agent 生命周期合同，宿主适配在 `hosts.py`（Codex/Claude Code）。
-`memory-mcp-hook` CLI 入口接受通用 BeforeRun/AfterRun 合同。
-
-### 10.4 Fail-open 与 fail-closed
-
-`fail_open` 默认 `true`：记忆服务不可用时降级为 warning，不阻断 Agent 任务。关闭则异常
-向上传播。`recall_max_items=5`、`recall_token_budget=600`、`capture_max_attempts=3`、
-`capture_retry_delay_seconds=0.1`。
-
-### 10.5 为什么暂不使用队列
-
-Agent 24 小时本地 best-effort outbox（`state.py`）保证 AfterRun 不丢：成功后删本地
-payload，失败保留重试。无需 Redis/Kafka 跨主机削峰，Agent Host 不安装队列基础设施。
-
-### 10.6 通用 Agent 主动记忆
-
-Agent 不与 Server 同机时，安装轻量 wheel `memory-mcp-agent`，只有 Hook Client 及 HTTP/配置
-依赖，不包含 `memory-mcp`/PostgreSQL/LangChain/模型 Provider。运行配置始终只有地址和 Token。
 
 ## 11. PostgreSQL 与 Migration
 
