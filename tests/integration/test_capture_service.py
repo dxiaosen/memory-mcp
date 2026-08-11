@@ -737,6 +737,106 @@ def test_spliced_bullet_source_expression_still_rejected() -> None:
     assert len(service.list_memories(principal)) == 0
 
 
+def test_source_expression_with_stripped_markdown_emphasis_is_accepted() -> None:
+    """模型剥掉 Markdown 强调标记的 source_expression 不应被误杀。
+
+    原文 ``**库存周转天数有了硬天花板**``，模型 source_expression 去掉 ``**`` 写成
+    ``库存周转天数有了硬天花板``。逐字 containment 会误判 invalid_source_expression；
+    剥 Markdown 标记后应通过校验进入准入。只放过装饰层标记，不放过实质改写。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "库存周转天数有了硬天花板——之前只有方向判断，现在是不高于 50 天的明确阈值",
+                subject="inventory-threshold",
+                content="青禾食品库存周转天数有了不高于 50 天的明确阈值",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn(
+        "2. **库存周转天数有了硬天花板**——之前只有方向判断，现在是不高于 50 天的明确阈值。"
+    )
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.DISCARD not in decisions
+    assert AdmissionDecision.AUTO_SAVE in decisions
+    assert len(service.list_memories(principal)) == 1
+
+
+def test_source_expression_with_parenthesized_markdown_link_is_accepted() -> None:
+    """原文含 `` ` `` 代码标记，模型 source_expression 剥掉后仍应匹配。"""
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "memory_id 39981b43 是产品竞争力判断标准",
+                subject="memory-lookup",
+                content="记忆 39981b43 是产品竞争力判断标准",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("第 1 条 `memory_id` 39981b43 是产品竞争力判断标准。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    decisions = {outcome.decision for outcome in result.outcomes}
+    assert AdmissionDecision.DISCARD not in decisions
+    assert AdmissionDecision.AUTO_SAVE in decisions
+
+
+def test_source_expression_with_substantive_rewrite_still_rejected() -> None:
+    """剥 Markdown 标记后，模型实质改写（增删字词）仍应判 invalid。
+
+    确认第四层归一化只放过装饰层标记，不放过实质改写，避免误放过编造来源。
+    """
+
+    extractor = FakeCandidateExtractor(
+        (
+            candidate_proposal(
+                "毛利率达到了百分之四十一的高位",
+                subject="margin-level",
+                content="毛利率达到 41%",
+            ),
+        )
+    )
+    service = create_memory_service(
+        InMemoryMemoryRepository(),
+        [TestMemoryProfile()],
+        candidate_extractor=extractor,
+    )
+    principal = PrincipalContext("analyst-a")
+    turn = _turn("Q2 **毛利率 41%**，毛利率达标。")
+
+    result = service.capture_turn(principal, turn)
+
+    assert result.status is CaptureStatus.COMPLETED
+    discard = [
+        outcome
+        for outcome in result.outcomes
+        if outcome.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "invalid_source_expression"
+    assert len(service.list_memories(principal)) == 0
+
+
 def test_user_original_expression_binds_to_user_and_auto_saves() -> None:
     """用户明确长期判断优先绑定 user 原文并 auto_save（相关/§6/§7）。
 

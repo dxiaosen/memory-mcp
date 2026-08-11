@@ -11,6 +11,11 @@ from typing import Protocol
 from memory_mcp.core.domain.models import Evidence, MemoryRevision
 
 _WHITESPACE = re.compile(r"\s+")
+# Markdown 强调/代码/删除线标记字符：成对的 ``*``/``_``/`` ` ``/``~`` 是渲染层装饰，
+# 不改变文本语义。模型提取 source_expression 时常把它们剥掉（如把
+# ``**库存周转天数**`` 写成 ``库存周转天数``），逐字 containment 会误判为改写而丢弃
+# 本应沉淀的候选。归一化时移除这些标记字符，只放过装饰层差异，不放过实质改写。
+_MARKDOWN_EMPHASIS = re.compile(r"[*_~`]+")
 # Python 的 ``\w`` 在 Unicode 模式下会把无空格分隔的 CJK 连续文本当作单个
 # token，导致中文 word overlap 信号失效。这里按 ASCII 词边界与 CJK 单字切分，
 # 作为没有外部分词器时的兜底；真正投研召回由 adapter 层注入 jieba 分词器。
@@ -63,18 +68,35 @@ def normalize_compact(value: str) -> str:
 
 
 def source_expression_matches(source_expression: str, source: str) -> bool:
-    """三级空白归一化 containment，用于 Candidate/Relation 的 source_expression 校验。
+    """四级归一化 containment，用于 Candidate/Relation 的 source_expression 校验。
 
-    依次尝试 raw -> ``normalize_whitespace`` -> ``normalize_compact`` containment；
-    只忽略 Unicode 空白，不改标点/数字/字符。真实原文仅换行/空白差异 -> 匹配；
-    模型改写、增标点、拼接独立 bullet（非空白字符保留） -> 不匹配。
+    依次尝试 raw -> ``normalize_whitespace`` -> ``normalize_compact`` ->
+    移除 Markdown 强调标记后再 ``normalize_compact`` containment。前三层只忽略
+    Unicode 空白，不改标点/数字/字符：真实原文仅换行/空白差异 -> 匹配；模型改写、
+    增标点、拼接独立 bullet（非空白字符保留） -> 不匹配。
+
+    第四层额外移除成对的 Markdown 强调/代码/删除线标记字符（``*``/``_``/`` ` ``/``~``）。
+    这些是渲染层装饰，模型提取时常剥掉（``**库存周转天数**`` -> ``库存周转天数``），
+    不改变来源真实性；剥掉后比对避免误杀本应沉淀的候选。实质改写（增删字词、
+    改标点、换数字）在剥标记后仍不匹配。
     """
 
     if source_expression in source:
         return True
     if normalize_whitespace(source_expression) in normalize_whitespace(source):
         return True
-    return normalize_compact(source_expression) in normalize_compact(source)
+    if normalize_compact(source_expression) in normalize_compact(source):
+        return True
+    stripped_expression = _strip_markdown_emphasis(source_expression)
+    return normalize_compact(stripped_expression) in normalize_compact(
+        _strip_markdown_emphasis(source)
+    )
+
+
+def _strip_markdown_emphasis(value: str) -> str:
+    """移除成对的 Markdown 强调/代码/删除线标记字符（``*``/``_``/`` ` ``/``~``）。"""
+
+    return _MARKDOWN_EMPHASIS.sub("", value)
 
 
 def tokenize_memory_text(
