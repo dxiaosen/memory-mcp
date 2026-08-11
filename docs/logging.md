@@ -228,7 +228,7 @@ Core 读取内容模式事件：
 | `agent_hook.started` | INFO | `run_ref` |
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
 | `agent_hook.recall.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
-| `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason` |
+| `agent_hook.capture.completed` / `.skipped` | INFO | `run_ref`, `status` / `reason_code`（`.skipped` 的 `reason_code`：`missing_final_output`/`missing_turn_state`/`inspect_or_manage_turn`——后者为当前轮次 assistant 调用了 memory 管理工具，跳过 capture 抽取） |
 | `agent_hook.capture.attempt.started` | INFO | `event_ref`, `attempt`, `timeout_seconds` |
 | `agent_hook.capture.attempt.completed` | INFO | `event_ref`, `attempt`, `duration_ms`, `replayed`, `status` |
 | `agent_hook.capture.attempt.failed` | WARNING | `event_ref`, `attempt`, `duration_ms`, `error_type`, `error_code`, `retryable` |

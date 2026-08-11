@@ -942,7 +942,9 @@ flowchart TD
     RC -->|成功| INJ[注入 memory_context]
     RC -->|失败 + fail_open| WN[返回 warning_code]
     AR[AfterRun] --> FP2[run_key payload 指纹]
-    FP2 --> EV[event_id = uuid5 run_key]
+    FP2 --> CHK{inspect/manage turn?}
+    CHK -->|是: 调了 memory 管理工具| SK[skip capture: warning_code=inspect_or_manage_turn]
+    CHK -->|否| EV[event_id = uuid5 run_key]
     EV --> CP[capture_completed_turn]
     CP -->|可重试错误| RT[有界重试: 3 次/0.1s 退避]
     CP -->|成功| RC2[返回 capture receipt]
@@ -951,6 +953,16 @@ flowchart TD
 
 `event_id` 由 run_key 确定性派生（`uuid5`），保证同一轮次重复投递幂等。run_key 与
 payload 指纹不一致时抛 `MemoryHookRunConflictError`，保护幂等语义。
+
+AfterRun 在投递 capture 前先做 inspect/manage turn 判断：若当前轮次 transcript 中
+assistant 调用了 memory 管理类工具（`search_memories`/`list_memories`/`get_memory`/
+`revoke_memory`/`link_memories`/`list_pending_reviews`/`confirm_pending_memory`/
+`reject_pending_memory`/`batch_confirm_pending` 等，**不含 `recall_memory`**——BeforeRun
+hook 每个业务 turn 都自动调它），则该轮为查看/管理已存储记忆的 inspect/manage turn，
+跳过 capture 抽取（`reason_code=inspect_or_manage_turn`）。这类轮次的内容不是可抽取的
+业务事实，强抽只会白烧模型调用且因 user 原文不含 `source_expression` 片段而必失败。
+无 `transcript_path`（通用合同 / 非 Claude Code 宿主）或解析失败时降级为不跳过，
+保持现有 capture 行为，宁可白烧一次抽取也不误伤业务 turn。
 
 ### 10.3 Agent callable
 

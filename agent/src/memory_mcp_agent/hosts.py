@@ -16,7 +16,10 @@ from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
 from memory_mcp_agent.state import TurnState, TurnStateError, TurnStateStore
-from memory_mcp_agent.transcript import extract_document_messages
+from memory_mcp_agent.transcript import (
+    collect_turn_tool_uses,
+    extract_document_messages,
+)
 
 _LOGGER = logging.getLogger(__name__)
 # 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
@@ -26,6 +29,28 @@ _EVENT_PHASES: dict[str, Literal["before_run", "after_run"]] = {
     "Stop": "after_run",
     "AfterRun": "after_run",
 }
+# Memory MCP 管理类工具名。当前轮次 assistant 调用了其中任一即判定为
+# inspect/manage turn，跳过 capture 抽取——这类 turn 的内容是查看/管理已存储
+# 记忆（列表/撤销/确认/关联等），不是可抽取的业务事实，强抽只会白烧模型调用
+# 且因 user 原文不含 source_expression 片段而必失败。
+# recall_memory 不在此列：BeforeRun hook 每个业务 turn 都自动调它，若计入会把
+# 所有业务 turn 误判为 inspect。capture_completed_turn 是 hook 自身投递通道，
+# 也不在此列。
+_MEMORY_MANAGEMENT_TOOLS: frozenset[str] = frozenset(
+    {
+        "search_memories",
+        "list_memories",
+        "get_memory",
+        "get_memory_stats",
+        "revoke_memory",
+        "link_memories",
+        "revoke_memory_relation",
+        "list_pending_reviews",
+        "confirm_pending_memory",
+        "reject_pending_memory",
+        "batch_confirm_pending",
+    }
+)
 
 
 class AgentHookInputError(ValueError):
@@ -245,6 +270,11 @@ class AgentHookAdapter:
             cwd=event.cwd,
             user_prompt=saved.prompt,
         )
+        if _is_inspect_or_manage_turn(event.transcript_path, event.cwd, saved.prompt):
+            return self._skip_after(
+                "inspect_or_manage_turn",
+                run_reference=run_reference,
+            )
         staged = self._state.stage_capture(
             event.conversation_id,
             event.turn_id,
@@ -377,6 +407,32 @@ def parse_hook_input(value: Mapping[str, Any]) -> AgentTurnEvent | None:
     """解析 command Hook JSON，并返回通用事件或忽略结果。"""
 
     return AgentHookInput.model_validate(value).normalize()
+
+
+def _is_inspect_or_manage_turn(
+    transcript_path: str | None,
+    cwd: str,
+    user_prompt: str,
+) -> bool:
+    """判断当前轮次是否为查看/管理已存储记忆的 inspect/manage turn。
+
+    基于结构性信号：当前轮次 assistant 是否调用了 memory 管理类工具
+    （search_memories/list_memories/revoke_memory 等，不含 recall_memory）。
+    inspect/manage turn 的 assistant 必然调用其中至少一个来查看或操作记忆；
+    业务 turn 的 assistant 只依赖 BeforeRun hook 自动调的 recall_memory，不调这些。
+
+    无 transcript_path（通用合同 / 非 Claude Code 宿主）或解析失败时返回 False，
+    降级为不跳过——保持现有 capture 行为，宁可白烧一次抽取也不误伤业务 turn。
+    """
+
+    if not transcript_path:
+        return False
+    tool_names = collect_turn_tool_uses(
+        transcript_path,
+        cwd=cwd,
+        user_prompt=user_prompt,
+    )
+    return bool(tool_names & _MEMORY_MANAGEMENT_TOOLS)
 
 
 def _one_value(

@@ -400,6 +400,170 @@ def test_second_turn_excludes_first_turn_tool_messages(tmp_path: Path) -> None:
     anyio.run(profile_id)
 
 
+def test_inspect_turn_with_memory_management_tool_skips_capture(
+    tmp_path: Path,
+) -> None:
+    """查看/管理记忆的 inspect turn（assistant 调用了 memory 管理工具）应跳过 capture。
+
+    相关：inspect/manage turn 的内容是查看/管理已存储记忆，不是可抽取的业务事实。
+    强抽只会白烧模型调用且因 user 原文不含 source_expression 片段而必失败。
+    信号：当前轮次 transcript 含 memory 管理类工具调用（不含 recall_memory）。
+    """
+    import json
+
+    async def profile_id() -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join(
+                json.dumps(entry)
+                for entry in (
+                    {
+                        "type": "user",
+                        "message": {"content": "请显式查看我的青禾食品记忆。"},
+                    },
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "call-search",
+                                    "name": "search_memories",
+                                    "input": {"query": "青禾食品"},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "call-search",
+                                    "content": "5 条记忆",
+                                }
+                            ]
+                        },
+                    },
+                    {"type": "assistant", "message": {"content": "共 5 条记忆。"}},
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "hooks")
+        adapter = _adapter(client, state)
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="请显式查看我的青禾食品记忆。",
+            )
+        )
+        output = await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="共 5 条记忆。",
+                transcript_path=str(transcript),
+            )
+        )
+
+        assert output == AgentHookOutcome(warning_code="inspect_or_manage_turn")
+        assert client.capture_calls == []
+
+    anyio.run(profile_id)
+
+
+def test_business_turn_with_only_recall_memory_still_captures(
+    tmp_path: Path,
+) -> None:
+    """业务 turn（assistant 未调 memory 管理工具）不应被误跳过。
+
+    recall_memory 由 BeforeRun hook 自动调用，不计入 inspect/manage 信号；
+    其他非 memory 工具（Read/Bash 等）也不计。这类 turn 必须正常 capture。
+    """
+    import json
+
+    async def profile_id() -> None:
+        materials_dir = tmp_path / "materials"
+        materials_dir.mkdir()
+        file_path = str(materials_dir / "纪要.md")
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            "\n".join(
+                json.dumps(entry)
+                for entry in (
+                    {
+                        "type": "user",
+                        "message": {"content": "纪要里收入怎么样？"},
+                    },
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "call-read",
+                                    "name": "Read",
+                                    "input": {"file_path": file_path},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "call-read",
+                                    "content": "收入同比增长 35%",
+                                }
+                            ]
+                        },
+                    },
+                    {"type": "assistant", "message": {"content": "收入增长 35%。"}},
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "hooks")
+        adapter = _adapter(client, state)
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="纪要里收入怎么样？",
+            )
+        )
+        output = await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="收入增长 35%。",
+                transcript_path=str(transcript),
+            )
+        )
+
+        assert output == AgentHookOutcome()
+        assert len(client.capture_calls) == 1
+
+    anyio.run(profile_id)
+
+
 def test_no_memory_returns_strict_empty_json(tmp_path: Path) -> None:
     async def profile_id() -> None:
         client = _FakeClient(with_memory=False)

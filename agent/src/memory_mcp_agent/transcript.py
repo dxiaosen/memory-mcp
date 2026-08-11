@@ -113,6 +113,59 @@ def extract_document_messages(
     return messages
 
 
+def collect_turn_tool_uses(
+    transcript_path: str | os.PathLike[str] | None,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    user_prompt: str | None = None,
+) -> set[str]:
+    """返回当前轮次 assistant 块里所有 tool_use 的工具名集合。
+
+    与 ``extract_document_messages`` 共用 transcript 解析与 turn 边界定位，
+    但不局限于文件读取类工具——用于在 AfterRun 识别"查看/管理已存储记忆"的
+    inspect/manage turn：这类 turn 的 assistant 必然调用至少一个 memory 管理工具
+    （search_memories/list_memories/revoke_memory 等），而业务 turn 的 assistant
+    只依赖 BeforeRun hook 自动调的 recall_memory。
+
+    解析失败、无 transcript 或无 tool_use 时返回空集合，调用方据此降级为
+    "不跳过"（保持现有 capture 行为），不抛——与 provenance 增强同属 best-effort，
+    不阻断 capture 主流程。
+    """
+
+    if not transcript_path:
+        return set()
+    path = Path(transcript_path)
+    try:
+        entries = list(_iter_jsonl(path))
+    except (OSError, ValueError) as exc:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "agent_hook.transcript.parse_failed",
+            transcript_path=str(path),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return set()
+    if not entries:
+        return set()
+    turn_entries = _slice_current_turn(entries, user_prompt)
+    names: set[str] = set()
+    for entry in turn_entries:
+        if entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+    return names
+
+
 def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
