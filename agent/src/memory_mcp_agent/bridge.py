@@ -8,9 +8,7 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from memory_mcp_agent.client import (
@@ -39,7 +37,7 @@ class BeforeRunResult:
 class AfterRunResult:
     """AfterRun 的结果：顶层任务成功后返回一次的捕获回执。"""
 
-    event_id: str
+    event_ref: str
     status: str
     attempts: int
     replayed: bool = False
@@ -131,35 +129,31 @@ class MemoryHookBridge:
         *,
         user_input: str,
         final_output: str,
-        observed_at: datetime | None = None,
-        document_messages: list[dict[str, Any]] | None = None,
+        subject_hint: str | None = None,
     ) -> AfterRunResult:
-        """顶层任务成功产生最终响应后捕获一次。"""
+        """顶层任务成功产生最终响应后捕获一次。
 
-        if observed_at is not None and (
-            observed_at.tzinfo is None or observed_at.utcoffset() is None
-        ):
-            raise ValueError("observed_at must be timezone-aware")
-        resolved_documents = document_messages or []
+        Phase 1（模型自主调用 capture）后，此方法仅供编程式接入参考
+        （``HookedAgentRunner``）。身份与幂等字段（event_id/observed_at/
+        contract_version）由服务器组装，客户端不再生成。
+        """
+
         fingerprint = _fingerprint(
             {
                 "user_input": user_input,
                 "final_output": final_output,
-                "observed_at": observed_at.isoformat() if observed_at else None,
-                "document_messages": resolved_documents,
+                "subject_hint": subject_hint,
             }
         )
         async with self._lock:
             entry = self._after_tasks.get(context.run_key)
             if entry is None:
-                resolved_time = observed_at or datetime.now(UTC)
                 task = asyncio.create_task(
                     self._capture(
                         context,
                         user_input=user_input,
                         final_output=final_output,
-                        observed_at=resolved_time,
-                        document_messages=resolved_documents,
+                        subject_hint=subject_hint,
                     )
                 )
                 task.add_done_callback(self._after_task_done)
@@ -225,11 +219,10 @@ class MemoryHookBridge:
         *,
         user_input: str,
         final_output: str,
-        observed_at: datetime,
-        document_messages: list[dict[str, Any]] | None = None,
+        subject_hint: str | None = None,
     ) -> AfterRunResult:
         """对可重试错误做有界重试，最终失败则按 fail_open 决定抛出或降级。"""
-        event_id = _event_id(context)
+        event_ref = _event_ref(context)
         final_error: MemoryHookClientError | None = None
         attempts = 0
         for attempt in range(1, self._settings.capture_max_attempts + 1):
@@ -239,26 +232,24 @@ class MemoryHookBridge:
                 _LOGGER,
                 logging.INFO,
                 "agent_hook.capture.attempt.started",
-                event_ref=event_id,
+                event_ref=event_ref,
                 attempt=attempt,
                 timeout_seconds=self._settings.capture_timeout_seconds,
             )
             try:
                 response = await self._client.capture_completed_turn(
-                    event_id=event_id,
                     profile_id=context.profile_id,
                     conversation_id=context.conversation_id,
                     turn_id=context.turn_id,
-                    observed_at=observed_at,
                     user_input=user_input,
                     final_output=final_output,
-                    document_messages=document_messages,
+                    subject_hint=subject_hint,
                 )
                 log_event(
                     _LOGGER,
                     logging.INFO,
                     "agent_hook.capture.attempt.completed",
-                    event_ref=event_id,
+                    event_ref=event_ref,
                     attempt=attempt,
                     duration_ms=round(
                         (perf_counter() - _attempt_started_at) * 1000, 3
@@ -267,7 +258,7 @@ class MemoryHookBridge:
                     status=response.status,
                 )
                 return AfterRunResult(
-                    event_id=event_id,
+                    event_ref=event_ref,
                     status=response.status,
                     attempts=attempt,
                     replayed=response.replayed,
@@ -283,7 +274,7 @@ class MemoryHookBridge:
                     _LOGGER,
                     logging.WARNING,
                     "agent_hook.capture.attempt.failed",
-                    event_ref=event_id,
+                    event_ref=event_ref,
                     attempt=attempt,
                     duration_ms=round(
                         (perf_counter() - _attempt_started_at) * 1000, 3
@@ -335,7 +326,7 @@ class MemoryHookBridge:
             error_message=str(final_error),
         )
         return AfterRunResult(
-            event_id=event_id,
+            event_ref=event_ref,
             status="warning",
             attempts=attempts,
             warning_code=final_error.code,
@@ -379,11 +370,15 @@ class MemoryHookBridge:
             self._trim_completed(self._after_tasks)
 
 
-def _event_id(context: HookContext) -> str:
-    """由 run_key 生成确定性 event_id，保证同一轮次重复投递幂等。"""
+def _event_ref(context: HookContext) -> str:
+    """由 run_key 生成确定性日志关联标识。
+
+    Phase 1 后 event_id 由服务器组装，客户端只生成用于日志关联的稳定
+    event_ref（同一轮次重复调用产生同一标识），不再用于幂等键。
+    """
 
     identity = "\x1f".join(context.run_key)
-    return f"memory-hook:{uuid5(NAMESPACE_URL, identity)}"
+    return f"memory-bridge:{uuid5(NAMESPACE_URL, identity)}"
 
 
 def _fingerprint(payload: dict[str, object]) -> str:

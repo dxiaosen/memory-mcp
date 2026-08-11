@@ -941,28 +941,54 @@ flowchart TD
     FP --> RC[recall_memory]
     RC -->|成功| INJ[注入 memory_context]
     RC -->|失败 + fail_open| WN[返回 warning_code]
-    AR[AfterRun] --> FP2[run_key payload 指纹]
-    FP2 --> CHK{inspect/manage turn?}
-    CHK -->|是: 调了 memory 管理工具| SK[skip capture: warning_code=inspect_or_manage_turn]
-    CHK -->|否| EV[event_id = uuid5 run_key]
-    EV --> CP[capture_completed_turn]
-    CP -->|可重试错误| RT[有界重试: 3 次/0.1s 退避]
-    CP -->|成功| RC2[返回 capture receipt]
-    CP -->|最终失败 + fail_open| WN2[返回 warning_code]
+    AR[AfterRun] --> NO[no-op: 不触发 capture]
+    MODEL[模型自主决定] -->|有持久信号| CP[capture_completed_turn MCP 工具]
+    CP -->|服务器组装 event_id/observed_at| RECV[服务器幂等 replay 或新建]
+    CP -->|无持久信号| SKIP[不调用, 不捕获]
 ```
 
-`event_id` 由 run_key 确定性派生（`uuid5`），保证同一轮次重复投递幂等。run_key 与
-payload 指纹不一致时抛 `MemoryHookRunConflictError`，保护幂等语义。
+Phase 1（模型自主调用 capture）后，AfterRun 阶段对 capture **完全 no-op**：捕获由
+模型自主决定是否调用 `capture_completed_turn` MCP 工具，不再由 Stop hook 强制每轮触发。
+`event_id` 由服务器从 `(owner_id, conversation_id, turn_id)` 确定性派生
+（`memory-agent:{sha256}`），`observed_at` 取服务器时钟，`contract_version` 硬编码 `"1"`，
+`payload_fingerprint` 基于简化输入（`user_input`/`final_output`/`conversation_id`/
+`turn_id`/`subject_hint`）计算——模型不可控，避免 event_id 碰撞或漂移破坏幂等。
+`conversation_id`/`turn_id` 由模型传（服务器无法从身份派生对话语义），需跨轮稳定。
 
-AfterRun 在投递 capture 前先做 inspect/manage turn 判断：若当前轮次 transcript 中
-assistant 调用了 memory 管理类工具（`search_memories`/`list_memories`/`get_memory`/
-`revoke_memory`/`link_memories`/`list_pending_reviews`/`confirm_pending_memory`/
-`reject_pending_memory`/`batch_confirm_pending` 等，**不含 `recall_memory`**——BeforeRun
-hook 每个业务 turn 都自动调它），则该轮为查看/管理已存储记忆的 inspect/manage turn，
-跳过 capture 抽取（`reason_code=inspect_or_manage_turn`）。这类轮次的内容不是可抽取的
-业务事实，强抽只会白烧模型调用且因 user 原文不含 `source_expression` 片段而必失败。
-无 `transcript_path`（通用合同 / 非 Claude Code 宿主）或解析失败时降级为不跳过，
-保持现有 capture 行为，宁可白烧一次抽取也不误伤业务 turn。
+### 10.3 Agent callable
+
+`runner.py` 提供通用 Agent 生命周期合同（BeforeRun 召回 + AfterRun 编程式捕获参考接入），
+宿主适配在 `hosts.py`（Codex/Claude Code）。`memory-mcp-hook` CLI 入口接受通用
+BeforeRun/AfterRun 合同；Phase 1 后 AfterRun 为 no-op，捕获走模型自主调用。
+
+### 10.4 Fail-open 与 fail-closed
+
+`fail_open` 默认 `true`：记忆服务不可用时降级为 warning，不阻断 Agent 任务。关闭则异常
+向上传播。`recall_max_items=5`、`recall_token_budget=600`、`capture_max_attempts=3`、
+`capture_retry_delay_seconds=0.1`（capture 重试仅 bridge 编程式路径有效；hook 进程
+AfterRun 已 no-op）。
+
+### 10.5 为什么暂不使用队列
+
+Phase 1（模型自主调用 capture）后，hook 进程 AfterRun 不再写 outbox；本地存量 outbox
+靠 24h TTL 自然清空。模型自主调用失败即丢，靠后续轮次自然重试（无 outbox 补投）。
+若 PoC 证明漏捕获率不可接受，再补轻量重试（Phase 2 候选）。
+
+### 10.6 通用 Agent 主动记忆
+
+Agent 不与 Server 同机时，安装轻量 wheel `memory-mcp-agent`，只有 Hook Client 及 HTTP/配置
+依赖，不包含 `memory-mcp`/PostgreSQL/LangChain/模型 Provider。运行配置始终只有地址和 Token。
+
+### 10.7 模型自主调用 capture（Phase 1）
+
+Phase 1 从"AfterRun hook 强制每轮捕获"转向"模型自主决定是否调用 `capture_completed_turn`"。
+`capture_completed_turn` 工具契约简化：模型只传 `conversation_id`/`turn_id`/`user_input`/
+`final_output`（+ 可选 `profile_id`/`subject_hint`），不再传 `event_id`/`contract_version`/
+`observed_at`/`messages`。服务器在 `CompletedTurnInputV1.to_turn_envelope` 中组装身份与
+幂等字段。`messages` 由 `[user, assistant]` 两条组装（document provenance 暂退化——已知
+债务，Phase 2 或独立机制恢复）。服务端二次抽取保留（`StructuredCandidateExtractor`），
+候选由服务端产出，模型不带候选；若 Phase 1 PoC 证明 gate 准确但仍过度抽取，Phase 2 再加
+"模型携带候选跳过二次抽取"。
 
 ### 10.3 Agent callable
 

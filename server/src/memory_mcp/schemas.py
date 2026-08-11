@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
@@ -73,72 +74,101 @@ class RoleMessageV1(StrictDto):
         return value
 
 
-class CompletedTurnEventV1(StrictDto):
-    """一次已完成对话轮次的捕获事件输入契约。"""
+class CompletedTurnInputV1(StrictDto):
+    """一次已完成对话轮次的简化捕获输入契约。
 
-    contract_version: NonEmptyText
-    event_id: NonEmptyText
+    模型自主调用 ``capture_completed_turn`` 时只传对话内容与对话/轮次标识；
+    身份与幂等字段（``event_id`` / ``contract_version`` / ``observed_at`` /
+    ``payload_fingerprint``）由服务器在 :meth:`to_turn_envelope` 组装，
+    模型不可控，避免 event_id 碰撞或漂移破坏幂等。
+    """
+
     profile_id: NonEmptyText
     conversation_id: NonEmptyText
     turn_id: NonEmptyText
-    observed_at: datetime
-    messages: Annotated[tuple[RoleMessageV1, ...], Field(min_length=1, max_length=64)]
+    user_input: NonEmptyText
+    final_output: NonEmptyText
     subject_hint: str | None = Field(default=None, min_length=1)
 
-    @field_validator("observed_at")
-    @classmethod
-    def require_aware_time(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("observed_at must be timezone-aware")
-        return value
+    def input_fingerprint(self) -> str:
+        """基于简化输入计算指纹，用于检测同一 event_id 是否被不同内容重用。
 
-    def payload_fingerprint(self) -> str:
+        不含 ``profile_id``：同一轮次跨 profile 重投无意义；含身份无关的
+        对话内容与标识即可稳定检测冲突。
+        """
+
         canonical = json.dumps(
-            self.model_dump(mode="json"),
+            {
+                "conversation_id": self.conversation_id,
+                "turn_id": self.turn_id,
+                "user_input": self.user_input,
+                "final_output": self.final_output,
+                "subject_hint": self.subject_hint,
+            },
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def to_turn_envelope(self, *, max_characters: int) -> TurnEnvelope:
-        content = "\n\n".join(
-            f"[{message.role}]\n{message.content}" for message in self.messages
-        )
+    def to_turn_envelope(
+        self,
+        *,
+        owner_id: str,
+        max_characters: int,
+        clock: Callable[[], datetime],
+    ) -> TurnEnvelope:
+        """组装可信 ``TurnEnvelope``：服务器派生 event_id/observed_at/contract_version。
+
+        ``event_id`` 由 ``(owner_id, conversation_id, turn_id)`` 确定性派生，
+        保证同一 owner+对话+轮次重复调用 → 同一 event_id → 服务器幂等 replay。
+        ``observed_at`` 取服务器时钟作为单一时间权威。``messages`` 由
+        ``user_input`` + ``final_output`` 组装为 ``[user, assistant]`` 两条。
+        """
+
+        content = f"[user]\n{self.user_input}\n\n[assistant]\n{self.final_output}"
         if len(content) > max_characters:
             raise ValueError("completed turn exceeds configured capture size")
+        event_id = _derive_event_id(owner_id, self.conversation_id, self.turn_id)
         return TurnEnvelope(
             profile_id=self.profile_id,
             conversation_id=self.conversation_id,
             source_turn_id=self.turn_id,
             content=content,
-            observed_at=self.observed_at,
+            observed_at=clock(),
             subject_hint=self.subject_hint,
-            event_id=self.event_id,
-            contract_version=self.contract_version,
-            payload_fingerprint=self.payload_fingerprint(),
-            messages=tuple(
+            event_id=event_id,
+            contract_version=_CONTRACT_VERSION,
+            payload_fingerprint=self.input_fingerprint(),
+            messages=(
                 TurnMessage(
-                    role=MessageRole(message.role),
-                    content=message.content,
-                    message_id=message.message_id,
-                    tool_name=message.tool_name,
-                    source_type=(
-                        EvidenceSourceType(message.source_type)
-                        if message.source_type is not None
-                        else None
-                    ),
-                    source_uri=message.source_uri,
-                    source_title=message.source_title,
-                    source_publisher=message.source_publisher,
-                    published_at=message.published_at,
-                    retrieved_at=message.retrieved_at,
-                    content_hash=message.content_hash,
-                    citation_locator=message.citation_locator,
-                )
-                for message in self.messages
+                    role=MessageRole.USER,
+                    content=self.user_input,
+                    message_id=f"{self.turn_id}:user",
+                ),
+                TurnMessage(
+                    role=MessageRole.ASSISTANT,
+                    content=self.final_output,
+                    message_id=f"{self.turn_id}:assistant",
+                ),
             ),
         )
+
+
+# 捕获契约版本，由服务器在组装 TurnEnvelope 时硬编码，模型不可传。
+_CONTRACT_VERSION = "1"
+
+
+def _derive_event_id(owner_id: str, conversation_id: str, turn_id: str) -> str:
+    """由 (owner_id, conversation_id, turn_id) 确定性派生 event_id。
+
+    同一 owner+对话+轮次重复调用产生同一 event_id，使服务器幂等 replay。
+    用 SHA256 而非 uuid5，避免跨进程 NAMESPACE 差异。
+    """
+
+    identity = "\x1f".join((owner_id, conversation_id, turn_id))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"memory-agent:{digest}"
 
 
 class ErrorResponse(StrictDto):

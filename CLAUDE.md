@@ -104,10 +104,13 @@ Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF
 当本仓库被用作 Memory MCP 的测试客户端时，Claude 须遵守：
 
 - 长期记忆只走 Memory MCP；不使用 Claude 内置 `MEMORY.md` 或项目 memory 做长期记忆。
-- 主动召回与捕获由 BeforeRun / AfterRun Hook 处理；不要直接调用 `capture_completed_turn`。
+- 召回由 BeforeRun Hook 自动处理；**捕获由模型自主决定是否调用 `capture_completed_turn`**——
+  仅在一轮对话产生值得跨会话记住的持久事实/偏好/决策/判断时调用，不在仅查看/查询/管理记忆的轮次
+  或闲聊中调用。身份与幂等字段（event_id/observed_at/contract_version）由服务器组装，
+  模型只传 conversation_id/turn_id/user_input/final_output。
 - **业务更新不是记忆管理命令**：用户改变/修正/替换某个研究判断、或说某事实支持/挑战/威胁另一判断，
-  都是普通对话语义，由 AfterRun 自动处理（候选抽取 / replacement / supersede / 生命周期 / 自动关系）。
+  都是普通对话语义，由 capture + 服务端候选抽取自动处理（replacement / supersede / 生命周期 / 自动关系）。
   **严禁**因此主动调用 `revoke_memory`、`confirm_pending_memory`、`link_memories`、
-  `revoke_memory_relation` 等 mutation 工具。业务修正 -> AfterRun replacement；显式记忆管理 -> review tools。
+  `revoke_memory_relation` 等 mutation 工具。业务修正 -> capture 自动 replacement；显式记忆管理 -> review tools。
 - mutation 工具仅在用户**显式要求管理已存储的 Memory MCP 记录**时调用（如「撤销 memory_id=xxx」
   「确认这条 Pending」「删除这条关系」「手动把 A 和 B 建成 challenges」）。

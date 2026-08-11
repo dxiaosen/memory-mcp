@@ -105,6 +105,12 @@ class MemoryService:
             id_factory=id_factory,
         )
 
+    @property
+    def clock(self) -> Callable[[], datetime]:
+        """公开时钟 callable，供 tool 层组装服务器权威时间字段（如 observed_at）。"""
+
+        return self._clock
+
     def register_profile(self, profile: MemoryProfile) -> None:
         """登记一个记忆配置：先校验，再写入持久化约束并注册到运行时。"""
 

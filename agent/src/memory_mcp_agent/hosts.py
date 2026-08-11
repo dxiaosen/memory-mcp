@@ -3,23 +3,16 @@
 from __future__ import annotations
 
 import logging
-import sys
-import traceback
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from memory_mcp_agent.bridge import AfterRunResult, MemoryHookBridge
+from memory_mcp_agent.bridge import MemoryHookBridge
 from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
-from memory_mcp_agent.state import TurnState, TurnStateError, TurnStateStore
-from memory_mcp_agent.transcript import (
-    collect_turn_tool_uses,
-    extract_document_messages,
-)
+from memory_mcp_agent.state import TurnStateStore
 
 _LOGGER = logging.getLogger(__name__)
 # 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
@@ -29,28 +22,6 @@ _EVENT_PHASES: dict[str, Literal["before_run", "after_run"]] = {
     "Stop": "after_run",
     "AfterRun": "after_run",
 }
-# Memory MCP 管理类工具名。当前轮次 assistant 调用了其中任一即判定为
-# inspect/manage turn，跳过 capture 抽取——这类 turn 的内容是查看/管理已存储
-# 记忆（列表/撤销/确认/关联等），不是可抽取的业务事实，强抽只会白烧模型调用
-# 且因 user 原文不含 source_expression 片段而必失败。
-# recall_memory 不在此列：BeforeRun hook 每个业务 turn 都自动调它，若计入会把
-# 所有业务 turn 误判为 inspect。capture_completed_turn 是 hook 自身投递通道，
-# 也不在此列。
-_MEMORY_MANAGEMENT_TOOLS: frozenset[str] = frozenset(
-    {
-        "search_memories",
-        "list_memories",
-        "get_memory",
-        "get_memory_stats",
-        "revoke_memory",
-        "link_memories",
-        "revoke_memory_relation",
-        "list_pending_reviews",
-        "confirm_pending_memory",
-        "reject_pending_memory",
-        "batch_confirm_pending",
-    }
-)
 
 
 class AgentHookInputError(ValueError):
@@ -186,8 +157,10 @@ def render_command_hook_output(outcome: AgentHookOutcome) -> HookOutput:
 class AgentHookAdapter:
     """在通用顶层轮次事件和 Memory Hook Bridge 之间接线。
 
-    负责 BeforeRun 前写本地 outbox、AfterRun 前取出 staged payload 投递，
-    并在后续 Stop 事件中有界重投一个待发项（失败不阻断当前轮次）。
+    Phase 1（模型自主调用 capture）后，AfterRun 阶段对 capture 完全 no-op：
+    捕获由模型自主决定是否调用 ``capture_completed_turn`` MCP 工具，不再由
+    Stop hook 强制每轮触发。本地 outbox 存量靠 24h TTL 自然清空。BeforeRun
+    召回注入保持不变。
     """
 
     def __init__(
@@ -214,8 +187,7 @@ class AgentHookAdapter:
         self._state.cleanup_expired()
         if event.phase == "before_run":
             return await self._before(event, run_reference)
-        await self._retry_one_pending(event)
-        return await self._after(event, run_reference)
+        return self._noop_after(event, run_reference)
 
     async def _before(
         self,
@@ -223,13 +195,6 @@ class AgentHookAdapter:
         run_reference: str,
     ) -> AgentHookOutcome:
         user_input = event.required_user_input()
-        self._state.save(
-            TurnState(
-                session_id=event.conversation_id,
-                turn_id=event.turn_id,
-                prompt=user_input,
-            )
-        )
         result = await self._bridge.before_run(
             self._context(event),
             user_input,
@@ -247,138 +212,20 @@ class AgentHookAdapter:
             return AgentHookOutcome(warning_code=f"recall_{result.warning_code}")
         return AgentHookOutcome(additional_context=result.memory_context)
 
-    async def _after(
-        self,
+    @staticmethod
+    def _noop_after(
         event: AgentTurnEvent,
         run_reference: str,
     ) -> AgentHookOutcome:
-        if event.final_output is None or not event.final_output.strip():
-            return self._skip_after(
-                "missing_final_output",
-                run_reference=run_reference,
-            )
-
-        saved = self._state.load(event.conversation_id, event.turn_id)
-        if saved is None:
-            return self._skip_after(
-                "missing_turn_state",
-                run_reference=run_reference,
-            )
-
-        document_messages = extract_document_messages(
-            event.transcript_path,
-            cwd=event.cwd,
-            user_prompt=saved.prompt,
-        )
-        if _is_inspect_or_manage_turn(event.transcript_path, event.cwd, saved.prompt):
-            return self._skip_after(
-                "inspect_or_manage_turn",
-                run_reference=run_reference,
-            )
-        staged = self._state.stage_capture(
-            event.conversation_id,
-            event.turn_id,
-            final_output=event.final_output,
-            observed_at=datetime.now(UTC),
-            profile_id=self._settings.profile_id,
-            document_messages=document_messages,
-        )
-        result = await self._deliver_staged(staged)
-        warning_code = self._finish_delivery(staged, result)
+        """Phase 1 后 AfterRun 不再触发 capture：捕获由模型自主调用。"""
 
         log_event(
             _LOGGER,
             logging.INFO,
-            "agent_hook.capture.completed",
-            attempts=result.attempts,
-            created_count=len(result.created_memory_ids),
-            pending_count=len(result.pending_review_ids),
-            replayed=result.replayed,
+            "agent_hook.after_run.noop",
             run_reference=run_reference,
-            status=result.status,
-            failure_code=result.failure_code,
-            warning_code=warning_code,
         )
-        if warning_code is not None:
-            return AgentHookOutcome(warning_code=f"capture_{warning_code}")
         return AgentHookOutcome()
-
-    async def _retry_one_pending(self, event: AgentTurnEvent) -> None:
-        """后续 Stop 有界重投一个旧 payload，任何失败都不阻断当前轮次。
-
-        只处理当前轮次之外的待发项；这是 outbox 投递的最后补偿手段。
-        """
-
-        pending = self._state.pending_captures(
-            exclude=(event.conversation_id, event.turn_id),
-            limit=1,
-        )
-        if not pending:
-            return
-        state = pending[0]
-        run_reference = stable_reference(f"{state.session_id}\x1f{state.turn_id}")
-        try:
-            result = await self._deliver_staged(state)
-            warning_code = self._finish_delivery(state, result)
-            log_event(
-                _LOGGER,
-                logging.INFO,
-                "agent_hook.pending_retry.completed",
-                attempts=result.attempts,
-                run_reference=run_reference,
-                status=result.status,
-                warning_code=warning_code,
-            )
-        except Exception as exc:
-            cause = exc.__cause__
-            log_event(
-                _LOGGER,
-                logging.ERROR,
-                "agent_hook.pending_retry.failed",
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                run_reference=run_reference,
-                cause_type=type(cause).__name__ if cause else None,
-                cause_message=str(cause) if cause else None,
-            )
-            traceback.print_exception(
-                type(exc),
-                exc,
-                exc.__traceback__,
-                file=sys.stderr,
-            )
-
-    async def _deliver_staged(self, state: TurnState) -> AfterRunResult:
-        if state.final_output is None or state.capture_observed_at is None:
-            raise TurnStateError("capture_payload_is_not_staged")
-        return await self._bridge.after_run_success(
-            HookContext(
-                conversation_id=state.session_id,
-                turn_id=state.turn_id,
-                profile_id=state.profile_id,
-            ),
-            user_input=state.prompt,
-            final_output=state.final_output,
-            observed_at=state.capture_observed_at,
-            document_messages=state.document_messages,
-        )
-
-    def _finish_delivery(
-        self,
-        state: TurnState,
-        result: AfterRunResult,
-    ) -> str | None:
-        """只有权威终态删除本地 payload，其余状态等待后续 Stop 重投。"""
-
-        if result.status == "completed":
-            self._state.delete(state.session_id, state.turn_id)
-            return None
-        if result.status == "failed":
-            self._state.delete(state.session_id, state.turn_id)
-            return result.failure_code or "permanent_failure"
-        if result.status == "reprocess_required":
-            return result.failure_code or "reprocess_required"
-        return result.warning_code or "delivery_unavailable"
 
     def _context(self, event: AgentTurnEvent) -> HookContext:
         return HookContext(
@@ -387,52 +234,11 @@ class AgentHookAdapter:
             profile_id=self._settings.profile_id,
         )
 
-    @staticmethod
-    def _skip_after(
-        code: str,
-        *,
-        run_reference: str,
-    ) -> AgentHookOutcome:
-        log_event(
-            _LOGGER,
-            logging.WARNING,
-            "agent_hook.capture.skipped",
-            reason_code=code,
-            run_reference=run_reference,
-        )
-        return AgentHookOutcome(warning_code=code)
-
 
 def parse_hook_input(value: Mapping[str, Any]) -> AgentTurnEvent | None:
     """解析 command Hook JSON，并返回通用事件或忽略结果。"""
 
     return AgentHookInput.model_validate(value).normalize()
-
-
-def _is_inspect_or_manage_turn(
-    transcript_path: str | None,
-    cwd: str,
-    user_prompt: str,
-) -> bool:
-    """判断当前轮次是否为查看/管理已存储记忆的 inspect/manage turn。
-
-    基于结构性信号：当前轮次 assistant 是否调用了 memory 管理类工具
-    （search_memories/list_memories/revoke_memory 等，不含 recall_memory）。
-    inspect/manage turn 的 assistant 必然调用其中至少一个来查看或操作记忆；
-    业务 turn 的 assistant 只依赖 BeforeRun hook 自动调的 recall_memory，不调这些。
-
-    无 transcript_path（通用合同 / 非 Claude Code 宿主）或解析失败时返回 False，
-    降级为不跳过——保持现有 capture 行为，宁可白烧一次抽取也不误伤业务 turn。
-    """
-
-    if not transcript_path:
-        return False
-    tool_names = collect_turn_tool_uses(
-        transcript_path,
-        cwd=cwd,
-        user_prompt=user_prompt,
-    )
-    return bool(tool_names & _MEMORY_MANAGEMENT_TOOLS)
 
 
 def _one_value(
@@ -442,6 +248,7 @@ def _one_value(
     conflict_code: str,
 ) -> str:
     """从多个候选字段中取唯一非空值；全空报 missing，多于一个报 conflict。"""
+
     value = _optional_one_value(values, conflict_code=conflict_code)
     if value is None or not value.strip():
         raise AgentHookInputError(missing_code)
@@ -454,6 +261,7 @@ def _optional_one_value(
     conflict_code: str,
 ) -> str | None:
     """与 _one_value 同样的归一化，但允许全部缺失（返回 None）。"""
+
     present = {value for value in values if value is not None}
     if len(present) > 1:
         raise AgentHookInputError(conflict_code)

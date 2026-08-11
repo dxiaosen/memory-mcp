@@ -21,7 +21,7 @@
 ```mermaid
 flowchart TD
     AH[Agent Host: memory-mcp-agent] -->|BeforeRun → recall_memory| SRV
-    AH -->|AfterRun → capture_completed_turn| SRV
+    MODEL[模型自主决定] -->|有持久信号 → capture_completed_turn| SRV
     SRV[Memory MCP Server: memory-mcp] --> AUTH[认证 / owner 派生 / scope]
     SRV --> CORE[Memory Core: domain/application/ports]
     SRV --> ADAPT[适配层: PostgreSQL / 敏感 / 分词 / 抽取 / embedding]

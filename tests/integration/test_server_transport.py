@@ -35,7 +35,6 @@ from tests.support.fakes import (
     project_preference_command,
 )
 
-_OBSERVED_AT = "2026-07-30T10:00:00+08:00"
 _TOKEN_A_AGENT_A = "analyst-a-agent-a-token-00000000001"
 _TOKEN_A_AGENT_B = "analyst-a-agent-b-token-00000000002"
 _TOKEN_A_READ = "analyst-a-read-only-token-0000000003"
@@ -92,31 +91,18 @@ def _settings(port: int) -> MemoryServerSettings:
 
 def _event(
     *,
-    event_id: str = "event-1",
     assistant_text: str = "好的。",
-    contract_version: str = "1",
 ) -> dict[str, object]:
     return {
-        "event_id": event_id,
-        "contract_version": contract_version,
         "profile_id": "general-work",
         "conversation_id": "conversation-1",
         "turn_id": "turn-1",
-        "observed_at": _OBSERVED_AT,
-        "messages": [
-            {
-                "role": "user",
-                "content": (
-                    "密码是 secret-password-123。"
-                    "以后项目周报默认用表格。"
-                    "我可能喜欢要点。"
-                ),
-            },
-            {
-                "role": "assistant",
-                "content": assistant_text,
-            },
-        ],
+        "user_input": (
+            "密码是 secret-password-123。"
+            "以后项目周报默认用表格。"
+            "我可能喜欢要点。"
+        ),
+        "final_output": assistant_text,
     }
 
 
@@ -299,17 +285,13 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                 )
                 assert _payload(conflict)["error_code"] == "idempotency_conflict"
 
-                unsupported = await session.call_tool(
+                # contract_version 不再由模型传入（服务器硬编码 "1"），
+                # 传该字段被 strict tool arguments（extra=forbid）拒绝。
+                rejected = await session.call_tool(
                     "capture_completed_turn",
-                    arguments=_event(
-                        event_id="event-version-2",
-                        contract_version="2",
-                    ),
+                    arguments={**_event(), "contract_version": "2"},
                 )
-                assert (
-                    _payload(unsupported)["error_code"]
-                    == "unsupported_contract_version"
-                )
+                assert rejected.isError is True
 
                 memories = await session.call_tool("list_memories", arguments={})
                 memory_payload = _payload(memories)
@@ -468,7 +450,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
                 denied = _payload(
                     await session.call_tool(
                         "capture_completed_turn",
-                        arguments=_event(event_id="read-only-event"),
+                        arguments=_event(),
                     )
                 )
                 assert denied["error_code"] == "permission_denied"
@@ -547,7 +529,7 @@ def test_remote_transport_uses_principal_default_when_profile_is_omitted() -> No
     with _running_server(extractor=extractor) as url:
 
         async def call_without_profile(session: ClientSession) -> None:
-            event = _event(event_id="event-server-default")
+            event = _event()
             event.pop("profile_id")
             capture = _payload(
                 await session.call_tool(
@@ -815,6 +797,21 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
         )
         assert codex_after == {}
 
+        # Phase 1: Stop hook 不再捕获，模型自主调用 capture_completed_turn。
+        # 这里模拟模型在 codex 轮结束后直接调用 MCP 工具捕获。
+        def codex_capture(session: ClientSession):
+            return session.call_tool(
+                "capture_completed_turn",
+                arguments={
+                    "conversation_id": "codex-session",
+                    "turn_id": "codex-turn-1",
+                    "user_input": "以后项目周报默认用表格",
+                    "final_output": "好的，以后默认使用表格。",
+                },
+            )
+
+        anyio.run(_with_session, url, _TOKEN_A_AGENT_A, codex_capture)
+
         claude_recall = handle(
             url,
             _TOKEN_A_AGENT_B,
@@ -843,7 +840,8 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
         )
         generic_context = generic_recall["hookSpecificOutput"]["additionalContext"]
         assert "项目周报默认使用表格" in generic_context
-        assert len(list((generic_cwd / ".memory-mcp/hooks").glob("*.json"))) == 1
+        # Phase 1: BeforeRun 不再写 outbox 状态文件。
+        assert list((generic_cwd / ".memory-mcp/hooks").glob("*.json")) == []
 
         generic_after = handle(
             url,
@@ -857,7 +855,22 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
             },
         )
         assert generic_after == {}
+        # Phase 1: Stop hook 不再写 outbox，glob 为空。
         assert list((generic_cwd / ".memory-mcp/hooks").glob("*.json")) == []
+
+        # Phase 1: 模型自主调用 capture 模拟 generic 轮捕获。
+        def generic_capture(session: ClientSession):
+            return session.call_tool(
+                "capture_completed_turn",
+                arguments={
+                    "conversation_id": "generic-conversation",
+                    "turn_id": "generic-run-1",
+                    "user_input": "以后项目周报默认用表格，项目周报应该使用什么格式？",
+                    "final_output": "应该继续使用表格。",
+                },
+            )
+
+        anyio.run(_with_session, url, _TOKEN_A_AGENT_B, generic_capture)
 
         isolated = handle(
             url,

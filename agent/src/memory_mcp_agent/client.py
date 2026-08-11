@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal, Protocol, Self
 
@@ -114,14 +113,12 @@ class MemoryHookClient(Protocol):
     async def capture_completed_turn(
         self,
         *,
-        event_id: str,
-        profile_id: str | None = None,
         conversation_id: str,
         turn_id: str,
-        observed_at: datetime,
         user_input: str,
         final_output: str,
-        document_messages: list[dict[str, Any]] | None = None,
+        profile_id: str | None = None,
+        subject_hint: str | None = None,
     ) -> CaptureResponse: ...
 
 
@@ -183,55 +180,29 @@ class MemoryMcpClient:
     async def capture_completed_turn(
         self,
         *,
-        event_id: str,
-        profile_id: str | None = None,
         conversation_id: str,
         turn_id: str,
-        observed_at: datetime,
         user_input: str,
         final_output: str,
-        document_messages: list[dict[str, Any]] | None = None,
+        profile_id: str | None = None,
+        subject_hint: str | None = None,
     ) -> CaptureResponse:
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "user",
-                "content": user_input,
-                "message_id": f"{turn_id}:user",
-            },
-        ]
-        # 文件/文档来源消息插在 user 与 assistant 之间，使候选的 Evidence
-        # provenance 能映射到真实文档而非一律归到 assistant conversation
-        # 。
-        for doc in document_messages or []:
-            messages.append(
-                {
-                    "role": doc.get("role", "tool"),
-                    "content": doc["content"],
-                    "message_id": doc.get("message_id")
-                    or f"{turn_id}:document:{len(messages)}",
-                    "tool_name": doc.get("tool_name"),
-                    "source_type": doc.get("source_type", "document"),
-                    "source_uri": doc.get("source_uri"),
-                    "source_title": doc.get("source_title"),
-                }
-            )
-        messages.append(
-            {
-                "role": "assistant",
-                "content": final_output,
-                "message_id": f"{turn_id}:assistant",
-            }
-        )
+        """调用 capture_completed_turn MCP 工具。
+
+        Phase 1（模型自主调用）后，身份与幂等字段（event_id/observed_at/
+        contract_version）由服务器组装，客户端只传对话内容与对话/轮次标识。
+        """
+
         arguments: dict[str, Any] = {
-            "event_id": event_id,
-            "contract_version": "1",
             "conversation_id": conversation_id,
             "turn_id": turn_id,
-            "observed_at": observed_at.isoformat(),
-            "messages": messages,
+            "user_input": user_input,
+            "final_output": final_output,
         }
         if profile_id is not None:
             arguments["profile_id"] = profile_id
+        if subject_hint is not None:
+            arguments["subject_hint"] = subject_hint
         payload = await self._call_tool(
             "capture_completed_turn",
             arguments,

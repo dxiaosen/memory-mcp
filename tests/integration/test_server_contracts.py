@@ -26,7 +26,7 @@ from memory_mcp.core import (
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
 from memory_mcp.core.composition import create_memory_service
-from memory_mcp.schemas import CompletedTurnEventV1, MemoryRelationView
+from memory_mcp.schemas import CompletedTurnInputV1, MemoryRelationView
 from memory_mcp.settings import MemoryServerSettings
 from pydantic import SecretStr, ValidationError
 
@@ -118,53 +118,40 @@ def _settings() -> MemoryServerSettings:
 
 def test_completed_turn_is_strict_versioned_and_fingerprint_stable() -> None:
     payload = {
-        "contract_version": "1",
-        "event_id": "event-1",
         "profile_id": "project-work",
         "conversation_id": "conversation-1",
         "turn_id": "turn-1",
-        "observed_at": "2026-07-30T10:00:00+08:00",
-        "messages": [
-            {
-                "role": "user",
-                "content": "以后项目周报默认用表格",
-            },
-            {
-                "role": "assistant",
-                "content": "好的。",
-            },
-            {
-                "role": "tool",
-                "content": "年报第 42 页披露收入数据。",
-                "message_id": "tool-message-1",
-                "tool_name": "document_reader",
-                "source_type": "document",
-                "source_uri": "https://research.example/annual-2025",
-                "source_title": "示例公司 2025 年报",
-                "source_publisher": "示例交易所",
-                "published_at": "2026-03-20T09:00:00+08:00",
-                "retrieved_at": "2026-07-30T09:00:00+08:00",
-                "content_hash": "sha256:example-report",
-                "citation_locator": "p.42",
-            },
-        ],
+        "user_input": "以后项目周报默认用表格",
+        "final_output": "好的。",
+        "subject_hint": "周报格式",
     }
 
-    first = CompletedTurnEventV1.model_validate(payload)
-    second = CompletedTurnEventV1.model_validate(payload)
+    first = CompletedTurnInputV1.model_validate(payload)
+    second = CompletedTurnInputV1.model_validate(payload)
 
-    assert first.payload_fingerprint() == second.payload_fingerprint()
-    turn = first.to_turn_envelope(max_characters=10_000)
-    assert turn.event_id == "event-1"
+    assert first.input_fingerprint() == second.input_fingerprint()
+    fixed_time = datetime(2026, 7, 30, 10, 0, 0, tzinfo=UTC)
+    turn = first.to_turn_envelope(
+        owner_id="tenant:subject",
+        max_characters=10_000,
+        clock=lambda: fixed_time,
+    )
+    # event_id 由服务器从 (owner_id, conversation_id, turn_id) 确定性派生。
+    assert turn.event_id == second.to_turn_envelope(
+        owner_id="tenant:subject",
+        max_characters=10_000,
+        clock=lambda: fixed_time,
+    ).event_id
     assert turn.contract_version == "1"
     assert "[user]\n以后项目周报默认用表格" in turn.content
-    assert turn.observed_at.isoformat() == "2026-07-30T10:00:00+08:00"
-    assert turn.messages[2].source_type == "document"
-    assert turn.messages[2].source_uri == ("https://research.example/annual-2025")
-    assert turn.messages[2].citation_locator == "p.42"
+    assert "[assistant]\n好的。" in turn.content
+    assert turn.observed_at == fixed_time
+    assert len(turn.messages) == 2
+    assert turn.messages[0].role.value == "user"
+    assert turn.messages[1].role.value == "assistant"
 
     with pytest.raises(ValidationError):
-        CompletedTurnEventV1.model_validate({**payload, "owner_id": "other-user"})
+        CompletedTurnInputV1.model_validate({**payload, "owner_id": "other-user"})
 
 
 def test_server_exposes_stage_four_tools_without_owner_inputs() -> None:

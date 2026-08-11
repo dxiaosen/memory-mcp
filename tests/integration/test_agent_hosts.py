@@ -127,6 +127,8 @@ def test_supported_hosts_share_active_memory_flow(
     id_field: str,
     state_directory: str,
 ) -> None:
+    """BeforeRun 召回注入 + Stop 阶段 no-op（Phase 1 后 capture 由模型自主调用）。"""
+
     async def profile_id() -> None:
         client = _FakeClient()
         state = TurnStateStore(tmp_path / state_directory / "hooks")
@@ -149,7 +151,8 @@ def test_supported_hosts_share_active_memory_flow(
                 ),
             }
         }
-        assert state.load("session-1", "turn-1") is not None
+        assert len(client.recall_calls) == 1
+        assert client.recall_calls[0]["profile_id"] is None
 
         after = _event(
             session_id="session-1",
@@ -160,379 +163,35 @@ def test_supported_hosts_share_active_memory_flow(
         )
         after_outcome = await _adapter(client, state).handle(after)
 
+        # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
         assert after_outcome == AgentHookOutcome()
-        assert state.load("session-1", "turn-1") is None
-        assert len(client.recall_calls) == 1
-        assert len(client.capture_calls) == 1
-        capture = client.capture_calls[0]
-        assert capture["conversation_id"] == "session-1"
-        assert capture["turn_id"] == "turn-1"
-        assert capture["user_input"] == "项目周报怎么写？"
-        assert capture["final_output"] == "已经按表格生成。"
-        assert capture["profile_id"] is None
-        assert client.recall_calls[0]["profile_id"] is None
-
-    anyio.run(profile_id)
-
-
-def test_transcript_path_surfaces_document_messages_in_capture(
-    tmp_path: Path,
-) -> None:
-    """Stop 事件携带 transcript_path 时，文档来源消息应随 capture 请求送达。
-
-    相关：Claude Code Stop hook 提供 transcript_path，Host Adapter
-    解析出文件读取来源，构造 role=tool/source_type=document 的消息，使候选
-    Evidence provenance 能映射到真实文档而非一律归到 assistant conversation。
-    """
-
-    async def profile_id() -> None:
-        import json
-
-        materials_dir = tmp_path / "materials"
-        materials_dir.mkdir()
-        file_path = str(materials_dir / "04_纪要.md")
-        transcript = tmp_path / "transcript.jsonl"
-        transcript.write_text(
-            "\n".join(
-                json.dumps(entry)
-                for entry in (
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_use",
-                                    "id": "call-1",
-                                    "name": "Read",
-                                    "input": {"file_path": file_path},
-                                }
-                            ]
-                        },
-                    },
-                    {
-                        "type": "user",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": "call-1",
-                                    "content": "收入同比增长 35%",
-                                }
-                            ]
-                        },
-                    },
-                )
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        client = _FakeClient()
-        state = TurnStateStore(tmp_path / "claude-code" / "hooks")
-        before = _event(
-            session_id="session-1",
-            cwd=str(tmp_path),
-            hook_event_name="UserPromptSubmit",
-            prompt_id="turn-1",
-            prompt="04 纪要里收入怎么样？",
-        )
-        await _adapter(client, state).handle(before)
-
-        after = _event(
-            session_id="session-1",
-            cwd=str(tmp_path),
-            hook_event_name="Stop",
-            prompt_id="turn-1",
-            last_assistant_message="收入同比增长 35%。",
-            transcript_path=str(transcript),
-        )
-        await _adapter(client, state).handle(after)
-
-        assert len(client.capture_calls) == 1
-        capture = client.capture_calls[0]
-        documents = capture["document_messages"]
-        assert len(documents) == 1
-        doc = documents[0]
-        assert doc["source_type"] == "document"
-        assert doc["source_uri"] == "materials/04_纪要.md"
-        assert doc["source_title"] == "04_纪要.md"
-        assert doc["tool_name"] == "Read"
-        assert doc["content"] == "收入同比增长 35%"
-
-    anyio.run(profile_id)
-
-
-def test_second_turn_excludes_first_turn_tool_messages(tmp_path: Path) -> None:
-    """两轮 E2E：第二轮不应重复包含第一轮 tool/document 消息。
-
-    第一轮读文件（transcript 含 Read 工具调用），第二轮仅用户判断 + 回复（无工具调用）。
-    第二轮 Stop 时 transcript 已含两轮记录，但 capture 只应发送当前轮次--document_messages
-    为空（等价 message_count=2），不重复第一轮的文档。
-    """
-
-    async def profile_id() -> None:
-        import json
-
-        def _write_transcript(path: Path, entries: list[dict]) -> None:
-            path.write_text(
-                "\n".join(json.dumps(entry) for entry in entries) + "\n",
-                encoding="utf-8",
-            )
-
-        materials_dir = tmp_path / "materials"
-        materials_dir.mkdir()
-        file_path = str(materials_dir / "04_纪要.md")
-        transcript = tmp_path / "transcript.jsonl"
-
-        def _read(call_id: str, content: str) -> list[dict]:
-            return [
-                {
-                    "type": "assistant",
-                    "message": {
-                        "content": [
-                            {
-                                "type": "tool_use",
-                                "id": call_id,
-                                "name": "Read",
-                                "input": {"file_path": file_path},
-                            }
-                        ]
-                    },
-                },
-                {
-                    "type": "user",
-                    "message": {
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": call_id,
-                                "content": content,
-                            }
-                        ]
-                    },
-                },
-            ]
-
-        client = _FakeClient()
-        state = TurnStateStore(tmp_path / "claude-code" / "hooks")
-        adapter = _adapter(client, state)
-
-        # 第一轮：读文件。
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt_id="turn-1",
-                prompt="04 纪要里收入怎么样？",
-            )
-        )
-        _write_transcript(
-            transcript,
-            [
-                {"type": "user", "message": {"content": "04 纪要里收入怎么样？"}},
-                *_read("call-1", "收入同比增长 35%"),
-                {"type": "assistant", "message": {"content": "收入同比增长 35%。"}},
-            ],
-        )
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                prompt_id="turn-1",
-                last_assistant_message="收入同比增长 35%。",
-                transcript_path=str(transcript),
-            )
-        )
-        first_capture = client.capture_calls[0]
-        assert len(first_capture["document_messages"]) == 1
-        assert first_capture["document_messages"][0]["source_uri"] == (
-            "materials/04_纪要.md"
-        )
-
-        # 第二轮：仅用户长期研究判断，无工具调用；transcript 已累积两轮。
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt_id="turn-2",
-                prompt="这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。",
-            )
-        )
-        _write_transcript(
-            transcript,
-            [
-                {"type": "user", "message": {"content": "04 纪要里收入怎么样？"}},
-                *_read("call-1", "收入同比增长 35%"),
-                {"type": "assistant", "message": {"content": "收入同比增长 35%。"}},
-                {
-                    "type": "user",
-                    "message": {
-                        "content": (
-                            "这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。"
-                        )
-                    },
-                },
-                {"type": "assistant", "message": {"content": "已记录你的研究判断。"}},
-            ],
-        )
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                prompt_id="turn-2",
-                last_assistant_message="已记录你的研究判断。",
-                transcript_path=str(transcript),
-            )
-        )
-
-        second_capture = client.capture_calls[1]
-        # 第二轮无工具调用 -> 不重复第一轮文档，document_messages 为空。
-        assert second_capture["document_messages"] == []
-        assert second_capture["turn_id"] == "turn-2"
-        assert (
-            second_capture["user_input"]
-            == "这是我的长期研究判断，AI 热管理材料收入占比提升会推动利润结构改善。"
-        )
-
-    anyio.run(profile_id)
-
-
-def test_inspect_turn_with_memory_management_tool_skips_capture(
-    tmp_path: Path,
-) -> None:
-    """查看/管理记忆的 inspect turn（assistant 调用了 memory 管理工具）应跳过 capture。
-
-    相关：inspect/manage turn 的内容是查看/管理已存储记忆，不是可抽取的业务事实。
-    强抽只会白烧模型调用且因 user 原文不含 source_expression 片段而必失败。
-    信号：当前轮次 transcript 含 memory 管理类工具调用（不含 recall_memory）。
-    """
-    import json
-
-    async def profile_id() -> None:
-        transcript = tmp_path / "transcript.jsonl"
-        transcript.write_text(
-            "\n".join(
-                json.dumps(entry)
-                for entry in (
-                    {
-                        "type": "user",
-                        "message": {"content": "请显式查看我的青禾食品记忆。"},
-                    },
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_use",
-                                    "id": "call-search",
-                                    "name": "search_memories",
-                                    "input": {"query": "青禾食品"},
-                                }
-                            ]
-                        },
-                    },
-                    {
-                        "type": "user",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": "call-search",
-                                    "content": "5 条记忆",
-                                }
-                            ]
-                        },
-                    },
-                    {"type": "assistant", "message": {"content": "共 5 条记忆。"}},
-                )
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        client = _FakeClient()
-        state = TurnStateStore(tmp_path / "hooks")
-        adapter = _adapter(client, state)
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt_id="turn-1",
-                prompt="请显式查看我的青禾食品记忆。",
-            )
-        )
-        output = await adapter.handle(
-            _event(
-                session_id="session-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                prompt_id="turn-1",
-                last_assistant_message="共 5 条记忆。",
-                transcript_path=str(transcript),
-            )
-        )
-
-        assert output == AgentHookOutcome(warning_code="inspect_or_manage_turn")
         assert client.capture_calls == []
 
     anyio.run(profile_id)
 
 
-def test_business_turn_with_only_recall_memory_still_captures(
-    tmp_path: Path,
-) -> None:
-    """业务 turn（assistant 未调 memory 管理工具）不应被误跳过。
+# ---------------------------------------------------------------------------
+# Phase 1 已知债务：document provenance（transcript_path → document_messages）
+# 与 inspect/manage turn 跳过 capture 的机制随 Stop hook capture 路径一并移除。
+# 以下原 test_transcript_path_surfaces_document_messages_in_capture /
+# test_second_turn_excludes_first_turn_tool_messages /
+# test_inspect_turn_with_memory_management_tool_skips_capture /
+# test_business_turn_with_only_recall_memory_still_captures 均已删除，
+# 因为其测试的机制（Stop hook 解析 transcript 并调用 capture）已不存在。
+# AfterRun 阶段现为 no-op，capture 完全由模型自主调用 capture_completed_turn
+# MCP 工具触发。document provenance 需在后续 Phase 由模型侧或 server 侧补全。
+# ---------------------------------------------------------------------------
 
-    recall_memory 由 BeforeRun hook 自动调用，不计入 inspect/manage 信号；
-    其他非 memory 工具（Read/Bash 等）也不计。这类 turn 必须正常 capture。
-    """
-    import json
+
+def test_after_run_is_noop_regardless_of_transcript(tmp_path: Path) -> None:
+    """Phase 1: AfterRun no-op 即使携带 transcript_path 也不触发 capture。"""
 
     async def profile_id() -> None:
-        materials_dir = tmp_path / "materials"
-        materials_dir.mkdir()
-        file_path = str(materials_dir / "纪要.md")
+        import json
+
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(
-            "\n".join(
-                json.dumps(entry)
-                for entry in (
-                    {
-                        "type": "user",
-                        "message": {"content": "纪要里收入怎么样？"},
-                    },
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_use",
-                                    "id": "call-read",
-                                    "name": "Read",
-                                    "input": {"file_path": file_path},
-                                }
-                            ]
-                        },
-                    },
-                    {
-                        "type": "user",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": "call-read",
-                                    "content": "收入同比增长 35%",
-                                }
-                            ]
-                        },
-                    },
-                    {"type": "assistant", "message": {"content": "收入增长 35%。"}},
-                )
-            )
-            + "\n",
+            json.dumps({"type": "user", "message": {"content": "x"}}) + "\n",
             encoding="utf-8",
         )
         client = _FakeClient()
@@ -544,7 +203,7 @@ def test_business_turn_with_only_recall_memory_still_captures(
                 cwd=str(tmp_path),
                 hook_event_name="UserPromptSubmit",
                 prompt_id="turn-1",
-                prompt="纪要里收入怎么样？",
+                prompt="任意业务问题",
             )
         )
         output = await adapter.handle(
@@ -553,13 +212,13 @@ def test_business_turn_with_only_recall_memory_still_captures(
                 cwd=str(tmp_path),
                 hook_event_name="Stop",
                 prompt_id="turn-1",
-                last_assistant_message="收入增长 35%。",
+                last_assistant_message="任意最终回复。",
                 transcript_path=str(transcript),
             )
         )
 
         assert output == AgentHookOutcome()
-        assert len(client.capture_calls) == 1
+        assert client.capture_calls == []
 
     anyio.run(profile_id)
 
@@ -588,31 +247,19 @@ def test_no_memory_returns_strict_empty_json(tmp_path: Path) -> None:
     anyio.run(profile_id)
 
 
-def test_stop_without_saved_prompt_fails_open_without_capture(
-    tmp_path: Path,
-) -> None:
-    async def profile_id() -> None:
-        client = _FakeClient()
-        output = await _adapter(
-            client,
-            TurnStateStore(tmp_path / "hooks"),
-        ).handle(
-            _event(
-                session_id="session-1",
-                prompt_id="prompt-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                last_assistant_message="本轮已经结束。",
-            )
-        )
-
-        assert output == AgentHookOutcome(warning_code="missing_turn_state")
-        assert client.capture_calls == []
-
-    anyio.run(profile_id)
+# test_stop_without_saved_prompt_fails_open_without_capture 已删除：
+# Phase 1 后 _before 不再保存 turn state，_after 为 no-op，
+# "missing_turn_state" 跳过理由不再存在。Stop 无论有无前置 BeforeRun
+# 均返回 AgentHookOutcome()。
 
 
-def test_recall_failure_keeps_state_and_fails_open(tmp_path: Path) -> None:
+def test_recall_failure_fails_open(tmp_path: Path) -> None:
+    """BeforeRun 召回失败时 fail-open 返回 warning_code，不中断 Agent 任务。
+
+    Phase 1 后 _before 不再保存 turn state（outbox 已移除），故不再断言
+    state 文件存在；召回失败 → warning 的路径仍然保留。
+    """
+
     async def profile_id() -> None:
         client = _FakeClient(
             recall_error=MemoryHookClientError(
@@ -631,144 +278,23 @@ def test_recall_failure_keeps_state_and_fails_open(tmp_path: Path) -> None:
             )
         )
 
-        assert output == AgentHookOutcome(warning_code="recall_memory_mcp_unavailable")
-        assert state.load("session-1", "turn-1") is not None
+        assert output == AgentHookOutcome(
+            warning_code="recall_memory_mcp_unavailable"
+        )
 
     anyio.run(profile_id)
 
 
-def test_capture_transport_failure_keeps_staged_payload(tmp_path: Path) -> None:
-    async def profile_id() -> None:
-        client = _FakeClient(capture_error=MemoryHookClientError("temporary_failure"))
-        state = TurnStateStore(tmp_path / "hooks")
-        await _adapter(client, state).handle(
-            _event(
-                session_id="session-1",
-                prompt_id="prompt-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt="需要捕获的内容",
-            )
-        )
-
-        output = await _adapter(client, state).handle(
-            _event(
-                session_id="session-1",
-                prompt_id="prompt-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                last_assistant_message="最终回复",
-            )
-        )
-
-        assert output == AgentHookOutcome(warning_code="capture_temporary_failure")
-        pending = state.load("session-1", "prompt-1")
-        assert pending is not None
-        assert pending.final_output == "最终回复"
-        assert pending.capture_observed_at is not None
-        assert len(client.capture_calls) == 1
-
-    anyio.run(profile_id)
-
-
-def test_stop_without_final_output_keeps_saved_prompt(tmp_path: Path) -> None:
-    async def profile_id() -> None:
-        client = _FakeClient()
-        state = TurnStateStore(tmp_path / "hooks")
-        adapter = _adapter(client, state)
-        await adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt="一个问题",
-            )
-        )
-
-        output = await adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                last_assistant_message=None,
-            )
-        )
-
-        assert output == AgentHookOutcome(warning_code="missing_final_output")
-        assert state.load("session-1", "turn-1") is not None
-        assert client.capture_calls == []
-
-    anyio.run(profile_id)
-
-
-def test_reprocess_required_is_retried_by_later_stop(tmp_path: Path) -> None:
-    async def profile_id() -> None:
-        state = TurnStateStore(tmp_path / "hooks")
-        first_client = _FakeClient(
-            capture_status="reprocess_required",
-            capture_failure_code="extraction_unavailable",
-        )
-        first_adapter = _adapter(first_client, state)
-        await first_adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-1",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt="第一轮问题",
-            )
-        )
-        first_outcome = await first_adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-1",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                last_assistant_message="第一轮最终回复",
-            )
-        )
-        pending = state.load("session-1", "turn-1")
-
-        assert first_outcome == AgentHookOutcome(
-            warning_code="capture_extraction_unavailable"
-        )
-        assert pending is not None
-        assert pending.capture_observed_at is not None
-
-        # command Hook 每次是独立进程；新适配器会重投一个旧 payload，再处理当前轮次。
-        second_client = _FakeClient()
-        second_adapter = _adapter(second_client, state)
-        await second_adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-2",
-                cwd=str(tmp_path),
-                hook_event_name="UserPromptSubmit",
-                prompt="第二轮问题",
-            )
-        )
-        second_outcome = await second_adapter.handle(
-            _event(
-                session_id="session-1",
-                turn_id="turn-2",
-                cwd=str(tmp_path),
-                hook_event_name="Stop",
-                last_assistant_message="第二轮最终回复",
-            )
-        )
-
-        assert second_outcome == AgentHookOutcome()
-        assert len(second_client.capture_calls) == 2
-        retry, current = second_client.capture_calls
-        assert retry["turn_id"] == "turn-1"
-        assert retry["observed_at"] == pending.capture_observed_at
-        assert current["turn_id"] == "turn-2"
-        assert state.load("session-1", "turn-1") is None
-        assert state.load("session-1", "turn-2") is None
-
-    anyio.run(profile_id)
+# ---------------------------------------------------------------------------
+# 以下 outbox 重试机制相关测试已在 Phase 1 移除：
+# - test_capture_transport_failure_keeps_staged_payload：capture 失败时 outbox
+#   保留 payload 待下次 Stop 重投。Phase 1 后 hook Stop 不再触发 capture，
+#   outbox 不再写入，此机制不存在。
+# - test_stop_without_final_output_keeps_saved_prompt：missing final_output 时
+#   跳过 capture 并保留 state。Phase 1 后 Stop 为 no-op，不受 final_output 影响。
+# - test_reprocess_required_is_retried_by_later_stop：reprocess_required 状态的
+#   outbox 重投。同上，outbox 机制已移除。
+# ---------------------------------------------------------------------------
 
 
 def test_unsupported_subagent_event_has_no_side_effect(tmp_path: Path) -> None:
@@ -810,6 +336,8 @@ def test_conflicting_or_missing_host_turn_identifiers_are_rejected() -> None:
 def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
     tmp_path: Path,
 ) -> None:
+    """通用合同 BeforeRun 召回注入 + AfterRun no-op（Phase 1 后 capture 模型自主）。"""
+
     async def profile_id() -> None:
         client = _FakeClient()
         state = TurnStateStore(tmp_path / "generic-agent" / "hooks")
@@ -842,14 +370,9 @@ def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
         assert before.phase == "before_run"
         assert before_outcome.additional_context is not None
         assert after.phase == "after_run"
+        # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
         assert after_outcome == AgentHookOutcome()
-        assert len(client.capture_calls) == 1
-        capture = client.capture_calls[0]
-        assert capture["conversation_id"] == "conversation-1"
-        assert capture["turn_id"] == "run-1"
-        assert capture["profile_id"] is None
-        assert capture["user_input"] == "请按项目约定生成周报"
-        assert capture["final_output"] == "已经生成周报。"
+        assert client.capture_calls == []
 
     anyio.run(profile_id)
 

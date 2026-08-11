@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 import anyio
 import pytest
 from memory_mcp_agent import MemoryHookSettings, MemoryMcpClient
@@ -147,11 +145,9 @@ def test_mcp_client_omits_unspecified_profile_from_tool_arguments() -> None:
             token_budget=600,
         )
         await client.capture_completed_turn(
-            event_id="event-1",
             profile_id=None,
             conversation_id="conversation-1",
             turn_id="turn-1",
-            observed_at=datetime(2026, 8, 2, tzinfo=UTC),
             user_input="input",
             final_output="output",
         )

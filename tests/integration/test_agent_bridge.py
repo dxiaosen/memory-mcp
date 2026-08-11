@@ -1,5 +1,4 @@
 import asyncio
-from datetime import UTC, datetime
 
 import anyio
 import pytest
@@ -111,19 +110,16 @@ def test_before_and_after_run_execute_at_most_once_per_top_level_turn() -> None:
             bridge.before_run(_context(), "项目周报"),
             bridge.before_run(_context(), "项目周报"),
         )
-        observed_at = datetime(2026, 7, 30, tzinfo=UTC)
         after = await asyncio.gather(
             bridge.after_run_success(
                 _context(),
                 user_input="以后项目周报默认用表格",
                 final_output="好的",
-                observed_at=observed_at,
             ),
             bridge.after_run_success(
                 _context(),
                 user_input="以后项目周报默认用表格",
                 final_output="好的",
-                observed_at=observed_at,
             ),
         )
 
@@ -216,7 +212,10 @@ def test_after_run_retries_same_event_and_can_fail_open() -> None:
 
         assert result.attempts == 3
         assert result.status == "completed"
-        assert len({call["event_id"] for call in client.capture_calls}) == 1
+        # 3 次重试都针对同一 run_key，参数稳定（同一 conversation_id/turn_id）。
+        assert len(client.capture_calls) == 3
+        assert len({c["conversation_id"] for c in client.capture_calls}) == 1
+        assert len({c["turn_id"] for c in client.capture_calls}) == 1
 
     async def fail_open_profile() -> None:
         client = _FakeClient(capture_failures=5)

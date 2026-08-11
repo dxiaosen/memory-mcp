@@ -1,7 +1,6 @@
 """完成轮次捕获 MCP 工具。"""
 
 import asyncio
-from datetime import datetime
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -11,9 +10,8 @@ from memory_mcp.auth import MemoryScope
 from memory_mcp.errors import UnsupportedContractVersionError
 from memory_mcp.schemas import (
     CaptureReceipt,
-    CompletedTurnEventV1,
+    CompletedTurnInputV1,
     ErrorResponse,
-    RoleMessageV1,
 )
 from memory_mcp.tools.shared import ToolSupport, request_id
 
@@ -23,8 +21,16 @@ class CaptureTools(ToolSupport):
         @server.tool(
             name="capture_completed_turn",
             description=(
-                "Capture one successfully completed Agent turn. "
-                "Owner identity is derived from the access token."
+                "Capture one successfully completed Agent turn into long-term "
+                "memory. Call this ONLY after a turn where the user stated or "
+                "revised a durable fact, preference, decision, thesis, or "
+                "research judgment worth remembering across future sessions. "
+                "Do NOT call this for turns that only inspect, query, search, "
+                "or manage existing memories, or for casual/operational "
+                "conversation with no lasting signal. Owner identity is "
+                "derived from the access token; conversation_id and turn_id "
+                "must be stable across the same conversation so deduplication "
+                "and replay work correctly."
             ),
             annotations=ToolAnnotations(
                 readOnlyHint=False,
@@ -34,12 +40,10 @@ class CaptureTools(ToolSupport):
             ),
         )
         async def capture_completed_turn(
-            event_id: str,
-            contract_version: str,
             conversation_id: str,
             turn_id: str,
-            observed_at: datetime,
-            messages: list[RoleMessageV1],
+            user_input: str,
+            final_output: str,
             ctx: Context,
             profile_id: str | None = None,
             subject_hint: str | None = None,
@@ -48,32 +52,31 @@ class CaptureTools(ToolSupport):
             try:
                 principal = self._authorize(MemoryScope.WRITE)
                 resolved_profile_id = profile_id or principal.default_profile_id
-                event = CompletedTurnEventV1.model_validate(
-                    {
-                        "event_id": event_id,
-                        "contract_version": contract_version,
-                        "profile_id": resolved_profile_id,
-                        "conversation_id": conversation_id,
-                        "turn_id": turn_id,
-                        "observed_at": observed_at,
-                        "messages": messages,
-                        "subject_hint": subject_hint,
-                    }
+                event = CompletedTurnInputV1(
+                    profile_id=resolved_profile_id,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    user_input=user_input,
+                    final_output=final_output,
+                    subject_hint=subject_hint,
                 )
-                if event.contract_version != "1":
-                    raise UnsupportedContractVersionError(event.contract_version)
+                envelope = event.to_turn_envelope(
+                    owner_id=principal.owner_key,
+                    max_characters=self._settings.max_capture_characters,
+                    clock=self._service.clock,
+                )
+                if envelope.contract_version != "1":
+                    raise UnsupportedContractVersionError(envelope.contract_version)
                 started_at = self._log_started(
                     current_request_id,
                     principal,
                     "capture_completed_turn",
-                    event_id=event.event_id,
+                    event_id=envelope.event_id,
                 )
                 result = await asyncio.to_thread(
                     self._service.capture_turn,
                     principal.to_core(),
-                    event.to_turn_envelope(
-                        max_characters=self._settings.max_capture_characters
-                    ),
+                    envelope,
                 )
                 receipt = CaptureReceipt.from_result(
                     current_request_id,
