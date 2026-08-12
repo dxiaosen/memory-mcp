@@ -718,10 +718,16 @@ class CandidateProcessor:
                     AdmissionDecision.PENDING,
                     "ambiguous_lifecycle_conflict",
                 )
-            elif target is None and admission.decision is AdmissionDecision.AUTO_SAVE:
+            elif target is None and admission.decision in (
+                AdmissionDecision.AUTO_SAVE,
+                AdmissionDecision.PENDING,
+            ):
                 # 字面 subject 无命中：尝试基于嵌入的语义去重，把近似现有记忆
-                # 视为生命周期目标，避免同主题 thesis/evidence 碎片化。阈值由
-                # Profile 的 metadata_policies 声明，None 表示该类型不启用。
+                # 视为生命周期目标，避免同主题 thesis/evidence 碎片化。非用户源
+                # 候选即使被 non_user_source 降为 PENDING 也走这里——否则 assistant
+                # 复述换了 subject 措辞就会绕过去重直接进 Pending，用户 confirm 后
+                # 变成第二条语义重复的 active。阈值由 Profile 的 metadata_policies
+                # 声明，None 表示该类型不启用。
                 admission = self._resolve_semantic_target(
                     principal,
                     candidate,
@@ -890,16 +896,29 @@ class CandidateProcessor:
         if normalize_memory_text(target.current_revision.content) == (
             normalize_memory_text(candidate.content)
         ):
-            duplicate_evidence.append(
-                self._materializer.duplicate(target, candidate)
-            )
+            if candidate.source_role is MessageRole.USER:
+                # 用户源语义重复 -> 追加 Evidence（与字面 duplicate_evidence 对齐）。
+                duplicate_evidence.append(
+                    self._materializer.duplicate(target, candidate)
+                )
+                lifecycle_target_ids.add(target.item.memory_id)
+                outcomes.append(
+                    CaptureOutcome(
+                        candidate_id=candidate.candidate_id,
+                        decision=AdmissionDecision.AUTO_SAVE,
+                        reason_code="semantic_duplicate_evidence",
+                        memory_id=target.item.memory_id,
+                    )
+                )
+                return None
+            # 非用户源（assistant/tool）语义等价命中已有记忆 -> 回声，discard；
+            # 不给已有记忆追加 Evidence（非用户源不应作为新证据来源）。
             lifecycle_target_ids.add(target.item.memory_id)
             outcomes.append(
                 CaptureOutcome(
                     candidate_id=candidate.candidate_id,
-                    decision=AdmissionDecision.AUTO_SAVE,
-                    reason_code="semantic_duplicate_evidence",
-                    memory_id=target.item.memory_id,
+                    decision=AdmissionDecision.DISCARD,
+                    reason_code="semantic_assistant_restatement",
                 )
             )
             return None

@@ -158,8 +158,13 @@ class InvestmentResearchProfile:
     )
     metadata_policies: dict[str, MemoryMetadataPolicy] = field(
         default_factory=lambda: {
-            "research_preference": MemoryMetadataPolicy(),
-            "research_question": MemoryMetadataPolicy(validity_days=365),
+            "research_preference": MemoryMetadataPolicy(
+                semantic_dedup_threshold=0.90,
+            ),
+            "research_question": MemoryMetadataPolicy(
+                validity_days=365,
+                semantic_dedup_threshold=0.90,
+            ),
             "thesis": MemoryMetadataPolicy(
                 validity_days=180,
                 semantic_dedup_threshold=0.92,
@@ -169,12 +174,18 @@ class InvestmentResearchProfile:
                 validity_days=90,
                 semantic_dedup_threshold=0.90,
             ),
-            "risk": MemoryMetadataPolicy(validity_days=180),
+            "risk": MemoryMetadataPolicy(
+                validity_days=180,
+                semantic_dedup_threshold=0.92,
+            ),
             "catalyst": MemoryMetadataPolicy(
                 sensitivity_level=SensitivityLevel.INTERNAL,
                 validity_days=90,
             ),
-            "ongoing_research": MemoryMetadataPolicy(validity_days=365),
+            "ongoing_research": MemoryMetadataPolicy(
+                validity_days=365,
+                semantic_dedup_threshold=0.90,
+            ),
             "research_decision": MemoryMetadataPolicy(),
         }
     )

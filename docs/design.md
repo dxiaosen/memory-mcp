@@ -675,12 +675,16 @@ Profile `semantic_dedup_threshold` 声明）。对 `_is_explicit_replacement(can
 
 | 语义分支 | 条件 | 行为 |
 | --- | --- | --- |
-| semantic_duplicate_evidence | 近似目标内容与候选等价 | 追加 Evidence |
+| semantic_duplicate_evidence | 近似目标内容与候选等价（用户源） | 追加 Evidence |
+| semantic_assistant_restatement | 近似目标内容与候选等价（非用户源 assistant/tool） | discard，不追加 Evidence |
 | semantic_explicit_replacement | 近似目标 + 用户明确替换 | 生成 replacement |
 | semantic_lifecycle_conflict | 近似目标但非替换 | 降级 pending |
 
-未声明 threshold（如 general-work）、嵌入不可用、无命中时回退到原有新增路径。
-阈值由 Profile 按 memory_type 声明（投研 thesis=0.92、evidence_claim=0.90），
+语义去重对 `AUTO_SAVE` 与 `PENDING`（含 `non_user_source` 降级的非用户源候选）均触发，
+避免 assistant/tool 复述换了 subject 措辞后绕过去重直接进 Pending、用户 confirm 后
+变成第二条语义重复的 active。未声明 threshold（如 general-work）、嵌入不可用、
+无命中时回退到原有新增路径。阈值由 Profile 按 memory_type 声明（投研 thesis/risk=0.92，
+evidence_claim/research_preference/research_question/ongoing_research=0.90），
 不硬编码于 Core。
 
 ## 8. 生命周期与 Review

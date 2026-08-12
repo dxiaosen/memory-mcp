@@ -297,9 +297,11 @@ class CaptureService:
                 failed += 1
             processed += 1
         has_more = len(pending) >= batch_limit
+        # 空轮询（队列无 PENDING）降为 DEBUG，避免 worker 周期性心跳刷屏；
+        # 有实际处理（processed>0）才记 INFO 便于排障。
         log_event(
             _LOGGER,
-            logging.INFO,
+            logging.DEBUG if processed == 0 else logging.INFO,
             "memory.capture.reprocess.completed",
             processed_count=processed,
             completed_count=completed,

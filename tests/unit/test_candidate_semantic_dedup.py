@@ -6,7 +6,9 @@
 - 内容几乎一致的近似命中走 duplicate evidence；
 - 显式替换意图走 replacement；
 - Profile 未声明阈值时（general-work）不启用语义去重，走原有新增路径；
-- 嵌入不可用时回退到原有新增路径。
+- 嵌入不可用时回退到原有新增路径；
+- 非用户源（assistant/tool）字面未命中 + 语义等价 -> discard
+  （semantic_assistant_restatement），避免绕过去重进 Pending 后变重复 active。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from datetime import UTC, datetime
 from memory_mcp.core import (
     AdmissionDecision,
     AssertionKind,
+    EvidenceSourceType,
     MemoryService,
     MessageRole,
     PrincipalContext,
@@ -205,3 +208,199 @@ def test_general_work_profile_disables_semantic_dedup() -> None:
     # 无 threshold -> 新增第二条，不触发语义去重。
     assert result.outcomes[0].decision is AdmissionDecision.AUTO_SAVE
     assert result.outcomes[0].reason_code != "semantic_duplicate_evidence"
+
+
+def test_semantic_assistant_restatement_with_different_subject_is_discarded() -> None:
+    """非用户源（assistant）+ 字面 subject 不同 + 语义等价 -> discard。
+
+    覆盖生产环境漏洞：assistant 复述了用户判断、但换了 subject 措辞，原逻辑
+    因字面未命中且 non_user_source 降为 PENDING 而绕过语义去重，直接进 Pending，
+    用户 confirm 后变成第二条语义重复的 active。修复后应走 semantic_assistant_restatement。
+    """
+
+    user_content = "示例公司海外增速快速回落时出海判断要打折"
+    assistant_content = "示例公司海外增速快速回落时出海判断需要打折扣"
+    vectors = {
+        user_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 user_content 余弦相似度 1.0，超 risk 阈值 0.92。
+        assistant_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 1) 用户陈述 -> auto_save 一条 active risk。
+    extractor.proposals = (
+        candidate_proposal(
+            user_content,
+            subject="example-company-oversea-discount-condition",
+            memory_type="risk",
+            content=user_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(user_content, turn_id="t1"))
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+    # 2) Assistant 复述同样判断、换 subject 措辞 -> 应 discard，不进 Pending。
+    extractor.proposals = (
+        candidate_proposal(
+            assistant_content,
+            subject="example-company-oversea-discount-trigger",  # 字面不同
+            memory_type="risk",
+            content=assistant_content,
+            assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+            business_progress="monitoring",
+        ),
+    )
+    assistant_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[assistant]\n{assistant_content}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_content,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, assistant_turn)
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code in {
+        "assistant_restatement",
+        "semantic_assistant_restatement",
+    }
+    # 不新增 Pending、不新增记忆。
+    assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+
+def test_semantic_tool_restatement_with_different_subject_is_discarded() -> None:
+    """非用户源（tool）+ 字面 subject 不同 + content 等价 -> discard。
+
+    tool 源不像 assistant 那样走 _is_assistant_restatement（仅 source_role=assistant
+    调用），只能靠 _resolve_semantic_target 的 semantic_assistant_restatement 分支拦截。
+    content 归一等价时必须 discard，否则 tool 回声会进 Pending 后变重复 active。
+    """
+
+    content = "示例公司海外增速快速回落时出海判断要打折"
+    vectors = {
+        content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            content,
+            subject="example-company-oversea-discount-condition",
+            memory_type="risk",
+            content=content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(content, turn_id="t1"))
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+    # tool 源 + content 完全相同（归一等价）+ subject 不同 -> discard。
+    extractor.proposals = (
+        candidate_proposal(
+            content,
+            subject="example-company-oversea-discount-trigger",  # 字面不同
+            memory_type="risk",
+            content=content,
+            assertion_kind=AssertionKind.EXTERNAL_FACT,
+            business_progress="monitoring",
+        ),
+    )
+    tool_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[tool]\n{content}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.TOOL,
+                content=content,
+                message_id="message-t2",
+                source_type=EvidenceSourceType.TOOL,
+                tool_name="Read",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, tool_turn)
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "semantic_assistant_restatement"
+    assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+    """非用户源（assistant）+ 字面 subject 相同 + content 归一不等价但语义近似 -> discard。
+
+    覆盖 Case B：subject 完全相同，但 content 差几个字（归一化不等价也不包含），
+    原 _content_restates 判 False；risk 现已配 threshold=0.92 -> 语义兜底命中 -> discard。
+    """
+
+    user_content = "聊示例公司时先讲海外，再讲 IP，不要一上来堆一堆财务指标。"
+    assistant_content = "聊示例公司时先讲海外，再讲IP，不要上来就堆财务指标。"
+    vectors = {
+        user_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 user_content 余弦相似度 1.0，超 research_preference 阈值 0.90。
+        assistant_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            user_content,
+            subject="example-company-communication-preference",
+            memory_type="research_preference",
+            content=user_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(user_content, turn_id="t1"))
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+    # subject 相同、content 仅差标点空格 -> 归一不等价 -> 走语义兜底 -> discard。
+    extractor.proposals = (
+        candidate_proposal(
+            assistant_content,
+            subject="example-company-communication-preference",  # 字面相同
+            memory_type="research_preference",
+            content=assistant_content,
+            assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+        ),
+    )
+    assistant_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[assistant]\n{assistant_content}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_content,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, assistant_turn)
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code in {
+        "assistant_restatement",
+        "semantic_assistant_restatement",
+    }
+    assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
+    assert len(service.list_memories(_PRINCIPAL)) == 1
