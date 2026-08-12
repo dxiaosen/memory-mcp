@@ -14,6 +14,7 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Any
 
 from memory_mcp_agent.client import (
     MemoryHookClient,
@@ -165,11 +166,14 @@ class MemoryHookBridge:
         user_input: str,
         final_output: str,
         subject_hint: str | None = None,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> AfterRunResult:
         """Stop hook 强制入队 capture：毫秒级返回 pending，失败走 fail-open。
 
         入队幂等键由服务端 event_id（从 owner+conversation+turn 派生）保证，
         本地不做去重/重试——入队失败即 fail-open 警告，下一轮 Stop 幂等兜底。
+        ``document_messages`` 由 Host Adapter 从 transcript 提取的文件/工具
+        来源消息，透传给服务端补全 document provenance。
         """
 
         try:
@@ -180,6 +184,7 @@ class MemoryHookBridge:
                 user_input=user_input,
                 final_output=final_output,
                 subject_hint=subject_hint,
+                document_messages=document_messages,
             )
         except MemoryHookClientError as exc:
             if not self._settings.fail_open:

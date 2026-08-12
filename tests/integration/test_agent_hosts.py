@@ -163,9 +163,11 @@ def test_supported_hosts_share_active_memory_flow(
 
 # ---------------------------------------------------------------------------
 # Stop hook 恢复强制入队 capture（经服务端队列异步抽取）。document provenance
-# 暂退化（服务端组装 [user, assistant] 两条 messages，不解析 transcript 文件
-# 来源）——已知债务，后续可补 transcript_path → document_messages。inspect/manage
-# turn 跳过入队已恢复（_is_inspect_or_manage_turn）。
+# 由 transcript_path → extract_document_messages 提取本轮 Read 等文件读取工具
+# 调用结果，经 document_messages 透传给服务端，编码进 content 的
+# [document:<i>] 段；worker 反解后 _source_metadata 据此标注 document 来源，
+# 写入 memory_evidence_documents 子表。inspect/manage turn 跳过入队已恢复
+# （_is_inspect_or_manage_turn）。
 # ---------------------------------------------------------------------------
 
 
@@ -279,6 +281,93 @@ def test_inspect_turn_with_memory_management_tool_skips_capture(
         # inspect/manage turn → 跳过入队
         assert output.warning_code == "inspect_or_manage_turn"
         assert len(client.capture_calls) == 0
+
+    anyio.run(profile_id)
+
+
+def test_after_run_passes_document_messages_from_transcript(
+    tmp_path: Path,
+) -> None:
+    """Stop hook 从 transcript 提取 Read 工具结果，作为 document_messages 透传入队。
+
+    transcript 含一条 user prompt + 一个 Read tool_use + 其 tool_result + assistant
+    回复。Host Adapter 的 _after 调 extract_document_messages 把 Read 结果纳成
+    document 消息，经 bridge/client 传入 capture_completed_turn，使服务端能从
+    文档来源抽取 external_fact 并写入 evidence_documents 子表。
+    """
+
+    async def profile_id() -> None:
+        import json
+
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            {"type": "user", "message": {"content": "看下 materials/更新.md"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Read",
+                            "id": "tool-1",
+                            "input": {"file_path": str(tmp_path / "materials" / "更新.md")},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "content": "毛利率从 39% 升至 41%。",
+                        }
+                    ]
+                },
+            },
+            {"type": "assistant", "message": {"content": "毛利率升至 41%。"}},
+        ]
+        transcript.write_text(
+            "".join(json.dumps(e) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "hooks")
+        adapter = _adapter(client, state)
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="看下 materials/更新.md",
+            )
+        )
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="毛利率升至 41%。",
+                transcript_path=str(transcript),
+            )
+        )
+
+        assert len(client.capture_calls) == 1
+        call = client.capture_calls[0]
+        docs = call["document_messages"]
+        assert isinstance(docs, list)
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc["role"] == "tool"
+        assert doc["tool_name"] == "Read"
+        assert doc["source_type"] == "document"
+        assert "更新.md" in doc["source_uri"]
+        assert doc["source_title"] == "更新.md"
+        assert doc["content"] == "毛利率从 39% 升至 41%。"
 
     anyio.run(profile_id)
 

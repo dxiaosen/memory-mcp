@@ -1,11 +1,12 @@
 """捕获流程编排：协调候选抽取、敏感内容校验、准入与原子写入，并暴露待确认门面。"""
 
+import json
 import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from threading import Lock
 from time import perf_counter
@@ -30,6 +31,7 @@ from memory_mcp.core.domain import (
     CaptureReprocessResult,
     CaptureResult,
     CaptureStatus,
+    EvidenceSourceType,
     ExtractionMetadata,
     MemoryRecord,
     MessageRole,
@@ -317,10 +319,11 @@ class CaptureService:
         """把 PENDING 行的已脱敏 content 重建为 ``TurnEnvelope``。
 
         content 由 ``CompletedTurnInputV1.to_turn_envelope`` 确定性拼成
-        ``[user]\\n{user_input}\\n\\n[assistant]\\n{final_output}``，此处反解回
-        ``[user, assistant]`` 两条 ``TurnMessage``，使 worker 抽取路径与同步路径
-        一样拥有可信 messages——``_source_metadata`` 才能据此给候选标注精确的
-        ``source_role`` / ``source_message_id``，否则全部退化为 None。
+        ``[user]\\n{user_input}\\n\\n[assistant]\\n{final_output}``（其后可附
+        ``[document:<i>]`` 段），此处反解回 ``[user, assistant, ...document]``
+        ``TurnMessage``，使 worker 抽取路径与同步路径一样拥有可信 messages——
+        ``_source_metadata`` 才能据此给候选标注精确的 ``source_role`` /
+        ``source_message_id`` / document provenance，否则全部退化为 None。
         """
 
         return TurnEnvelope(
@@ -919,19 +922,32 @@ def _has_processable_content(value: str) -> bool:
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentSegment:
+    """``[document:<i>]`` 段反解结果：meta + 正文。"""
+
+    meta: dict[str, Any]
+    content: str
+
+
 def _split_capture_content(
     content: str,
     source_turn_id: str,
 ) -> tuple[TurnMessage, ...]:
-    """反解 ``[user]\\n{user_input}\\n\\n[assistant]\\n{final_output}`` 为两条消息。
+    """反解 ``[user]/[assistant]/[document:*]`` 段为 ``TurnMessage`` 序列。
 
     与 ``CompletedTurnInputV1.to_turn_envelope`` 的拼接格式对偶。content 是
-    入队前 ``sensitive_guard.inspect`` 脱敏后的原文，``[user]``/``[assistant]``
-    标记由服务器加在脱敏之前，不受脱敏影响，反解可靠。匹配不到标记时返回
-    空元组——降级为无 messages 的旧行为，不阻断抽取。
+    入队前 ``sensitive_guard.inspect`` 脱敏后的原文，``[user]``/``[assistant]``/
+    ``[document]`` 标记由服务器加在脱敏之前，不受脱敏影响，反解可靠。匹配不到
+    ``[user]`` 标记时返回空元组——降级为无 messages 的旧行为，不阻断抽取。
+
+    ``[document:<i>]`` 段格式为 ``\\n\\n[document:<i>]\\n{meta_json}\\n{content}``，
+    其中 ``meta_json`` 单行携带 tool_name/source_type/source_uri/source_title/
+    source_publisher/published_at/retrieved_at/content_hash/citation_locator/
+    message_id。无 document 段时仅返回 user/assistant 两条（旧行为）。
     """
 
-    user_text, assistant_text = _parse_capture_roles(content)
+    user_text, assistant_text, doc_segments = _parse_capture_roles(content)
     messages: list[TurnMessage] = []
     if user_text is not None:
         messages.append(
@@ -949,25 +965,136 @@ def _split_capture_content(
                 message_id=f"{source_turn_id}:assistant",
             )
         )
+    for doc in doc_segments:
+        messages.append(_document_message(doc, source_turn_id))
     return tuple(messages)
 
 
 _CAPTURE_USER_PREFIX = "[user]\n"
 _CAPTURE_ASSISTANT_PREFIX = "\n\n[assistant]\n"
+_CAPTURE_DOCUMENT_PREFIX = "\n\n[document:"
 
 
-def _parse_capture_roles(content: str) -> tuple[str | None, str | None]:
-    """拆出 user/assistant 正文；任一缺失返回对应 None。"""
+def _parse_capture_roles(
+    content: str,
+) -> tuple[str | None, str | None, list[DocumentSegment]]:
+    """拆出 user/assistant 正文与 document 段；任一缺失返回对应 None/空。"""
 
     if not content.startswith(_CAPTURE_USER_PREFIX):
-        return None, None
+        return None, None, []
     rest = content[len(_CAPTURE_USER_PREFIX) :]
-    boundary = rest.find(_CAPTURE_ASSISTANT_PREFIX)
-    if boundary == -1:
-        return (rest or None), None
-    user_text = rest[:boundary]
-    assistant_text = rest[boundary + len(_CAPTURE_ASSISTANT_PREFIX) :]
-    return (user_text or None), (assistant_text or None)
+    assistant_boundary = rest.find(_CAPTURE_ASSISTANT_PREFIX)
+    if assistant_boundary == -1:
+        return (rest or None), None, []
+    user_text = rest[:assistant_boundary]
+    after_assistant = rest[assistant_boundary + len(_CAPTURE_ASSISTANT_PREFIX) :]
+    # assistant 正文到第一个 [document: 段为止（如有）。
+    doc_boundary = after_assistant.find(_CAPTURE_DOCUMENT_PREFIX)
+    if doc_boundary == -1:
+        return (user_text or None), (after_assistant or None), []
+    assistant_text = after_assistant[:doc_boundary]
+    doc_tail = after_assistant[doc_boundary:]
+    return (user_text or None), (assistant_text or None), _parse_document_segments(
+        doc_tail
+    )
+
+
+def _parse_document_segments(tail: str) -> list[DocumentSegment]:
+    """从 ``\\n\\n[document:<i>]\\n{meta_json}\\n{content}`` 序列解析出段。
+
+    每段以 ``\\n\\n[document:`` 起始，头部 ``[document:<i>]`` 后紧跟一个 ``\\n``，
+    再接单行 meta_json，再接 ``\\n`` 与正文。正文延续到下一个 ``\\n\\n[document:``
+    或字符串结尾。坏结构（缺 ``]`` / 缺换行 / 坏 JSON）只跳过该段，不阻断其余段。
+    """
+
+    segments: list[DocumentSegment] = []
+    cursor = 0
+    while True:
+        idx = tail.find(_CAPTURE_DOCUMENT_PREFIX, cursor)
+        if idx == -1:
+            break
+        # idx 指向 "\n\n[document:" 的第一个 "\n"；定位头部 "]"。
+        bracket_close = tail.find("]", idx)
+        if bracket_close == -1:
+            break
+        # meta 行："]" 后第一个 "\n" 之后到下一个 "\n"。
+        meta_line_start = tail.find("\n", bracket_close)
+        if meta_line_start == -1:
+            break
+        meta_line_end = tail.find("\n", meta_line_start + 1)
+        if meta_line_end == -1:
+            # 只有 meta 行、无正文：视为空内容。
+            meta_json = tail[meta_line_start + 1 :]
+            segments.append(DocumentSegment(meta=_safe_meta(meta_json), content=""))
+            break
+        meta_json = tail[meta_line_start + 1 : meta_line_end]
+        # 正文到下一个 [document: 段（或字符串结尾）。
+        next_seg = tail.find(_CAPTURE_DOCUMENT_PREFIX, meta_line_end + 1)
+        if next_seg == -1:
+            doc_content = tail[meta_line_end + 1 :]
+            segments.append(
+                DocumentSegment(meta=_safe_meta(meta_json), content=doc_content)
+            )
+            break
+        doc_content = tail[meta_line_end + 1 : next_seg]
+        # 去掉段尾的 "\n\n"（与下一段前缀的分隔）。
+        doc_content = doc_content.removesuffix("\n\n")
+        segments.append(
+            DocumentSegment(meta=_safe_meta(meta_json), content=doc_content)
+        )
+        cursor = next_seg
+    return segments
+
+
+def _safe_meta(meta_json: str) -> dict[str, Any]:
+    """容忍解析失败：坏 meta 行视为空字典，不阻断反解。"""
+
+    try:
+        parsed = json.loads(meta_json)
+        return parsed if isinstance(parsed, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _document_message(doc: DocumentSegment, source_turn_id: str) -> TurnMessage:
+    """把 document 段构造为带 provenance 的 ``TurnMessage``。"""
+
+    meta = doc.meta
+    return TurnMessage(
+        role=MessageRole.TOOL,
+        content=doc.content,
+        message_id=(
+            meta.get("message_id")
+            or f"{source_turn_id}:document"
+        ),
+        tool_name=meta.get("tool_name"),
+        source_type=_meta_source_type(meta.get("source_type")),
+        source_uri=meta.get("source_uri"),
+        source_title=meta.get("source_title"),
+        source_publisher=meta.get("source_publisher"),
+        published_at=_meta_datetime(meta.get("published_at")),
+        retrieved_at=_meta_datetime(meta.get("retrieved_at")),
+        content_hash=meta.get("content_hash"),
+        citation_locator=meta.get("citation_locator"),
+    )
+
+
+def _meta_source_type(value: Any) -> EvidenceSourceType | None:
+    if isinstance(value, str):
+        try:
+            return EvidenceSourceType(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _meta_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _validation_errors(exc: BaseException) -> str | None:

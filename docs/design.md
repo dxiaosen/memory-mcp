@@ -149,13 +149,13 @@ flowchart LR
     G --> H[Agent]
 ```
 
-**捕获路径**：可信 Principal + CompletedTurnEventV1 → event/payload 幂等 → 模型前敏感检测与脱敏 →
+**捕获路径**：可信 Principal + CompletedTurnInputV1 → event/payload 幂等 → 模型前敏感检测与脱敏 →
 CandidateExtractor → 严格 Candidate schema → 原文 Evidence 校验 → 记忆配置校验 → 持久化前敏感复检 →
 准入和 lifecycle 分类 → 单事务提交。
 
 ```mermaid
 flowchart TD
-    P[可信 Principal + CompletedTurnEventV1] --> Q[event/payload 幂等]
+    P[可信 Principal + CompletedTurnInputV1] --> Q[event/payload 幂等]
     Q --> S[模型前敏感检测与脱敏]
     S --> E[CandidateExtractor]
     E --> C[严格 Candidate schema]
@@ -472,22 +472,25 @@ capture/recall 未传 profile_id 时由认证主体默认值路由。
 不得因此主动调用 `revoke_memory`/`confirm_pending_memory`/`link_memories` 等 mutation 工具。
 mutation 工具仅在用户显式要求管理已存储的 Memory MCP 记录时调用。
 
-### 6.3 CompletedTurnEventV1
+### 6.3 CompletedTurnInputV1
 
-捕获工具输入契约（`schemas.py` 的 `CompletedTurnEventV1`）：
+捕获工具输入契约（`schemas.py` 的 `CompletedTurnInputV1`，简化版：调用方只传对话
+内容与对话/轮次标识，身份与幂等字段由服务器组装；详见 §10.7）：
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `contract_version` | 是 | 契约版本，当前 `"1"` |
-| `event_id` | 是 | 事件幂等键 |
 | `profile_id` | 是 | 记忆配置 |
 | `conversation_id` / `turn_id` | 是 | 会话与轮次 |
-| `observed_at` | 是 | 带时区时间戳 |
-| `messages` | 是 | 1–64 条 `RoleMessageV1`（user/assistant/tool） |
+| `user_input` | 是 | 本轮用户输入 |
+| `final_output` | 是 | 本轮 assistant 最终输出 |
 | `subject_hint` | 否 | 召回/聚类用的主题提示 |
+| `document_messages` | 否 | 本轮工具/文档来源消息（`RoleMessageV1`，由 Agent Hook 从 transcript 提取） |
 
-`payload_fingerprint` 对规范化的 event payload 取 SHA-256，用于 event 重用时的冲突检测。
-`.to_turn_envelope(max_characters)` 把 messages 拼成 Core 的 `TurnEnvelope`，超长拒绝。
+服务器在 `.to_turn_envelope` 中派生 `event_id`/`observed_at`/`contract_version`/
+`payload_fingerprint`，并组装 `messages = [user, assistant, ...document]`；
+`content` 由 `[user]/[assistant]/[document:<i>]` 段拼成，供队列路径反解。`payload_fingerprint`
+对规范化输入（含 `document_messages`）取 SHA-256，用于 event 重用时的冲突检测。超长
+（`max_capture_characters`）拒绝。
 
 ### 6.4 结构化 receipt
 
@@ -522,7 +525,7 @@ mutation 工具仅在用户显式要求管理已存储的 Memory MCP 记录时�
 
 ### 7.1 端到端叙事
 
-一轮捕获：Agent 提交 `CompletedTurnEventV1` → 按事件键加锁（同进程串行）→ 幂等检查
+一轮捕获：Agent 提交 `CompletedTurnInputV1` → 按事件键加锁（同进程串行）→ 幂等检查
 （已存在且非 reprocess 直接重放）→ 敏感预检与脱敏 → 模型抽取候选（有界重试 max=3）→
 候选可信化（来源身份由 Core 覆盖，不信模型自报）→ 单条 Candidate 字段错误（invalid_memory_type/
 business_progress）只 discard 该条，不拖垮整批 → 准入判定 → lifecycle 去重（duplicate/
@@ -543,10 +546,10 @@ relation 重试 commit，Candidate 主链保留）。
 allowed_memory_types/business_progress_values/capture_guidance/profile_version/subject_hint。
 `business_progress_values` 作为硬约束透传给模型 prompt：非空集合时列出允许值并要求模型不得编造
 集合外的值；空集合（如 general-work）时要求模型留空 `business_progress`。模型输出必须符合严格
-schema，否则 `InvalidModelOutputError`。候选数量三层控制：prompt 指导 5–10、
-profile `capture_guidance` 指导不超过 12、`StructuredCandidateExtractor.extract` 解析后
-按 `SOFT_CANDIDATE_LIMIT=12` 软裁剪（confidence 降序取前 12），硬上限
-`MAX_CANDIDATES=20` 仍由 schema `max_length` 强制。
+schema，否则 `InvalidModelOutputError`。候选数量三层控制：prompt 指导 1–4（投研导向，
+偏重高价值内容、不抽 assistant 复述/推断）、profile `capture_guidance` 指导不超过 6、
+`StructuredCandidateExtractor.extract` 解析后按 `SOFT_CANDIDATE_LIMIT=6` 软裁剪
+（confidence 降序取前 6），硬上限 `MAX_CANDIDATES=20` 仍由 schema `max_length` 强制。
 
 ### 7.4 候选可信化
 
@@ -960,7 +963,8 @@ Stop hook 强制每轮入队 capture（经服务端队列异步抽取）：After
 `event_id` 由服务器从 `(owner_id, conversation_id, turn_id)` 确定性派生
 （`memory-agent:{sha256}`），`observed_at` 取服务器时钟，`contract_version` 硬编码 `"1"`，
 `payload_fingerprint` 基于简化输入（`user_input`/`final_output`/`conversation_id`/
-`turn_id`/`subject_hint`）计算——hook 不可控，避免 event_id 碰撞或漂移破坏幂等。
+`turn_id`/`subject_hint`/`document_messages`）计算——hook 不可控，避免 event_id 碰撞
+或漂移破坏幂等。
 `conversation_id`/`turn_id` 由 hook 从宿主事件（session_id/turn_id/run_id/prompt_id）
 归一化传入，需跨轮稳定。
 
@@ -992,14 +996,19 @@ Agent 不与 Server 同机时，安装轻量 wheel `memory-mcp-agent`，只有 H
 
 ### 10.7 简化 capture 契约 + hook 强制触发
 
-`capture_completed_turn` 工具契约简化：调用方（hook 或模型）只传 `conversation_id`/
-`turn_id`/`user_input`/`final_output`（+ 可选 `profile_id`/`subject_hint`），不再传
-`event_id`/`contract_version`/`observed_at`/`messages`。服务器在
-`CompletedTurnInputV1.to_turn_envelope` 中组装身份与幂等字段。`messages` 由
-`[user, assistant]` 两条组装（document provenance 暂退化——已知债务，后续由
-transcript_path → document_messages 恢复）。触发方式：Stop hook 强制每轮入队
-（主通道，不依赖模型判断是否值得记）；模型仍可显式调（补充，与 hook 幂等）。
-服务端二次抽取保留（`StructuredCandidateExtractor`），由 worker 异步执行。
+`capture_completed_turn` 工具契约简化：调用方（hook 或模型）传 `conversation_id`/
+`turn_id`/`user_input`/`final_output`（+ 可选 `profile_id`/`subject_hint`/
+`document_messages`），不再传 `event_id`/`contract_version`/`observed_at`/
+`messages`。服务器在 `CompletedTurnInputV1.to_turn_envelope` 中组装身份与幂等字段。
+`messages` 由 `[user, assistant]` 两条 + `document_messages` 对应的 document 消息组装；
+`document_messages` 由 Agent Hook 从 transcript 的 `Read` 等文件读取工具调用及其
+结果提取（`extract_document_messages`），使服务端能从文档来源抽取 `external_fact`
+并写入 `memory_evidence_documents` 子表。队列路径（仅存 content）把 document 段
+编码为 `\n\n[document:<i>]\n{meta_json}\n{content}` 追加在 `[assistant]` 段之后，
+`_split_capture_content` 反解重建带 provenance 的 document messages。触发方式：
+Stop hook 强制每轮入队（主通道，不依赖模型判断是否值得记）；模型仍可显式调
+（补充，与 hook 幂等）。服务端二次抽取保留（`StructuredCandidateExtractor`），
+由 worker 异步执行。
 
 ## 11. PostgreSQL 与 Migration
 

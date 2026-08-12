@@ -81,6 +81,11 @@ class CompletedTurnInputV1(StrictDto):
     身份与幂等字段（``event_id`` / ``contract_version`` / ``observed_at`` /
     ``payload_fingerprint``）由服务器在 :meth:`to_turn_envelope` 组装，
     模型不可控，避免 event_id 碰撞或漂移破坏幂等。
+
+    ``document_messages`` 携带本轮工具/文档来源（如 ``Read`` 读到的文件原文），
+    由 Agent Hook 从 transcript 提取后传入；服务端据此为
+    ``external_fact`` 候选写入 ``memory_evidence_documents`` 子表，补全 document
+    provenance。缺省时退化为本轮无文档来源（旧行为）。
     """
 
     profile_id: NonEmptyText
@@ -89,12 +94,14 @@ class CompletedTurnInputV1(StrictDto):
     user_input: NonEmptyText
     final_output: NonEmptyText
     subject_hint: str | None = Field(default=None, min_length=1)
+    document_messages: list[RoleMessageV1] = Field(default_factory=list)
 
     def input_fingerprint(self) -> str:
         """基于简化输入计算指纹，用于检测同一 event_id 是否被不同内容重用。
 
         不含 ``profile_id``：同一轮次跨 profile 重投无意义；含身份无关的
-        对话内容与标识即可稳定检测冲突。
+        对话内容与标识即可稳定检测冲突。``document_messages`` 的元数据与正文
+        一并纳入指纹——同一轮次换了读过的文件即视为不同输入。
         """
 
         canonical = json.dumps(
@@ -104,6 +111,10 @@ class CompletedTurnInputV1(StrictDto):
                 "user_input": self.user_input,
                 "final_output": self.final_output,
                 "subject_hint": self.subject_hint,
+                "document_messages": [
+                    msg.model_dump(mode="json")
+                    for msg in self.document_messages
+                ],
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -123,10 +134,73 @@ class CompletedTurnInputV1(StrictDto):
         ``event_id`` 由 ``(owner_id, conversation_id, turn_id)`` 确定性派生，
         保证同一 owner+对话+轮次重复调用 → 同一 event_id → 服务器幂等 replay。
         ``observed_at`` 取服务器时钟作为单一时间权威。``messages`` 由
-        ``user_input`` + ``final_output`` 组装为 ``[user, assistant]`` 两条。
+        ``user_input`` + ``final_output`` 组装为 ``[user, assistant]`` 两条，
+        其后追加 ``document_messages`` 对应的 ``TurnMessage``（document 来源）。
+        ``content`` 在 ``[user]/[assistant]`` 段之后追加 ``[document:<i>]`` 段
+        （单行 JSON 元数据 + 正文），使队列路径（仅存 content）反解后仍能重建
+        带 provenance 的 document messages。
         """
 
-        content = f"[user]\n{self.user_input}\n\n[assistant]\n{self.final_output}"
+        messages: list[TurnMessage] = [
+            TurnMessage(
+                role=MessageRole.USER,
+                content=self.user_input,
+                message_id=f"{self.turn_id}:user",
+            ),
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=self.final_output,
+                message_id=f"{self.turn_id}:assistant",
+            ),
+        ]
+        parts = [f"[user]\n{self.user_input}\n\n[assistant]\n{self.final_output}"]
+        for index, doc in enumerate(self.document_messages):
+            meta = json.dumps(
+                {
+                    "tool_name": doc.tool_name,
+                    "source_type": doc.source_type,
+                    "source_uri": doc.source_uri,
+                    "source_title": doc.source_title,
+                    "source_publisher": doc.source_publisher,
+                    "published_at": (
+                        doc.published_at.isoformat()
+                        if doc.published_at is not None
+                        else None
+                    ),
+                    "retrieved_at": (
+                        doc.retrieved_at.isoformat()
+                        if doc.retrieved_at is not None
+                        else None
+                    ),
+                    "content_hash": doc.content_hash,
+                    "citation_locator": doc.citation_locator,
+                    "message_id": doc.message_id,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            parts.append(f"\n\n[document:{index}]\n{meta}\n{doc.content}")
+            messages.append(
+                TurnMessage(
+                    role=MessageRole.TOOL,
+                    content=doc.content,
+                    message_id=(
+                        doc.message_id
+                        or f"{self.turn_id}:document:{index}"
+                    ),
+                    tool_name=doc.tool_name,
+                    source_type=_coerce_source_type(doc.source_type),
+                    source_uri=doc.source_uri,
+                    source_title=doc.source_title,
+                    source_publisher=doc.source_publisher,
+                    published_at=doc.published_at,
+                    retrieved_at=doc.retrieved_at,
+                    content_hash=doc.content_hash,
+                    citation_locator=doc.citation_locator,
+                )
+            )
+        content = "".join(parts)
         if len(content) > max_characters:
             raise ValueError("completed turn exceeds configured capture size")
         event_id = _derive_event_id(owner_id, self.conversation_id, self.turn_id)
@@ -140,23 +214,27 @@ class CompletedTurnInputV1(StrictDto):
             event_id=event_id,
             contract_version=_CONTRACT_VERSION,
             payload_fingerprint=self.input_fingerprint(),
-            messages=(
-                TurnMessage(
-                    role=MessageRole.USER,
-                    content=self.user_input,
-                    message_id=f"{self.turn_id}:user",
-                ),
-                TurnMessage(
-                    role=MessageRole.ASSISTANT,
-                    content=self.final_output,
-                    message_id=f"{self.turn_id}:assistant",
-                ),
-            ),
+            messages=tuple(messages),
         )
 
 
 # 捕获契约版本，由服务器在组装 TurnEnvelope 时硬编码，模型不可传。
 _CONTRACT_VERSION = "1"
+
+
+def _coerce_source_type(value: str | None) -> EvidenceSourceType | None:
+    """把 RoleMessageV1 的字符串 source_type 归一为 EvidenceSourceType。
+
+    None 或未知字符串降级为 None（后续 ``_source_metadata`` 会用 role 兜底
+    派生 source_type），不阻断组装。
+    """
+
+    if value is None:
+        return None
+    try:
+        return EvidenceSourceType(value)
+    except ValueError:
+        return None
 
 
 def _derive_event_id(owner_id: str, conversation_id: str, turn_id: str) -> str:

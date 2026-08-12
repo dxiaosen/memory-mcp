@@ -6,6 +6,7 @@ import pytest
 from memory_mcp.core import (
     CaptureReprocessResult,
     CaptureStatus,
+    EvidenceSourceType,
     IdempotencyConflictError,
     MessageRole,
     PrincipalContext,
@@ -273,3 +274,85 @@ def test_split_capture_content_returns_empty_on_unrecognized_format() -> None:
     from memory_mcp.core.application.capture_service import _split_capture_content
 
     assert _split_capture_content("没有标记的裸文本", "turn-1") == ()
+
+
+def test_split_capture_content_rebuilds_document_segments() -> None:
+    """worker 从 PENDING content 反解出 [user, assistant, ...document] 消息。
+
+    content 格式由 ``CompletedTurnInputV1.to_turn_envelope`` 确定性生成：在
+    ``[user]/[assistant]`` 段后追加 ``[document:<i>]`` 段（单行 meta_json +
+    正文）。worker 反解后第三条起为 document 消息，携带 tool_name/source_type/
+    source_uri/source_title/message_id 等 provenance，使 ``_source_metadata``
+    能把 external_fact 候选标注为 document 来源并写入 evidence_documents 子表。
+    """
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    meta = (
+        '{"message_id":"document:0","source_title":"更新.md",'
+        '"source_type":"document","source_uri":"materials/更新.md",'
+        '"tool_name":"Read"}'
+    )
+    content = (
+        "[user]\n请阅读 materials/更新.md。\n\n"
+        "[assistant]\n毛利率从 39% 升至 41%。\n\n"
+        f"[document:0]\n{meta}\n毛利率从 39% 升至 41%。"
+    )
+    messages = _split_capture_content(content, "turn-1")
+    assert len(messages) == 3
+    assert messages[2].role is MessageRole.TOOL
+    assert messages[2].tool_name == "Read"
+    assert messages[2].source_type is EvidenceSourceType.DOCUMENT
+    assert messages[2].source_uri == "materials/更新.md"
+    assert messages[2].source_title == "更新.md"
+    assert messages[2].message_id == "document:0"
+    assert messages[2].content == "毛利率从 39% 升至 41%。"
+
+
+def test_split_capture_content_handles_multiple_document_segments() -> None:
+    """多个 [document:<i>] 段按顺序反解，段间正文不被前段吞掉。"""
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    meta0 = '{"source_type":"document","source_uri":"a.md","message_id":"d:0"}'
+    meta1 = '{"source_type":"document","source_uri":"b.md","message_id":"d:1"}'
+    content = (
+        "[user]\n看下两个文件\n\n"
+        "[assistant]\n汇总如下\n\n"
+        f"[document:0]\n{meta0}\n文件 A 原文第一段\n\n"
+        f"[document:1]\n{meta1}\n文件 B 原文第二段"
+    )
+    messages = _split_capture_content(content, "t")
+    assert len(messages) == 4
+    assert messages[2].source_uri == "a.md"
+    assert messages[2].content == "文件 A 原文第一段"
+    assert messages[3].source_uri == "b.md"
+    assert messages[3].content == "文件 B 原文第二段"
+
+
+def test_split_capture_content_backward_compatible_without_documents() -> None:
+    """旧格式 content（无 [document:] 段）仍只反解 user/assistant 两条。"""
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    content = "[user]\nu\n\n[assistant]\na"
+    messages = _split_capture_content(content, "turn-1")
+    assert len(messages) == 2
+    assert messages[0].role is MessageRole.USER
+    assert messages[1].role is MessageRole.ASSISTANT
+
+
+def test_split_capture_content_tolerates_broken_document_meta() -> None:
+    """[document:] 段的 meta_json 非法时该段降级为空 provenance，不阻断反解。"""
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    content = (
+        "[user]\nu\n\n[assistant]\na\n\n"
+        "[document:0]\n{not json}\n正文内容"
+    )
+    messages = _split_capture_content(content, "turn-1")
+    assert len(messages) == 3
+    assert messages[2].role is MessageRole.TOOL
+    assert messages[2].source_type is None
+    assert messages[2].content == "正文内容"

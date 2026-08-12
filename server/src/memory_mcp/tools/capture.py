@@ -47,6 +47,7 @@ class CaptureTools(ToolSupport):
             ctx: Context,
             profile_id: str | None = None,
             subject_hint: str | None = None,
+            document_messages: list[dict[str, object]] | None = None,
         ) -> CaptureReceipt | ErrorResponse:
             current_request_id = request_id(ctx)
             try:
@@ -59,6 +60,7 @@ class CaptureTools(ToolSupport):
                     user_input=user_input,
                     final_output=final_output,
                     subject_hint=subject_hint,
+                    document_messages=document_messages or [],
                 )
                 envelope = event.to_turn_envelope(
                     owner_id=principal.owner_key,

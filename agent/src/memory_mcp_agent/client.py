@@ -123,6 +123,7 @@ class MemoryHookClient(Protocol):
         final_output: str,
         profile_id: str | None = None,
         subject_hint: str | None = None,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> CaptureResponse: ...
 
 
@@ -190,8 +191,13 @@ class MemoryMcpClient:
         final_output: str,
         profile_id: str | None = None,
         subject_hint: str | None = None,
+        document_messages: list[dict[str, Any]] | None = None,
     ) -> CaptureResponse:
-        """入队 capture：服务端派生 event_id/observed_at/contract_version/messages。"""
+        """入队 capture：服务端派生 event_id/observed_at/contract_version/messages。
+
+        ``document_messages`` 为本轮工具/文档来源消息（由 Host Adapter 从
+        transcript 提取），透传给服务端补全 document provenance。
+        """
 
         arguments: dict[str, Any] = {
             "conversation_id": conversation_id,
@@ -203,6 +209,8 @@ class MemoryMcpClient:
             arguments["profile_id"] = profile_id
         if subject_hint is not None:
             arguments["subject_hint"] = subject_hint
+        if document_messages:
+            arguments["document_messages"] = document_messages
         payload = await self._call_tool(
             "capture_completed_turn",
             arguments,

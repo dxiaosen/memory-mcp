@@ -13,7 +13,10 @@ from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
 from memory_mcp_agent.state import TurnState, TurnStateStore
-from memory_mcp_agent.transcript import collect_turn_tool_uses
+from memory_mcp_agent.transcript import (
+    collect_turn_tool_uses,
+    extract_document_messages,
+)
 
 _LOGGER = logging.getLogger(__name__)
 # 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
@@ -272,10 +275,16 @@ class AgentHookAdapter:
                 run_reference=run_reference,
             )
 
+        document_messages = extract_document_messages(
+            event.transcript_path,
+            cwd=event.cwd,
+            user_prompt=saved.prompt,
+        )
         result = await self._bridge.after_run_success(
             self._context(event),
             user_input=saved.prompt,
             final_output=event.final_output,
+            document_messages=document_messages,
         )
         # 入队成功（pending/completed/failed/reprocess_required）即删本地暂存；
         # 入队失败已走 fail-open，warning_code 非空时也删（下轮幂等兜底）。
