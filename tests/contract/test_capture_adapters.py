@@ -73,10 +73,10 @@ def test_structured_model_adapter_rejects_invalid_payload() -> None:
 
 
 def test_structured_model_adapter_trims_to_soft_limit_by_confidence() -> None:
-    """超过软上限 12 的候选按 confidence 降序裁剪，避免淹没准入管线。
+    """超过软上限 6 的候选按 confidence 降序裁剪，避免淹没准入管线。
 
     相关：模型偶尔返回过多候选时，软裁剪（非整轮失败）+ 日志
-    可观测。硬上限 MAX_CANDIDATES=20 仍由 schema 强制，这里验证 12< N ≤20
+    可观测。硬上限 MAX_CANDIDATES=20 仍由 schema 强制，这里验证 6< N ≤20
     的裁剪路径。
     """
 
@@ -104,12 +104,12 @@ def test_structured_model_adapter_trims_to_soft_limit_by_confidence() -> None:
 
     proposals = extractor.extract(_request())
 
-    assert len(proposals) == 12
-    # 按 confidence 降序取前 12：i=14..3（confidence 0.64..0.53）
+    assert len(proposals) == 6
+    # 按 confidence 降序取前 6：i=14..9（confidence 0.64..0.59）
     confidences = [p.confidence for p in proposals]
     assert confidences == sorted(confidences, reverse=True)
     assert max(confidences) == 0.64
-    assert min(confidences) == 0.53
+    assert min(confidences) == 0.59
 
 
 

@@ -32,10 +32,10 @@ StructuredRelationBackend = Callable[
 
 _LOGGER = logging.getLogger(__name__)
 
-# 软裁剪上限：模型偶尔返回超过 12 条候选时，按 confidence 降序取前 12 条，
+# 软裁剪上限：模型偶尔返回超过 6 条候选时，按 confidence 降序取前 6 条，
 # 避免单轮过多候选淹没准入/去重管线。硬上限 MAX_CANDIDATES（20）仍由 schema
 # 在解析期强制，超过 20 直接视为非法输出。
-SOFT_CANDIDATE_LIMIT = 12
+SOFT_CANDIDATE_LIMIT = 6
 
 
 class StructuredCandidateExtractor:
