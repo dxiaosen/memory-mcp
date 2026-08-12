@@ -1553,7 +1553,7 @@ class PostgreSQLMemoryRepository:
         revision: MemoryRevision,
         evidence: tuple[Evidence, ...],
     ) -> None:
-        """插入 revision 行（首条 evidence 作为 primary_evidence_id）。"""
+        """插入 revision 行，并写其全部 evidence 子表。"""
 
         connection.execute(
             """
@@ -1561,14 +1561,14 @@ class PostgreSQLMemoryRepository:
                 revision_id, memory_id, owner_id, revision_number, content,
                 assertion_kind, lifecycle_status, business_progress,
                 save_rationale, observed_at, created_at, is_current,
-                primary_evidence_id, original_time_expression, normalized_time
-                , extraction_confidence, verification_status,
+                original_time_expression, normalized_time,
+                extraction_confidence, verification_status,
                 sensitivity_level, valid_from, valid_until, embedding
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s
             )
             """,
             (
@@ -1584,7 +1584,6 @@ class PostgreSQLMemoryRepository:
                 revision.observed_at,
                 revision.created_at,
                 revision.is_current,
-                evidence[0].evidence_id,
                 revision.original_time_expression,
                 revision.normalized_time,
                 revision.extraction_confidence,

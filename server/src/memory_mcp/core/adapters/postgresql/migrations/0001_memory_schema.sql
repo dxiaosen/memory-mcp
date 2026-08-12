@@ -55,7 +55,6 @@ CREATE TABLE memory_revisions (
     observed_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     is_current BOOLEAN NOT NULL DEFAULT TRUE,
-    primary_evidence_id UUID NOT NULL,
     original_time_expression TEXT,
     normalized_time TIMESTAMPTZ,
     extraction_confidence DOUBLE PRECISION,
