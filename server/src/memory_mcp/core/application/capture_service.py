@@ -36,6 +36,7 @@ from memory_mcp.core.domain import (
     PrincipalContext,
     ReviewItem,
     TurnEnvelope,
+    TurnMessage,
 )
 from memory_mcp.core.exceptions import (
     CaptureNotConfiguredError,
@@ -313,7 +314,14 @@ class CaptureService:
         )
 
     def _pending_to_turn(self, item: PendingCapture) -> TurnEnvelope:
-        """把 PENDING 行的已脱敏 content 重建为 ``TurnEnvelope``（无 messages）。"""
+        """把 PENDING 行的已脱敏 content 重建为 ``TurnEnvelope``。
+
+        content 由 ``CompletedTurnInputV1.to_turn_envelope`` 确定性拼成
+        ``[user]\\n{user_input}\\n\\n[assistant]\\n{final_output}``，此处反解回
+        ``[user, assistant]`` 两条 ``TurnMessage``，使 worker 抽取路径与同步路径
+        一样拥有可信 messages——``_source_metadata`` 才能据此给候选标注精确的
+        ``source_role`` / ``source_message_id``，否则全部退化为 None。
+        """
 
         return TurnEnvelope(
             profile_id=item.profile_id,
@@ -325,6 +333,7 @@ class CaptureService:
             event_id=item.event_id,
             contract_version=item.contract_version,
             payload_fingerprint=item.payload_fingerprint,
+            messages=_split_capture_content(item.content, item.source_turn_id),
         )
 
     def _capture_turn_locked(
@@ -908,6 +917,57 @@ def _has_processable_content(value: str) -> bool:
     """去掉脱敏标记后判断是否还剩可处理内容，避免对空文本调用模型抽取。"""
     without_markers = _REDACTION_MARKER.sub("", value)
     return bool(without_markers.strip(" \t\r\n,，。.!！?？;；:："))
+
+
+def _split_capture_content(
+    content: str,
+    source_turn_id: str,
+) -> tuple[TurnMessage, ...]:
+    """反解 ``[user]\\n{user_input}\\n\\n[assistant]\\n{final_output}`` 为两条消息。
+
+    与 ``CompletedTurnInputV1.to_turn_envelope`` 的拼接格式对偶。content 是
+    入队前 ``sensitive_guard.inspect`` 脱敏后的原文，``[user]``/``[assistant]``
+    标记由服务器加在脱敏之前，不受脱敏影响，反解可靠。匹配不到标记时返回
+    空元组——降级为无 messages 的旧行为，不阻断抽取。
+    """
+
+    user_text, assistant_text = _parse_capture_roles(content)
+    messages: list[TurnMessage] = []
+    if user_text is not None:
+        messages.append(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=user_text,
+                message_id=f"{source_turn_id}:user",
+            )
+        )
+    if assistant_text is not None:
+        messages.append(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=assistant_text,
+                message_id=f"{source_turn_id}:assistant",
+            )
+        )
+    return tuple(messages)
+
+
+_CAPTURE_USER_PREFIX = "[user]\n"
+_CAPTURE_ASSISTANT_PREFIX = "\n\n[assistant]\n"
+
+
+def _parse_capture_roles(content: str) -> tuple[str | None, str | None]:
+    """拆出 user/assistant 正文；任一缺失返回对应 None。"""
+
+    if not content.startswith(_CAPTURE_USER_PREFIX):
+        return None, None
+    rest = content[len(_CAPTURE_USER_PREFIX) :]
+    boundary = rest.find(_CAPTURE_ASSISTANT_PREFIX)
+    if boundary == -1:
+        return (rest or None), None
+    user_text = rest[:boundary]
+    assistant_text = rest[boundary + len(_CAPTURE_ASSISTANT_PREFIX) :]
+    return (user_text or None), (assistant_text or None)
 
 
 def _validation_errors(exc: BaseException) -> str | None:

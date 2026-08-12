@@ -7,6 +7,7 @@ from memory_mcp.core import (
     CaptureReprocessResult,
     CaptureStatus,
     IdempotencyConflictError,
+    MessageRole,
     PrincipalContext,
     TurnEnvelope,
 )
@@ -240,3 +241,35 @@ def test_capture_reprocess_result_validates_counts() -> None:
             failed_count=0,
             has_more="no",  # type: ignore[arg-type]
         )
+
+
+def test_split_capture_content_rebuilds_user_assistant_messages() -> None:
+    """worker 从 PENDING content 反解出 [user, assistant] 两条消息，role 与正文正确。
+
+    content 格式由 ``CompletedTurnInputV1.to_turn_envelope`` 确定性生成
+    （``[user]\\n{u}\\n\\n[assistant]\\n{a}``）；worker 的 ``_pending_to_turn``
+    据此重建 messages，使 ``_source_metadata`` 能给候选标注 source_role。
+    """
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    content = (
+        "[user]\n请阅读 materials/公司更新.md。\n\n"
+        "[assistant]\n毛利率从 Q1 39% 升至 Q2 41%。"
+    )
+    messages = _split_capture_content(content, "turn-1")
+    assert len(messages) == 2
+    assert messages[0].role is MessageRole.USER
+    assert messages[0].content == "请阅读 materials/公司更新.md。"
+    assert messages[0].message_id == "turn-1:user"
+    assert messages[1].role is MessageRole.ASSISTANT
+    assert messages[1].content == "毛利率从 Q1 39% 升至 Q2 41%。"
+    assert messages[1].message_id == "turn-1:assistant"
+
+
+def test_split_capture_content_returns_empty_on_unrecognized_format() -> None:
+    """content 缺 [user]/[assistant] 标记时降级为空 messages，不阻断抽取。"""
+
+    from memory_mcp.core.application.capture_service import _split_capture_content
+
+    assert _split_capture_content("没有标记的裸文本", "turn-1") == ()
