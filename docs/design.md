@@ -941,52 +941,65 @@ flowchart TD
     FP --> RC[recall_memory]
     RC -->|成功| INJ[注入 memory_context]
     RC -->|失败 + fail_open| WN[返回 warning_code]
-    AR[AfterRun] --> NO[no-op: 不触发 capture]
-    MODEL[模型自主决定] -->|有持久信号| CP[capture_completed_turn MCP 工具]
-    CP -->|服务器组装 event_id/observed_at| RECV[服务器幂等 replay 或新建]
-    CP -->|无持久信号| SKIP[不调用, 不捕获]
+    AR[AfterRun] --> ENQ[Stop hook 入队 capture]
+    ENQ -->|毫秒级| PENDING[服务端 PENDING 行]
+    PENDING -->|worker 异步| EXTRACT[结构化抽取]
+    EXTRACT --> COMPLETED[COMPLETED/REPROCESS_REQUIRED]
+    ENQ -->|inspect/manage turn| SKIP[跳过入队]
+    ENQ -->|失败| FAILOP[fail-open warning]
 ```
 
-Phase 1（模型自主调用 capture）后，AfterRun 阶段对 capture **完全 no-op**：捕获由
-模型自主决定是否调用 `capture_completed_turn` MCP 工具，不再由 Stop hook 强制每轮触发。
+Stop hook 强制每轮入队 capture（经服务端队列异步抽取）：AfterRun 阶段调
+`enqueue_capture` 写 `PENDING` 行（含脱敏 content/subject_hint）后毫秒级返回，
+不阻塞 Agent 主循环。同进程 worker（`_run_capture_reprocess_loop`）周期性捞
+`PENDING` 行（`FOR UPDATE SKIP LOCKED` 并发安全）做结构化抽取，覆盖终态
+（COMPLETED/REPROCESS_REQUIRED/FAILED）。inspect/manage turn（assistant 调了
+`list_memories`/`revoke_memory` 等管理工具）跳过入队避免白烧 worker 抽取。
+入队失败走 fail-open warning，下一轮 Stop 用同 conversation_id+turn_id 再入队时
+服务端 event_id 幂等兜底（上轮可能已入队、只是响应丢了 → replay）。
 `event_id` 由服务器从 `(owner_id, conversation_id, turn_id)` 确定性派生
 （`memory-agent:{sha256}`），`observed_at` 取服务器时钟，`contract_version` 硬编码 `"1"`，
 `payload_fingerprint` 基于简化输入（`user_input`/`final_output`/`conversation_id`/
-`turn_id`/`subject_hint`）计算——模型不可控，避免 event_id 碰撞或漂移破坏幂等。
-`conversation_id`/`turn_id` 由模型传（服务器无法从身份派生对话语义），需跨轮稳定。
+`turn_id`/`subject_hint`）计算——hook 不可控，避免 event_id 碰撞或漂移破坏幂等。
+`conversation_id`/`turn_id` 由 hook 从宿主事件（session_id/turn_id/run_id/prompt_id）
+归一化传入，需跨轮稳定。
 
 ### 10.3 Agent callable
 
 宿主适配在 `hosts.py`（Codex/Claude Code）。`memory-mcp-hook` CLI 入口接受通用
-BeforeRun/AfterRun 合同；Phase 1 后 AfterRun 为 no-op，捕获走模型自主调用。
+BeforeRun/AfterRun 合同；BeforeRun 写本地 TurnState（prompt 暂存）+ 召回注入，
+AfterRun 取出 prompt 后入队 capture。模型仍可显式调 `capture_completed_turn` MCP 工具
+（与 hook 不冲突，服务端幂等），但主通道是 Stop hook。
 
 ### 10.4 Fail-open 与 fail-closed
 
 `fail_open` 默认 `true`：记忆服务不可用时降级为 warning，不阻断 Agent 任务。关闭则异常
-向上传播。`recall_max_items=5`、`recall_token_budget=600`（Phase 1 后 capture 不再经
-agent 客户端，capture 重试/超时设置已移除）。
+向上传播。`recall_max_items=5`、`recall_token_budget=600`、`capture_timeout_seconds=5`
+（入队应快，超时走 fail-open）。
 
-### 10.5 为什么暂不使用队列
+### 10.5 服务端队列异步抽取
 
-Phase 1（模型自主调用 capture）后，hook 进程 AfterRun 不再写 outbox；本地存量 outbox
-靠 24h TTL 自然清空。模型自主调用失败即丢，靠后续轮次自然重试（无 outbox 补投）。
-若 PoC 证明漏捕获率不可接受，再补轻量重试（Phase 2 候选）。
+Stop hook 入队（毫秒级）+ worker 异步抽取解决了同步抽取（~33s）阻塞 Stop hook 的问题。
+hook 端不再需要 outbox 补投——入队失败走 fail-open，下轮 Stop 幂等兜底。worker 在服务端
+同进程 asyncio loop 运行（`_run_capture_reprocess_loop`），复用 maintenance loop 模式
+（ASGI lifespan 起 task、`has_more` 续批、退避）。`capture_enqueue_enabled` 开关
+（默认 true）可灰度回退同步抽取。
 
 ### 10.6 通用 Agent 主动记忆
 
 Agent 不与 Server 同机时，安装轻量 wheel `memory-mcp-agent`，只有 Hook Client 及 HTTP/配置
 依赖，不包含 `memory-mcp`/PostgreSQL/LangChain/模型 Provider。运行配置始终只有地址和 Token。
 
-### 10.7 模型自主调用 capture（Phase 1）
+### 10.7 简化 capture 契约 + hook 强制触发
 
-Phase 1 从"AfterRun hook 强制每轮捕获"转向"模型自主决定是否调用 `capture_completed_turn`"。
-`capture_completed_turn` 工具契约简化：模型只传 `conversation_id`/`turn_id`/`user_input`/
-`final_output`（+ 可选 `profile_id`/`subject_hint`），不再传 `event_id`/`contract_version`/
-`observed_at`/`messages`。服务器在 `CompletedTurnInputV1.to_turn_envelope` 中组装身份与
-幂等字段。`messages` 由 `[user, assistant]` 两条组装（document provenance 暂退化——已知
-债务，Phase 2 或独立机制恢复）。服务端二次抽取保留（`StructuredCandidateExtractor`），
-候选由服务端产出，模型不带候选；若 Phase 1 PoC 证明 gate 准确但仍过度抽取，Phase 2 再加
-"模型携带候选跳过二次抽取"。
+`capture_completed_turn` 工具契约简化：调用方（hook 或模型）只传 `conversation_id`/
+`turn_id`/`user_input`/`final_output`（+ 可选 `profile_id`/`subject_hint`），不再传
+`event_id`/`contract_version`/`observed_at`/`messages`。服务器在
+`CompletedTurnInputV1.to_turn_envelope` 中组装身份与幂等字段。`messages` 由
+`[user, assistant]` 两条组装（document provenance 暂退化——已知债务，后续由
+transcript_path → document_messages 恢复）。触发方式：Stop hook 强制每轮入队
+（主通道，不依赖模型判断是否值得记）；模型仍可显式调（补充，与 hook 幂等）。
+服务端二次抽取保留（`StructuredCandidateExtractor`），由 worker 异步执行。
 
 ## 11. PostgreSQL 与 Migration
 

@@ -48,10 +48,12 @@ from memory_mcp.core.exceptions import (
     ProfileNotRegisteredError,
 )
 from memory_mcp.core.ports import (
+    CaptureEnqueueWrite,
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryProfile,
     MemoryRelationPolicy,
+    PendingCapture,
     RecallCandidateSet,
     ReplacementWrite,
 )
@@ -75,7 +77,7 @@ class InMemoryMemoryRepository:
         ] = {}
         self._captures: dict[
             tuple[str, ...],
-            CaptureResult,
+            tuple[CaptureResult, str, str | None],
         ] = {}
         self._reviews: dict[UUID, ReviewItem] = {}
         self._relations: dict[UUID, MemoryRelation] = {}
@@ -891,7 +893,7 @@ class InMemoryMemoryRepository:
     ) -> CaptureResult | None:
         """按 event_id 或 legacy 四元组查询幂等 capture 结果。"""
 
-        return self._captures.get(
+        entry = self._captures.get(
             self._capture_lookup_key(
                 owner_id=principal.owner_id,
                 profile_id=profile_id,
@@ -900,6 +902,7 @@ class InMemoryMemoryRepository:
                 event_id=event_id,
             )
         )
+        return entry[0] if entry is not None else None
 
     def commit_capture(
         self,
@@ -908,8 +911,9 @@ class InMemoryMemoryRepository:
     ) -> CaptureResult:
         """在一个锁内幂等提交 capture 及其全部派生写入。
 
-        语义与 PostgreSQL 版本对齐：已有且非 REPROCESS_REQUIRED 的
-        capture 直接重放返回；replacement 会同步把引用旧 revision 的
+        语义与 PostgreSQL 版本对齐：已有且非 REPROCESS_REQUIRED/PENDING 的
+        capture 直接重放返回；PENDING（入队待抽取）与 REPROCESS_REQUIRED
+        走重写路径覆盖终态；replacement 会同步把引用旧 revision 的
         active relation 置为 stale。
         """
 
@@ -935,8 +939,9 @@ class InMemoryMemoryRepository:
         ):
             raise ValueError("failed capture cannot persist candidate content")
         key = self._capture_key(result)
-        existing = self._captures.get(key)
-        if existing is not None:
+        existing_entry = self._captures.get(key)
+        if existing_entry is not None:
+            existing = existing_entry[0]
             if (
                 result.payload_fingerprint is not None
                 and existing.payload_fingerprint != result.payload_fingerprint
@@ -944,7 +949,10 @@ class InMemoryMemoryRepository:
                 raise IdempotencyConflictError(
                     "event identifier was reused with a different payload"
                 )
-            if existing.status is not CaptureStatus.REPROCESS_REQUIRED:
+            if existing.status not in (
+                CaptureStatus.REPROCESS_REQUIRED,
+                CaptureStatus.PENDING,
+            ):
                 return replace(existing, replayed=True)
             if existing.capture_id != result.capture_id:
                 raise ValueError("reprocessed capture must preserve capture_id")
@@ -1091,13 +1099,70 @@ class InMemoryMemoryRepository:
                     raise ValueError("relation_id must be unique")
                 relations[relation.relation_id] = relation
             reviews.update((review.review_id, review) for review in write.reviews)
-            captures[key] = result
+            captures[key] = (result, write.content, write.subject_hint)
             self._records = records
             self._history = history
             self._reviews = reviews
             self._captures = captures
             self._relations = relations
         return result
+
+    def commit_capture_enqueue(
+        self,
+        principal: PrincipalContext,
+        write: CaptureEnqueueWrite,
+    ) -> CaptureResult:
+        """入队专用：存 PENDING 行（含 content/subject_hint），或对已存在行 replay。"""
+
+        result = write.result
+        if result.owner_id != principal.owner_id:
+            raise ValueError("capture owner must match trusted principal")
+        with self._capture_lock:
+            key = self._capture_key(result)
+            existing_entry = self._captures.get(key)
+            if existing_entry is not None:
+                existing = existing_entry[0]
+                if (
+                    result.payload_fingerprint is not None
+                    and existing.payload_fingerprint != result.payload_fingerprint
+                ):
+                    raise IdempotencyConflictError(
+                        "event identifier was reused with a different payload"
+                    )
+                return replace(existing, replayed=True)
+            captures = dict(self._captures)
+            captures[key] = (result, write.content, write.subject_hint)
+            self._captures = captures
+            return result
+
+    def list_pending_captures(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[PendingCapture, ...]:
+        """捞取所有 PENDING capture（跨 owner，内存版无行锁，单线程测试用）。"""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return tuple(
+            PendingCapture(
+                capture_id=entry[0].capture_id,
+                owner_id=entry[0].owner_id,
+                profile_id=entry[0].profile_id,
+                conversation_id=entry[0].conversation_id,
+                source_turn_id=entry[0].source_turn_id,
+                content=entry[1],
+                subject_hint=entry[2],
+                observed_at=entry[0].created_at,
+                created_at=entry[0].created_at,
+                metadata=entry[0].metadata,
+                event_id=entry[0].event_id,
+                contract_version=entry[0].contract_version,
+                payload_fingerprint=entry[0].payload_fingerprint,
+            )
+            for entry in self._captures.values()
+            if entry[0].status is CaptureStatus.PENDING
+        )[:limit]
 
     def list_reviews(
         self,

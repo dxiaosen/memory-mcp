@@ -223,6 +223,8 @@ CREATE TABLE memory_captures (
     profile_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
     source_turn_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    subject_hint TEXT,
     profile_version TEXT NOT NULL,
     profile_fingerprint TEXT NOT NULL,
     prompt_version TEXT NOT NULL,
@@ -241,6 +243,8 @@ CREATE TABLE memory_captures (
         CHECK (length(btrim(conversation_id)) > 0),
     CONSTRAINT memory_captures_turn_non_empty
         CHECK (length(btrim(source_turn_id)) > 0),
+    CONSTRAINT memory_captures_content_non_empty
+        CHECK (length(btrim(content)) > 0),
     CONSTRAINT memory_captures_profile_version_non_empty
         CHECK (length(btrim(profile_version)) > 0),
     CONSTRAINT memory_captures_profile_fingerprint_non_empty
@@ -253,11 +257,13 @@ CREATE TABLE memory_captures (
         CHECK (length(btrim(model_id)) > 0),
     CONSTRAINT memory_captures_status
         CHECK (
-            status IN ('completed', 'failed', 'reprocess_required')
+            status IN ('pending', 'completed', 'failed', 'reprocess_required')
         ),
     CONSTRAINT memory_captures_failure_state
         CHECK (
             (status = 'completed' AND failure_code IS NULL)
+            OR
+            (status = 'pending' AND failure_code IS NULL)
             OR
             (
                 status IN ('failed', 'reprocess_required')
@@ -297,6 +303,10 @@ CREATE UNIQUE INDEX memory_captures_event_unique
 
 CREATE INDEX memory_captures_owner_status_idx
     ON memory_captures (owner_id, status, completed_at);
+
+CREATE INDEX memory_captures_pending_idx
+    ON memory_captures (created_at)
+    WHERE status = 'pending';
 
 CREATE TABLE memory_reviews (
     review_id UUID PRIMARY KEY,

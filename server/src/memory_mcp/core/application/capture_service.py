@@ -27,6 +27,7 @@ from memory_mcp.core.domain import (
     AdmissionDecision,
     CandidateProposal,
     CaptureOutcome,
+    CaptureReprocessResult,
     CaptureResult,
     CaptureStatus,
     ExtractionMetadata,
@@ -45,11 +46,13 @@ from memory_mcp.core.exceptions import (
 )
 from memory_mcp.core.ports import (
     CandidateExtractor,
+    CaptureEnqueueWrite,
     CaptureWrite,
     EmbeddingProvider,
     ExtractionRequest,
     MemoryProfile,
     MemoryRepository,
+    PendingCapture,
     ProfileRegistry,
     RelationExtractor,
     SensitiveContentGuard,
@@ -144,6 +147,186 @@ class CaptureService:
         with self._capture_locks.hold(key):
             return self._capture_turn_locked(principal, turn)
 
+    def enqueue_capture(
+        self,
+        principal: PrincipalContext,
+        turn: TurnEnvelope,
+    ) -> CaptureResult:
+        """入队路径（同步、毫秒级）：幂等检查 + 敏感校验 + 写 PENDING 行，不做模型抽取。
+
+        content/subject_hint 在入队前经 ``sensitive_guard.inspect`` 脱敏后入库，
+        worker 读到的就是已脱敏原文，与现有抽取路径一致。返回 ``status=PENDING``
+        的 ``CaptureResult`` 供 capture 工具立即回执。
+        """
+
+        guard = self._sensitive_guard
+        if guard is None:
+            raise CaptureNotConfiguredError("sensitive guard is required")
+        extractor = self._candidate_extractor
+        profile = self._profile_registry.get(turn.profile_id)
+        metadata = ExtractionMetadata(
+            model_id=extractor.model_id if extractor is not None else "",
+            prompt_version=extractor.prompt_version if extractor is not None else "",
+            schema_version=extractor.schema_version if extractor is not None else "",
+            profile_version=profile.profile_version,
+            profile_fingerprint=profile_fingerprint(profile),
+        )
+        if turn.event_id is not None:
+            key = (principal.owner_id, "event", turn.event_id)
+        else:
+            key = (
+                principal.owner_id,
+                "legacy",
+                turn.profile_id,
+                turn.conversation_id,
+                turn.source_turn_id,
+            )
+        with self._capture_locks.hold(key):
+            existing = self._repository.get_capture(
+                principal,
+                profile_id=turn.profile_id,
+                conversation_id=turn.conversation_id,
+                source_turn_id=turn.source_turn_id,
+                event_id=turn.event_id,
+            )
+            if (
+                existing is not None
+                and turn.payload_fingerprint is not None
+                and existing.payload_fingerprint != turn.payload_fingerprint
+            ):
+                raise IdempotencyConflictError(
+                    "event identifier was reused with a different payload"
+                )
+            if existing is not None:
+                log_event(
+                    _LOGGER,
+                    logging.INFO,
+                    "memory.capture.replay",
+                    capture_id=existing.capture_id,
+                    owner_ref=stable_reference(principal.owner_id),
+                    status=existing.status.value,
+                    replayed=True,
+                )
+                return replace(existing, replayed=True)
+            capture_id = self._id_factory()
+            now = self._clock()
+            inspection = guard.inspect(turn.content)
+            subject_hint_redacted: str | None = None
+            if turn.subject_hint is not None:
+                subject_hint_redacted = guard.inspect(
+                    turn.subject_hint
+                ).redacted_text
+            result = CaptureResult(
+                capture_id=capture_id,
+                owner_id=principal.owner_id,
+                profile_id=turn.profile_id,
+                conversation_id=turn.conversation_id,
+                source_turn_id=turn.source_turn_id,
+                metadata=metadata,
+                status=CaptureStatus.PENDING,
+                outcomes=(),
+                created_at=now,
+                completed_at=now,
+                event_id=turn.event_id,
+                contract_version=turn.contract_version,
+                payload_fingerprint=turn.payload_fingerprint,
+            )
+            committed = self._repository.commit_capture_enqueue(
+                principal,
+                CaptureEnqueueWrite(
+                    result=result,
+                    content=inspection.redacted_text,
+                    subject_hint=subject_hint_redacted,
+                ),
+            )
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.capture.enqueued",
+                capture_id=committed.capture_id,
+                owner_ref=stable_reference(principal.owner_id),
+                event_id=turn.event_id,
+                status=committed.status.value,
+            )
+            return committed
+
+    def run_capture_reprocess(
+        self,
+        *,
+        batch_limit: int = 20,
+    ) -> CaptureReprocessResult:
+        """worker 入口：捞一批 PENDING capture，逐条异步抽取并提交终态。
+
+        每条 PendingCapture 在同进程锁内重建 ``TurnEnvelope`` 后走与同步路径
+        相同的 ``_capture_turn_locked``；``commit_capture`` 把 PENDING 行覆盖为
+        COMPLETED/REPROCESS_REQUIRED。返回 ``has_more`` 供后台循环续批。
+        """
+
+        if self._candidate_extractor is None or self._sensitive_guard is None:
+            raise CaptureNotConfiguredError(
+                "candidate extractor and sensitive guard are required"
+            )
+        pending = self._repository.list_pending_captures(limit=batch_limit)
+        processed = completed = reprocess_required = failed = 0
+        for item in pending:
+            principal = PrincipalContext(owner_id=item.owner_id)
+            turn = self._pending_to_turn(item)
+            try:
+                result = self._capture_turn_locked(principal, turn)
+            except (
+                InvalidMemoryTypeError,
+                InvalidModelOutputError,
+                InvalidProfileProgressError,
+                ValueError,
+            ):
+                reprocess_required += 1
+                processed += 1
+                continue
+            except Exception:
+                failed += 1
+                processed += 1
+                continue
+            if result.status is CaptureStatus.COMPLETED:
+                completed += 1
+            elif result.status is CaptureStatus.REPROCESS_REQUIRED:
+                reprocess_required += 1
+            else:
+                failed += 1
+            processed += 1
+        has_more = len(pending) >= batch_limit
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "memory.capture.reprocess.completed",
+            processed_count=processed,
+            completed_count=completed,
+            reprocess_required_count=reprocess_required,
+            failed_count=failed,
+            has_more=has_more,
+        )
+        return CaptureReprocessResult(
+            processed_count=processed,
+            completed_count=completed,
+            reprocess_required_count=reprocess_required,
+            failed_count=failed,
+            has_more=has_more,
+        )
+
+    def _pending_to_turn(self, item: PendingCapture) -> TurnEnvelope:
+        """把 PENDING 行的已脱敏 content 重建为 ``TurnEnvelope``（无 messages）。"""
+
+        return TurnEnvelope(
+            profile_id=item.profile_id,
+            conversation_id=item.conversation_id,
+            source_turn_id=item.source_turn_id,
+            content=item.content,
+            observed_at=item.observed_at,
+            subject_hint=item.subject_hint,
+            event_id=item.event_id,
+            contract_version=item.contract_version,
+            payload_fingerprint=item.payload_fingerprint,
+        )
+
     def _capture_turn_locked(
         self,
         principal: PrincipalContext,
@@ -189,8 +372,9 @@ class CaptureService:
             raise IdempotencyConflictError(
                 "event identifier was reused with a different payload"
             )
-        if existing is not None and existing.status is not (
-            CaptureStatus.REPROCESS_REQUIRED
+        if existing is not None and existing.status not in (
+            CaptureStatus.REPROCESS_REQUIRED,
+            CaptureStatus.PENDING,
         ):
             log_event(
                 _LOGGER,

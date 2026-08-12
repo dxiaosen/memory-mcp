@@ -1,8 +1,9 @@
 """与 Agent 框架无关的 BeforeRun/AfterRun 生命周期语义。
 
-Phase 1（模型自主调用 capture）后，capture 不再由 hook 触发，bridge 只保留
-BeforeRun 召回链。AfterRun capture 由模型自主调用 ``capture_completed_turn``
-MCP 工具，不再经过 bridge。
+BeforeRun 召回注入；AfterRun 经 Stop hook 强制调 ``capture_completed_turn``
+入队（服务端队列异步抽取）。入队毫秒级返回，失败走 fail-open——不入 outbox
+不重投，下一轮 Stop 用同 conversation_id+turn_id 再入队时服务端 event_id 幂等
+兜底（上轮可能已入队、只是响应丢了 → replay）。
 """
 
 from __future__ import annotations
@@ -33,6 +34,17 @@ class BeforeRunResult:
     recalled_count: int
     truncated: bool = False
     warning_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterRunResult:
+    """AfterRun 入队 capture 的结果：status=pending 成功，失败时返回 fail-open 警告。"""
+
+    status: str
+    replayed: bool = False
+    capture_id: str | None = None
+    warning_code: str | None = None
+    failure_code: str | None = None
 
 
 class MemoryHookRunConflictError(ValueError):
@@ -144,6 +156,63 @@ class MemoryHookBridge:
             memory_context=memory_context,
             recalled_count=len(response.items),
             truncated=response.truncated,
+        )
+
+    async def after_run_success(
+        self,
+        context: HookContext,
+        *,
+        user_input: str,
+        final_output: str,
+        subject_hint: str | None = None,
+    ) -> AfterRunResult:
+        """Stop hook 强制入队 capture：毫秒级返回 pending，失败走 fail-open。
+
+        入队幂等键由服务端 event_id（从 owner+conversation+turn 派生）保证，
+        本地不做去重/重试——入队失败即 fail-open 警告，下一轮 Stop 幂等兜底。
+        """
+
+        try:
+            response = await self._client.capture_completed_turn(
+                profile_id=context.profile_id,
+                conversation_id=context.conversation_id,
+                turn_id=context.turn_id,
+                user_input=user_input,
+                final_output=final_output,
+                subject_hint=subject_hint,
+            )
+        except MemoryHookClientError as exc:
+            if not self._settings.fail_open:
+                raise
+            cause = exc.__cause__
+            log_event(
+                _LOGGER,
+                logging.WARNING,
+                "agent_hook.capture.fail_open",
+                error_code=exc.code,
+                retryable=exc.retryable,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                cause_type=type(cause).__name__ if cause else None,
+                cause_message=str(cause) if cause else None,
+            )
+            return AfterRunResult(
+                status="failed",
+                warning_code=exc.code,
+            )
+        log_event(
+            _LOGGER,
+            logging.INFO,
+            "agent_hook.capture.completed",
+            capture_id=response.capture_id,
+            replayed=response.replayed,
+            status=response.status,
+        )
+        return AfterRunResult(
+            status=response.status,
+            replayed=response.replayed,
+            capture_id=response.capture_id,
+            failure_code=response.failure_code,
         )
 
     def _trim_completed(

@@ -73,8 +73,13 @@ class CaptureTools(ToolSupport):
                     "capture_completed_turn",
                     event_id=envelope.event_id,
                 )
+                capture_call = (
+                    self._service.enqueue_capture
+                    if self._settings.capture_enqueue_enabled
+                    else self._service.capture_turn
+                )
                 result = await asyncio.to_thread(
-                    self._service.capture_turn,
+                    capture_call,
                     principal.to_core(),
                     envelope,
                 )

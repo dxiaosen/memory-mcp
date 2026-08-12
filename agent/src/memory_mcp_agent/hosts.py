@@ -12,7 +12,8 @@ from memory_mcp_agent.bridge import MemoryHookBridge
 from memory_mcp_agent.context import HookContext
 from memory_mcp_agent.logging import log_event, stable_reference
 from memory_mcp_agent.settings import MemoryHookSettings
-from memory_mcp_agent.state import TurnStateStore
+from memory_mcp_agent.state import TurnState, TurnStateStore
+from memory_mcp_agent.transcript import collect_turn_tool_uses
 
 _LOGGER = logging.getLogger(__name__)
 # 把各宿主的事件名归一化到两个通用阶段；不在表内的事件被忽略。
@@ -22,6 +23,27 @@ _EVENT_PHASES: dict[str, Literal["before_run", "after_run"]] = {
     "Stop": "after_run",
     "AfterRun": "after_run",
 }
+# Memory MCP 管理类工具名。当前轮次 assistant 调用了其中任一即判定为
+# inspect/manage turn，跳过 capture 入队——这类 turn 的内容是查看/管理已存储
+# 记忆（列表/撤销/确认/关联等），不是可抽取的业务事实，白入队只会让 worker
+# 白烧一次抽取。recall_memory 不在此列：BeforeRun hook 每个业务 turn 都自动调
+# 它，若计入会把所有业务 turn 误判为 inspect。capture_completed_turn 是 hook
+# 自身入队通道，也不在此列。
+_MEMORY_MANAGEMENT_TOOLS: frozenset[str] = frozenset(
+    {
+        "search_memories",
+        "list_memories",
+        "get_memory",
+        "get_memory_stats",
+        "revoke_memory",
+        "link_memories",
+        "revoke_memory_relation",
+        "list_pending_reviews",
+        "confirm_pending_memory",
+        "reject_pending_memory",
+        "batch_confirm_pending",
+    }
+)
 
 
 class AgentHookInputError(ValueError):
@@ -157,10 +179,11 @@ def render_command_hook_output(outcome: AgentHookOutcome) -> HookOutput:
 class AgentHookAdapter:
     """在通用顶层轮次事件和 Memory Hook Bridge 之间接线。
 
-    Phase 1（模型自主调用 capture）后，AfterRun 阶段对 capture 完全 no-op：
-    捕获由模型自主决定是否调用 ``capture_completed_turn`` MCP 工具，不再由
-    Stop hook 强制每轮触发。本地 outbox 存量靠 24h TTL 自然清空。BeforeRun
-    召回注入保持不变。
+    BeforeRun 写本地 prompt 暂存（Stop 事件不带 user_input）并召回注入；
+    AfterRun 经 Stop hook 强制入队 capture（服务端队列异步抽取）。入队毫秒级
+    返回，失败走 fail-open——下一轮 Stop 用同 conversation_id+turn_id 再入队
+    时服务端 event_id 幂等兜底。inspect/manage turn（查看/操作已存记忆）跳过
+    入队避免白烧 worker 抽取。
     """
 
     def __init__(
@@ -187,7 +210,7 @@ class AgentHookAdapter:
         self._state.cleanup_expired()
         if event.phase == "before_run":
             return await self._before(event, run_reference)
-        return self._noop_after(event, run_reference)
+        return await self._after(event, run_reference)
 
     async def _before(
         self,
@@ -195,6 +218,14 @@ class AgentHookAdapter:
         run_reference: str,
     ) -> AgentHookOutcome:
         user_input = event.required_user_input()
+        self._state.save(
+            TurnState(
+                session_id=event.conversation_id,
+                turn_id=event.turn_id,
+                prompt=user_input,
+                profile_id=self._settings.profile_id,
+            )
+        )
         result = await self._bridge.before_run(
             self._context(event),
             user_input,
@@ -212,19 +243,45 @@ class AgentHookAdapter:
             return AgentHookOutcome(warning_code=f"recall_{result.warning_code}")
         return AgentHookOutcome(additional_context=result.memory_context)
 
-    @staticmethod
-    def _noop_after(
+    async def _after(
+        self,
         event: AgentTurnEvent,
         run_reference: str,
     ) -> AgentHookOutcome:
-        """Phase 1 后 AfterRun 不再触发 capture：捕获由模型自主调用。"""
+        if event.final_output is None or not event.final_output.strip():
+            return self._skip_after(
+                "missing_final_output",
+                run_reference=run_reference,
+            )
 
-        log_event(
-            _LOGGER,
-            logging.INFO,
-            "agent_hook.after_run.noop",
-            run_reference=run_reference,
+        saved = self._state.load(event.conversation_id, event.turn_id)
+        if saved is None:
+            return self._skip_after(
+                "missing_turn_state",
+                run_reference=run_reference,
+            )
+
+        if _is_inspect_or_manage_turn(
+            event.transcript_path,
+            cwd=event.cwd,
+            user_prompt=saved.prompt,
+        ):
+            self._state.delete(event.conversation_id, event.turn_id)
+            return self._skip_after(
+                "inspect_or_manage_turn",
+                run_reference=run_reference,
+            )
+
+        result = await self._bridge.after_run_success(
+            self._context(event),
+            user_input=saved.prompt,
+            final_output=event.final_output,
         )
+        # 入队成功（pending/completed/failed/reprocess_required）即删本地暂存；
+        # 入队失败已走 fail-open，warning_code 非空时也删（下轮幂等兜底）。
+        self._state.delete(event.conversation_id, event.turn_id)
+        if result.warning_code is not None:
+            return AgentHookOutcome(warning_code=f"capture_{result.warning_code}")
         return AgentHookOutcome()
 
     def _context(self, event: AgentTurnEvent) -> HookContext:
@@ -233,6 +290,21 @@ class AgentHookAdapter:
             turn_id=event.turn_id,
             profile_id=self._settings.profile_id,
         )
+
+    @staticmethod
+    def _skip_after(
+        code: str,
+        *,
+        run_reference: str,
+    ) -> AgentHookOutcome:
+        log_event(
+            _LOGGER,
+            logging.WARNING,
+            "agent_hook.capture.skipped",
+            reason_code=code,
+            run_reference=run_reference,
+        )
+        return AgentHookOutcome(warning_code=code)
 
 
 def parse_hook_input(value: Mapping[str, Any]) -> AgentTurnEvent | None:
@@ -266,3 +338,29 @@ def _optional_one_value(
     if len(present) > 1:
         raise AgentHookInputError(conflict_code)
     return next(iter(present), None)
+
+
+def _is_inspect_or_manage_turn(
+    transcript_path: str | None,
+    cwd: str,
+    user_prompt: str,
+) -> bool:
+    """判断当前轮次是否为查看/管理已存储记忆的 inspect/manage turn。
+
+    基于结构性信号：当前轮次 assistant 是否调用了 memory 管理类工具
+    （search_memories/list_memories/revoke_memory 等，不含 recall_memory）。
+    inspect/manage turn 的 assistant 必然调用其中至少一个来查看或操作记忆；
+    业务 turn 的 assistant 只依赖 BeforeRun hook 自动调的 recall_memory，不调这些。
+
+    无 transcript_path（通用合同 / 非 Claude Code 宿主）或解析失败时返回 False，
+    降级为不跳过——保持现有 capture 行为，宁可白入队一次也不误伤业务 turn。
+    """
+
+    if not transcript_path:
+        return False
+    tool_names = collect_turn_tool_uses(
+        transcript_path,
+        cwd=cwd,
+        user_prompt=user_prompt,
+    )
+    return bool(tool_names & _MEMORY_MANAGEMENT_TOOLS)

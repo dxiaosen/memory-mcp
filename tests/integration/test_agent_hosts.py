@@ -17,7 +17,7 @@ from memory_mcp_agent import (
     render_command_hook_output,
 )
 from memory_mcp_agent.cli import render_hook_output
-from memory_mcp_agent.client import RecalledItem
+from memory_mcp_agent.client import CaptureResponse, CaptureSummary, RecalledItem
 
 
 def _settings() -> MemoryHookSettings:
@@ -34,10 +34,13 @@ class _FakeClient:
         *,
         with_memory: bool = True,
         recall_error: MemoryHookClientError | None = None,
+        capture_error: MemoryHookClientError | None = None,
     ) -> None:
         self.with_memory = with_memory
         self.recall_error = recall_error
+        self.capture_error = capture_error
         self.recall_calls: list[dict[str, object]] = []
+        self.capture_calls: list[dict[str, object]] = []
 
     async def recall_memory(self, **arguments: object) -> RecallResponse:
         self.recall_calls.append(arguments)
@@ -64,6 +67,19 @@ class _FakeClient:
             estimated_tokens=10 if items else 0,
             token_budget=600,
             truncated=False,
+        )
+
+    async def capture_completed_turn(self, **arguments: object) -> CaptureResponse:
+        self.capture_calls.append(arguments)
+        if self.capture_error is not None:
+            raise self.capture_error
+        return CaptureResponse(
+            ok=True,
+            request_id="request-capture",
+            capture_id="capture-1",
+            status="pending",
+            replayed=False,
+            summary=CaptureSummary(),
         )
 
 
@@ -98,7 +114,7 @@ def test_supported_hosts_share_active_memory_flow(
     id_field: str,
     state_directory: str,
 ) -> None:
-    """BeforeRun 召回注入 + Stop 阶段 no-op（Phase 1 后 capture 由模型自主调用）。"""
+    """BeforeRun 召回注入 + Stop 阶段入队 capture（服务端队列异步抽取）。"""
 
     async def profile_id() -> None:
         client = _FakeClient()
@@ -134,28 +150,27 @@ def test_supported_hosts_share_active_memory_flow(
         )
         after_outcome = await _adapter(client, state).handle(after)
 
-        # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
+        # Stop hook 入队 capture：返回 AgentHookOutcome()（无 warning），capture_calls=1
         assert after_outcome == AgentHookOutcome()
-        assert len(client.recall_calls) == 1
+        assert len(client.capture_calls) == 1
+        assert client.capture_calls[0]["conversation_id"] == "session-1"
+        assert client.capture_calls[0]["turn_id"] == "turn-1"
+        assert client.capture_calls[0]["user_input"] == "项目周报怎么写？"
+        assert client.capture_calls[0]["final_output"] == "已经按表格生成。"
 
     anyio.run(profile_id)
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 已知债务：document provenance（transcript_path → document_messages）
-# 与 inspect/manage turn 跳过 capture 的机制随 Stop hook capture 路径一并移除。
-# 以下原 test_transcript_path_surfaces_document_messages_in_capture /
-# test_second_turn_excludes_first_turn_tool_messages /
-# test_inspect_turn_with_memory_management_tool_skips_capture /
-# test_business_turn_with_only_recall_memory_still_captures 均已删除，
-# 因为其测试的机制（Stop hook 解析 transcript 并调用 capture）已不存在。
-# AfterRun 阶段现为 no-op，capture 完全由模型自主调用 capture_completed_turn
-# MCP 工具触发。document provenance 需在后续 Phase 由模型侧或 server 侧补全。
+# Stop hook 恢复强制入队 capture（经服务端队列异步抽取）。document provenance
+# 暂退化（服务端组装 [user, assistant] 两条 messages，不解析 transcript 文件
+# 来源）——已知债务，后续可补 transcript_path → document_messages。inspect/manage
+# turn 跳过入队已恢复（_is_inspect_or_manage_turn）。
 # ---------------------------------------------------------------------------
 
 
-def test_after_run_is_noop_regardless_of_transcript(tmp_path: Path) -> None:
-    """Phase 1: AfterRun no-op 即使携带 transcript_path 也不触发 capture。"""
+def test_after_run_enqueues_capture(tmp_path: Path) -> None:
+    """Stop hook 入队 capture（毫秒级），即使携带 transcript_path 也正常入队。"""
 
     async def profile_id() -> None:
         import json
@@ -188,8 +203,118 @@ def test_after_run_is_noop_regardless_of_transcript(tmp_path: Path) -> None:
             )
         )
 
+        # 入队成功 → 无 warning
         assert output == AgentHookOutcome()
-        # AfterRun no-op: 仅 BeforeRun 召回一次，无 capture 调用。
+        assert len(client.capture_calls) == 1
+
+    anyio.run(profile_id)
+
+
+def test_inspect_turn_with_memory_management_tool_skips_capture(
+    tmp_path: Path,
+) -> None:
+    """当前轮次 assistant 调用 memory 管理工具时跳过 capture 入队。"""
+
+    async def profile_id() -> None:
+        import json
+
+        # transcript 含一条 list_memories 工具调用（管理类）
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            {"type": "user", "message": {"content": "列出所有记忆"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "list_memories",
+                            "id": "tool-1",
+                            "input": {},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "content": "[]",
+                        }
+                    ]
+                },
+            },
+            {"type": "assistant", "message": {"content": "无记忆"}},
+        ]
+        transcript.write_text(
+            "".join(json.dumps(e) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        client = _FakeClient()
+        state = TurnStateStore(tmp_path / "hooks")
+        adapter = _adapter(client, state)
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="列出所有记忆",
+            )
+        )
+        output = await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="无记忆",
+                transcript_path=str(transcript),
+            )
+        )
+
+        # inspect/manage turn → 跳过入队
+        assert output.warning_code == "inspect_or_manage_turn"
+        assert len(client.capture_calls) == 0
+
+    anyio.run(profile_id)
+
+
+def test_capture_transport_failure_fails_open(tmp_path: Path) -> None:
+    """入队失败走 fail-open：warning_code 非空，不阻断 Agent。"""
+
+    async def profile_id() -> None:
+        client = _FakeClient(
+            capture_error=MemoryHookClientError(
+                "memory_mcp_unavailable",
+                retryable=True,
+            )
+        )
+        state = TurnStateStore(tmp_path / "hooks")
+        adapter = _adapter(client, state)
+        await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="UserPromptSubmit",
+                prompt_id="turn-1",
+                prompt="业务问题",
+            )
+        )
+        output = await adapter.handle(
+            _event(
+                session_id="session-1",
+                cwd=str(tmp_path),
+                hook_event_name="Stop",
+                prompt_id="turn-1",
+                last_assistant_message="业务回复。",
+            )
+        )
+
+        assert output.warning_code == "capture_memory_mcp_unavailable"
 
     anyio.run(profile_id)
 
@@ -225,11 +350,7 @@ def test_no_memory_returns_strict_empty_json(tmp_path: Path) -> None:
 
 
 def test_recall_failure_fails_open(tmp_path: Path) -> None:
-    """BeforeRun 召回失败时 fail-open 返回 warning_code，不中断 Agent 任务。
-
-    Phase 1 后 _before 不再保存 turn state（outbox 已移除），故不再断言
-    state 文件存在；召回失败 → warning 的路径仍然保留。
-    """
+    """BeforeRun 召回失败时 fail-open 返回 warning_code，不中断 Agent 任务。"""
 
     async def profile_id() -> None:
         client = _FakeClient(
@@ -257,14 +378,12 @@ def test_recall_failure_fails_open(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 以下 outbox 重试机制相关测试已在 Phase 1 移除：
-# - test_capture_transport_failure_keeps_staged_payload：capture 失败时 outbox
-#   保留 payload 待下次 Stop 重投。Phase 1 后 hook Stop 不再触发 capture，
-#   outbox 不再写入，此机制不存在。
-# - test_stop_without_final_output_keeps_saved_prompt：missing final_output 时
-#   跳过 capture 并保留 state。Phase 1 后 Stop 为 no-op，不受 final_output 影响。
-# - test_reprocess_required_is_retried_by_later_stop：reprocess_required 状态的
-#   outbox 重投。同上，outbox 机制已移除。
+# Stop hook 恢复强制入队后，outbox 重投机制不再需要（入队毫秒级，失败走
+# fail-open，下轮 Stop 幂等兜底）。以下原 outbox 重投测试不再适用：
+# - test_capture_transport_failure_keeps_staged_payload：入队失败不入 outbox。
+# - test_stop_without_final_output_keeps_saved_prompt：missing final_output
+#   仍 skip（missing_final_output）。
+# - test_reprocess_required_is_retried_by_later_stop：重投由服务端 worker 负责。
 # ---------------------------------------------------------------------------
 
 
@@ -307,7 +426,7 @@ def test_conflicting_or_missing_host_turn_identifiers_are_rejected() -> None:
 def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
     tmp_path: Path,
 ) -> None:
-    """通用合同 BeforeRun 召回注入 + AfterRun no-op（Phase 1 后 capture 模型自主）。"""
+    """通用合同 BeforeRun 召回注入 + AfterRun 入队 capture（服务端队列异步抽取）。"""
 
     async def profile_id() -> None:
         client = _FakeClient()
@@ -341,9 +460,10 @@ def test_canonical_agent_contract_uses_same_adapter_without_host_branch(
         assert before.phase == "before_run"
         assert before_outcome.additional_context is not None
         assert after.phase == "after_run"
-        # Phase 1: AfterRun is no-op; capture is model-driven, not hook-driven.
+        # Stop hook 入队 capture
         assert after_outcome == AgentHookOutcome()
         assert len(client.recall_calls) == 1
+        assert len(client.capture_calls) == 1
 
     anyio.run(profile_id)
 

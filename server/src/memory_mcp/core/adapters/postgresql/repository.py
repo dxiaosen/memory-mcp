@@ -16,6 +16,7 @@ from psycopg_pool import ConnectionPool
 
 from memory_mcp.core.adapters.postgresql.maintenance import run_maintenance
 from memory_mcp.core.adapters.postgresql.mapping import (
+    as_datetime,
     as_uuid,
     load_evidence,
     to_capture_result,
@@ -42,6 +43,7 @@ from memory_mcp.core.domain import (
     CaptureStatus,
     Evidence,
     ExpressionBasis,
+    ExtractionMetadata,
     MaintenanceResult,
     MemoryHistoryEntry,
     MemoryRecallCandidate,
@@ -70,9 +72,11 @@ from memory_mcp.core.exceptions import (
     SubjectScopeConflictError,
 )
 from memory_mcp.core.ports import (
+    CaptureEnqueueWrite,
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryProfile,
+    PendingCapture,
     RecallCandidateSet,
     ReplacementWrite,
 )
@@ -924,7 +928,12 @@ class PostgreSQLMemoryRepository:
                 parameters,
             ).fetchone()
             if existing is None:
-                self._insert_capture_run(connection, result)
+                self._insert_capture_run(
+                    connection,
+                    result,
+                    content=write.content,
+                    subject_hint=write.subject_hint,
+                )
             else:
                 if (
                     result.payload_fingerprint is not None
@@ -933,7 +942,10 @@ class PostgreSQLMemoryRepository:
                     raise IdempotencyConflictError(
                         "event identifier was reused with a different payload"
                     )
-                if existing["status"] != CaptureStatus.REPROCESS_REQUIRED.value:
+                if existing["status"] not in (
+                    CaptureStatus.REPROCESS_REQUIRED.value,
+                    CaptureStatus.PENDING.value,
+                ):
                     stored = replace(
                         to_capture_result(connection, existing),
                         replayed=True,
@@ -1083,6 +1095,186 @@ class PostgreSQLMemoryRepository:
             status=result.status.value,
         )
         return result
+
+    def commit_capture_enqueue(
+        self,
+        principal: PrincipalContext,
+        write: CaptureEnqueueWrite,
+    ) -> CaptureResult:
+        """入队专用：插入 PENDING 行（含 content/subject_hint），或对已存在行 replay。
+
+        幂等语义与 ``commit_capture`` 对齐：advisory lock 防并发；同 event_id
+        + 同 payload_fingerprint 的已存在行直接 replay 返回；同 event_id 但
+        不同 payload 报 IdempotencyConflictError。区别是不写 outcome/memory/
+        review/relation，只写 capture 行本身 + content。
+        """
+
+        result = write.result
+        if result.owner_id != principal.owner_id:
+            raise ValueError("capture owner must match trusted principal")
+        with self._pool.connection() as connection:
+            if result.event_id is not None:
+                idempotency_key = f"{result.owner_id}\x1fevent\x1f{result.event_id}"
+                where_clause = (
+                    "owner_id = %s AND event_id = %s"
+                )
+                parameters: tuple[object, ...] = (
+                    result.owner_id,
+                    result.event_id,
+                )
+            else:
+                idempotency_key = (
+                    f"{result.owner_id}\x1flegacy\x1f{result.profile_id}\x1f"
+                    f"{result.conversation_id}\x1f{result.source_turn_id}"
+                )
+                where_clause = (
+                    "owner_id = %s AND profile_id = %s AND conversation_id = %s "
+                    "AND source_turn_id = %s"
+                )
+                parameters = (
+                    result.owner_id,
+                    result.profile_id,
+                    result.conversation_id,
+                    result.source_turn_id,
+                )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (idempotency_key,),
+            )
+            existing = connection.execute(
+                f"""
+                SELECT capture_id, status, payload_fingerprint
+                FROM memory_captures
+                WHERE {where_clause}
+                FOR UPDATE
+                """,
+                parameters,
+            ).fetchone()
+            if existing is not None:
+                if (
+                    result.payload_fingerprint is not None
+                    and existing["payload_fingerprint"] != result.payload_fingerprint
+                ):
+                    raise IdempotencyConflictError(
+                        "event identifier was reused with a different payload"
+                    )
+                stored = CaptureResult(
+                    capture_id=as_uuid(existing["capture_id"]),
+                    owner_id=result.owner_id,
+                    profile_id=result.profile_id,
+                    conversation_id=result.conversation_id,
+                    source_turn_id=result.source_turn_id,
+                    metadata=result.metadata,
+                    status=CaptureStatus(existing["status"]),
+                    outcomes=(),
+                    failure_code=None,
+                    created_at=result.created_at,
+                    completed_at=result.completed_at,
+                    was_reprocessed=True,
+                    event_id=result.event_id,
+                    contract_version=result.contract_version,
+                    payload_fingerprint=result.payload_fingerprint,
+                )
+                return replace(stored, replayed=True)
+            connection.execute(
+                """
+                INSERT INTO memory_captures (
+                    capture_id, owner_id, profile_id, conversation_id,
+                    source_turn_id, content, subject_hint, profile_version,
+                    profile_fingerprint, prompt_version, schema_version, model_id,
+                    status, failure_code, created_at, completed_at, event_id,
+                    contract_version, payload_fingerprint
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    result.capture_id,
+                    result.owner_id,
+                    result.profile_id,
+                    result.conversation_id,
+                    result.source_turn_id,
+                    write.content,
+                    write.subject_hint,
+                    result.metadata.profile_version,
+                    result.metadata.profile_fingerprint,
+                    result.metadata.prompt_version,
+                    result.metadata.schema_version,
+                    result.metadata.model_id,
+                    result.status.value,
+                    result.failure_code,
+                    result.created_at,
+                    result.completed_at,
+                    result.event_id,
+                    result.contract_version,
+                    result.payload_fingerprint,
+                ),
+            )
+            log_event(
+                _LOGGER,
+                logging.INFO,
+                "memory.postgresql.capture_enqueued",
+                capture_id=result.capture_id,
+                owner_ref=stable_reference(principal.owner_id),
+                status=result.status.value,
+            )
+            return result
+
+    def list_pending_captures(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[PendingCapture, ...]:
+        """捞取 PENDING capture（跨 owner，FOR UPDATE SKIP LOCKED 并发安全）。
+
+        返回的 content 已是脱敏后原文。每条在事务内被锁，worker 完成后
+        调 commit_capture 写终态。
+        """
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT capture_id, owner_id, profile_id, conversation_id,
+                       source_turn_id, content, subject_hint, profile_version,
+                       profile_fingerprint, prompt_version, schema_version,
+                       model_id, status, created_at, completed_at, event_id,
+                       contract_version, payload_fingerprint
+                FROM memory_captures
+                WHERE status = 'pending'
+                ORDER BY created_at
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+                """,
+                (limit,),
+            ).fetchall()
+            return tuple(
+                PendingCapture(
+                    capture_id=as_uuid(row["capture_id"]),
+                    owner_id=row["owner_id"],
+                    profile_id=row["profile_id"],
+                    conversation_id=row["conversation_id"],
+                    source_turn_id=row["source_turn_id"],
+                    content=row["content"],
+                    subject_hint=row["subject_hint"],
+                    observed_at=as_datetime(row["created_at"]),
+                    created_at=as_datetime(row["created_at"]),
+                    metadata=ExtractionMetadata(
+                        model_id=row["model_id"],
+                        prompt_version=row["prompt_version"],
+                        schema_version=row["schema_version"],
+                        profile_version=row["profile_version"],
+                        profile_fingerprint=row["profile_fingerprint"],
+                    ),
+                    event_id=row["event_id"],
+                    contract_version=row["contract_version"],
+                    payload_fingerprint=row["payload_fingerprint"],
+                )
+                for row in rows
+            )
 
     def list_reviews(
         self,
@@ -1271,21 +1463,23 @@ class PostgreSQLMemoryRepository:
     def _insert_capture_run(
         connection,
         result: CaptureResult,
+        content: str = "",
+        subject_hint: str | None = None,
     ) -> None:
-        """插入一条 capture run 行。"""
+        """插入一条 capture run 行（含 content/subject_hint 脱敏后原文）。"""
 
         connection.execute(
             """
             INSERT INTO memory_captures (
                 capture_id, owner_id, profile_id, conversation_id,
-                source_turn_id, profile_version, profile_fingerprint, prompt_version,
-                schema_version, model_id, status, failure_code,
-                created_at, completed_at, event_id, contract_version,
-                payload_fingerprint
+                source_turn_id, content, subject_hint, profile_version,
+                profile_fingerprint, prompt_version, schema_version, model_id,
+                status, failure_code, created_at, completed_at, event_id,
+                contract_version, payload_fingerprint
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s
             )
             """,
             (
@@ -1294,6 +1488,8 @@ class PostgreSQLMemoryRepository:
                 result.profile_id,
                 result.conversation_id,
                 result.source_turn_id,
+                content,
+                subject_hint,
                 result.metadata.profile_version,
                 result.metadata.profile_fingerprint,
                 result.metadata.prompt_version,

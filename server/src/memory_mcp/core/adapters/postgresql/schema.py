@@ -38,6 +38,7 @@ _REQUIRED_INDEXES = frozenset(
         "memory_revisions_embedding_idx",
         "memory_revisions_maintenance_expiry_idx",
         "memory_reviews_maintenance_idx",
+        "memory_captures_pending_idx",
     }
 )
 

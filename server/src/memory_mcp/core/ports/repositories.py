@@ -9,6 +9,7 @@ from uuid import UUID
 from memory_mcp.core.domain import (
     CaptureResult,
     Evidence,
+    ExtractionMetadata,
     MaintenanceResult,
     MemoryHistoryEntry,
     MemoryRecallCandidate,
@@ -26,14 +27,55 @@ from memory_mcp.core.ports.profiles import MemoryProfile
 
 @dataclass(frozen=True, slots=True)
 class CaptureWrite:
-    """需要在一次 Repository 事务中提交的捕获结果。"""
+    """需要在一次 Repository 事务中提交的捕获结果。
+
+    content/subject_hint 用于落库 memory_captures.content 列（脱敏后原文），
+    供 worker 异步抽取路径读取；同步路径也写入以保证 schema NOT NULL 约束。
+    """
 
     result: CaptureResult
+    content: str = ""
+    subject_hint: str | None = None
     memories: tuple[MemoryRecord, ...] = ()
     reviews: tuple[ReviewItem, ...] = ()
     duplicate_evidence: tuple[DuplicateEvidenceWrite, ...] = ()
     replacements: tuple[ReplacementWrite, ...] = ()
     relations: tuple[MemoryRelation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PendingCapture:
+    """worker 从队列捞取的一条待抽取 capture，含重建 envelope 所需的最小字段。
+
+    content 已是脱敏后原文（入队时由 sensitive_guard 处理），worker 直接用于
+    候选抽取，不需要再次脱敏。
+    """
+
+    capture_id: UUID
+    owner_id: str
+    profile_id: str
+    conversation_id: str
+    source_turn_id: str
+    content: str
+    subject_hint: str | None
+    observed_at: datetime
+    created_at: datetime
+    metadata: ExtractionMetadata
+    event_id: str | None
+    contract_version: str | None
+    payload_fingerprint: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureEnqueueWrite:
+    """入队专用写入：PENDING capture 行 + 脱敏后 content/subject_hint。
+
+    content/subject_hint 已过 sensitive_guard，worker 读出后无需再次脱敏。
+    """
+
+    result: CaptureResult
+    content: str
+    subject_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +353,37 @@ class MemoryRepository(Protocol):
         write: CaptureWrite,
     ) -> CaptureResult:
         """原子提交并返回数据库中的权威捕获结果。"""
+
+        ...
+
+    def commit_capture_enqueue(
+        self,
+        principal: PrincipalContext,
+        write: CaptureEnqueueWrite,
+    ) -> CaptureResult:
+        """入队专用：插入 PENDING 行（含 content/subject_hint），或对已存在行 replay。
+
+        与 ``commit_capture`` 的区别：只写 capture 行本身（status=pending，
+        含 content/subject_hint），不写 outcome/memory/review/relation。content
+        和 subject_hint 从 ``write`` 直接读取——入队前由 caller 已过
+        sensitive_guard 脱敏。幂等语义与 commit_capture 对齐：同 event_id +
+        同 payload_fingerprint 的已存在行直接 replay 返回。
+        """
+
+        ...
+
+    def list_pending_captures(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[PendingCapture, ...]:
+        """捞取待抽取的 PENDING capture（跨 owner，worker 用）。
+
+        用 ``FOR UPDATE SKIP LOCKED``（PG）或等价锁保证并发安全；返回的
+        ``PendingCapture.content`` 已是脱敏后原文，worker 直接用于抽取。
+        每条捞取的 capture 在同一事务内被标记为处理中（worker 完成后
+        调 commit_capture 写终态）。
+        """
 
         ...
 

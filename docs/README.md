@@ -21,12 +21,12 @@
 ```mermaid
 flowchart TD
     AH[Agent Host: memory-mcp-agent] -->|BeforeRun → recall_memory| SRV
-    MODEL[模型自主决定] -->|有持久信号 → capture_completed_turn| SRV
+    AH -->|Stop hook 强制入队 → capture_completed_turn| SRV
     SRV[Memory MCP Server: memory-mcp] --> AUTH[认证 / owner 派生 / scope]
     SRV --> CORE[Memory Core: domain/application/ports]
     SRV --> ADAPT[适配层: PostgreSQL / 敏感 / 分词 / 抽取 / embedding]
     ADAPT --> PG[(PostgreSQL 唯一权威存储)]
-    SRV --> MAINT[周期任务: 维护 / 团队提取]
+    SRV --> MAINT[周期任务: 维护 / 团队提取 / capture 异步抽取]
 ```
 
 两个发行包：`memory-mcp`（Server，Python 3.14）和 `memory-mcp-agent`（轻量 Client，

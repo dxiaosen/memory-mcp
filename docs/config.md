@@ -63,10 +63,13 @@
 | `MEMORY_MCP_RECALL_MAX_TOKEN_BUDGET` | `1200` | 渲染预算硬上限，64–8,000 |
 | `MEMORY_MCP_RECALL_CANDIDATE_LIMIT` | `500` | Recall 读取候选硬上限，1–10,000 |
 | `MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS` | `300` | 服务端维护周期，0–86,400 秒；`0` 禁用 |
+| `MEMORY_MCP_CAPTURE_ENQUEUE_ENABLED` | `true` | `true`：capture 只入队（毫秒级返回 `pending`），worker 异步抽取；`false`：回退同步抽取 |
+| `MEMORY_MCP_CAPTURE_REPROCESS_INTERVAL_SECONDS` | `5` | worker 轮询 pending capture 的间隔，0–3,600 秒；`0` 关闭 |
 
 - 维护 runner 与 Server 共用进程和连接池，同步 DB 调用在线程中执行，不阻塞事件循环。
 - 每批最多 500 revision/review；连续 `has_more` 超 8 次后插入 1 秒退避。
 - `maintenance.state`：`disabled/starting/ok/degraded`。普通部署保持默认，Agent 不读取该变量。
+- capture-reprocess worker 同构：每批最多 20 条 pending capture；连续 `has_more` 超 16 次后插入 1 秒退避；`capture_reprocess.state` 同 `maintenance`。
 
 ### 敏感拦截规则
 

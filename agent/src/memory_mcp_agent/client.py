@@ -9,7 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal, Protocol, Self
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from memory_mcp_agent.logging import log_event
 from memory_mcp_agent.settings import MemoryHookSettings
@@ -58,6 +58,30 @@ class RecallResponse(_Receipt):
     truncated: bool
 
 
+class CaptureSummary(BaseModel):
+    """capture_completed_turn 回执的统计摘要（入队返回 pending 时全为 0）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    auto_saved_count: int = 0
+    pending_count: int = 0
+    discarded_count: int = 0
+    blocked_count: int = 0
+
+
+class CaptureResponse(_Receipt):
+    """capture_completed_turn 的结构化响应，描述本轮捕获的入队/终态。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ok: Literal[True] = True
+    capture_id: str
+    status: Literal["pending", "completed", "failed", "reprocess_required"]
+    replayed: bool
+    summary: CaptureSummary = Field(default_factory=CaptureSummary)
+    failure_code: str | None = None
+
+
 class MemoryHookClientError(RuntimeError):
     """客户端对外暴露的稳定错误，只含稳定的错误码，不泄漏敏感信息。"""
 
@@ -73,10 +97,10 @@ class MemoryHookClientError(RuntimeError):
 
 
 class MemoryHookClient(Protocol):
-    """主动记忆客户端协议：Phase 1 后只暴露 recall_memory 调用契约。
+    """主动记忆客户端协议：暴露 recall 与 capture 两个 Tool 的调用契约。
 
-    capture 由模型自主调用 ``capture_completed_turn`` MCP 工具，不再经过
-    本客户端协议。
+    capture 经 Stop hook 强制触发，调 ``capture_completed_turn`` 入队（服务端
+    队列异步抽取）。简化契约：只传对话内容，服务端派生 event_id/幂等字段。
     """
 
     async def recall_memory(
@@ -89,6 +113,17 @@ class MemoryHookClient(Protocol):
         max_items: int,
         token_budget: int,
     ) -> RecallResponse: ...
+
+    async def capture_completed_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        user_input: str,
+        final_output: str,
+        profile_id: str | None = None,
+        subject_hint: str | None = None,
+    ) -> CaptureResponse: ...
 
 
 class MemoryMcpClient:
@@ -145,6 +180,38 @@ class MemoryMcpClient:
             return RecallResponse.model_validate(payload)
         except ValueError as exc:
             raise MemoryHookClientError("invalid_recall_response") from exc
+
+    async def capture_completed_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        user_input: str,
+        final_output: str,
+        profile_id: str | None = None,
+        subject_hint: str | None = None,
+    ) -> CaptureResponse:
+        """入队 capture：服务端派生 event_id/observed_at/contract_version/messages。"""
+
+        arguments: dict[str, Any] = {
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "user_input": user_input,
+            "final_output": final_output,
+        }
+        if profile_id is not None:
+            arguments["profile_id"] = profile_id
+        if subject_hint is not None:
+            arguments["subject_hint"] = subject_hint
+        payload = await self._call_tool(
+            "capture_completed_turn",
+            arguments,
+            timeout=self._settings.capture_timeout_seconds,
+        )
+        try:
+            return CaptureResponse.model_validate(payload)
+        except ValueError as exc:
+            raise MemoryHookClientError("invalid_capture_response") from exc
 
     async def _call_tool(
         self,

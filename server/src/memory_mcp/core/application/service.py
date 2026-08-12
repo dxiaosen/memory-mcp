@@ -13,6 +13,7 @@ from memory_mcp.core.application.commands import CreateMemoryCommand
 from memory_mcp.core.application.maintenance_service import MemoryMaintenanceService
 from memory_mcp.core.application.recall_service import RecallService
 from memory_mcp.core.domain import (
+    CaptureReprocessResult,
     CaptureResult,
     Evidence,
     MaintenanceResult,
@@ -611,6 +612,18 @@ class MemoryService:
     ) -> CaptureResult:
         """从一轮对话中抽取并写入候选记忆，委托给捕获子服务。"""
         return self._capture_service.capture_turn(principal, turn)
+
+    def enqueue_capture(
+        self,
+        principal: PrincipalContext,
+        turn: TurnEnvelope,
+    ) -> CaptureResult:
+        """入队路径：只写 PENDING 行（含脱敏 content），不做模型抽取，毫秒级返回。"""
+        return self._capture_service.enqueue_capture(principal, turn)
+
+    def run_capture_reprocess(self) -> CaptureReprocessResult:
+        """运行一批 PENDING capture 的异步抽取，供 Server 后台循环调用。"""
+        return self._capture_service.run_capture_reprocess()
 
     def recall_memory(
         self,

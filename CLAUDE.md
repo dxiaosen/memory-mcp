@@ -104,10 +104,10 @@ Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF
 当本仓库被用作 Memory MCP 的测试客户端时，Claude 须遵守：
 
 - 长期记忆只走 Memory MCP；不使用 Claude 内置 `MEMORY.md` 或项目 memory 做长期记忆。
-- 召回由 BeforeRun Hook 自动处理；**捕获由模型自主决定是否调用 `capture_completed_turn`**——
-  仅在一轮对话产生值得跨会话记住的持久事实/偏好/决策/判断时调用，不在仅查看/查询/管理记忆的轮次
-  或闲聊中调用。身份与幂等字段（event_id/observed_at/contract_version）由服务器组装，
-  模型只传 conversation_id/turn_id/user_input/final_output。
+- 召回由 BeforeRun Hook 自动处理；**捕获由 Stop hook 强制每轮入队**（经服务端队列异步抽取），
+  模型不需自主判断是否调用 `capture_completed_turn`——hook 会处理。身份与幂等字段
+  （event_id/observed_at/contract_version）由服务器组装，hook 只传 conversation_id/turn_id/
+  user_input/final_output。模型仍可显式调 `capture_completed_turn`（与 hook 幂等，补充用）。
 - **业务更新不是记忆管理命令**：用户改变/修正/替换某个研究判断、或说某事实支持/挑战/威胁另一判断，
   都是普通对话语义，由 capture + 服务端候选抽取自动处理（replacement / supersede / 生命周期 / 自动关系）。
   **严禁**因此主动调用 `revoke_memory`、`confirm_pending_memory`、`link_memories`、

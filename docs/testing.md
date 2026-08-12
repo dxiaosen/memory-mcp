@@ -82,7 +82,7 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' uv run pytest \
 | 项 | 说明 |
 | --- | --- |
 | `0001_memory_schema.sql` | 安装 `pg_trgm` 与 `vector` 扩展、创建全部表和索引 |
-| `health` 检查 | migration checksum、扩展和六个必需索引（含 `memory_revisions_embedding_idx`、`memory_items_one_active_scope_idx`） |
+| `health` 检查 | migration checksum、扩展和七个必需索引（含 `memory_revisions_embedding_idx`、`memory_items_one_active_scope_idx`、`memory_captures_pending_idx`） |
 | 改 schema | 直接修改该文件并用 `migrate --rebuild` 重建 |
 
 ## 4. 投研评测

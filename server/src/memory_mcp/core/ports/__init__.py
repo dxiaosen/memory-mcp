@@ -20,9 +20,11 @@ from memory_mcp.core.ports.profiles import (
     profile_fingerprint,
 )
 from memory_mcp.core.ports.repositories import (
+    CaptureEnqueueWrite,
     CaptureWrite,
     DuplicateEvidenceWrite,
     MemoryRepository,
+    PendingCapture,
     RecallCandidateSet,
     ReplacementWrite,
 )
@@ -31,6 +33,7 @@ __all__ = [
     "MAX_RELATION_ENDPOINTS",
     "MAX_RELATION_PROPOSALS",
     "CandidateExtractor",
+    "CaptureEnqueueWrite",
     "CaptureWrite",
     "DuplicateEvidenceWrite",
     "EmbeddingProvider",
@@ -40,6 +43,7 @@ __all__ = [
     "MemoryProfile",
     "MemoryRelationPolicy",
     "MemoryRepository",
+    "PendingCapture",
     "ProfileRegistry",
     "RecallCandidateSet",
     "RelationExtractionRequest",

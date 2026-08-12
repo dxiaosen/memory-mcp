@@ -112,6 +112,9 @@ Agent Hook (run_ref)
 | --- | --- | --- |
 | `memory.capture.started` | INFO | `capture_id`, `owner_ref`, `profile_id`, `profile_version`, `was_reprocessed`, `event_id`, `message_count`, `input_character_count` |
 | `memory.capture.replay` | INFO | `capture_id`, `owner_ref`, `status`, `replayed` |
+| `memory.capture.enqueued` | INFO | `capture_id`, `owner_ref`, `event_id`, `status`（入队路径：写 PENDING 行后立即回执，worker 异步抽取） |
+| `memory.capture.reprocess.completed` | INFO | `processed_count`, `completed_count`, `reprocess_required_count`, `failed_count`, `has_more`（worker 一批 PENDING 抽取完成） |
+| `memory.capture.reprocess.failed` | ERROR | `error_type`, `error_message`（worker 批次异常，降级健康状态，不向外传播） |
 | `memory.capture.idempotency_conflict` | WARNING | `capture_id`, `owner_ref`, `event_id` |
 | `memory.capture.completed` | INFO | `capture_id`, `owner_ref`, `profile_id`, `replayed`, `was_reprocessed`, `duration_ms`, `extracted_candidate_count`, `outcome_count`, `candidate_count`, `auto_saved_count`, `pending_count`, `discarded_count`, `blocked_count`, `reason_counts`, `duplicate_count`, `replacement_count`, `review_count`, `relation_proposal_count`, `relation_accepted_count`, `relation_skipped_count`, `failure_code`, `candidate_extraction_duration_ms`, `candidate_validation_duration_ms`, `admission_duration_ms`, `lifecycle_duration_ms`, `relation_duration_ms`, `persistence_duration_ms` |
 | `memory.capture.incomplete` | WARNING | `capture_id`, `owner_ref`, `profile_id`, `status`, `failure_code`, `was_reprocessed`, `duration_ms` |
@@ -228,7 +231,9 @@ Core 读取内容模式事件：
 | `agent_hook.started` | INFO | `run_ref` |
 | `agent_hook.recall.completed` | INFO | `run_ref`, `recalled_count`, `status` |
 | `agent_hook.recall.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message` |
-| `agent_hook.after_run.noop` | INFO | `run_ref`（Phase 1：AfterRun 对 capture 完全 no-op，捕获由模型自主调用 `capture_completed_turn`） |
+| `agent_hook.capture.completed` | INFO | `capture_id`, `replayed`, `status`（Stop hook 入队 capture 后回执，status=pending 表示已入队待 worker 抽取） |
+| `agent_hook.capture.skipped` | WARNING | `reason_code`（`missing_final_output`/`missing_turn_state`/`inspect_or_manage_turn`）, `run_ref` |
+| `agent_hook.capture.fail_open` | WARNING | `error_code`, `retryable`, `error_type`, `error_message`, `cause_type`, `cause_message`（入队失败走 fail-open，下轮 Stop 幂等兜底） |
 | `agent_hook.failed` | ERROR | `error_code`, `hook_event`, `error_type`, `error_message`, `error_detail`（pydantic ValidationError 的「字段: 原因」摘要）, `error_cause_type`, `error_cause_message`, `encoding`/`byte_position`（仅 `stdin_decode_error`）, `raw_head`/`raw_len`（stdin 解析失败时的原始输入前缀） |
 | `turn_state.cleanup_corrupt` | WARNING | `path`, `error_type`, `error_message`（清理残留旧版本状态文件时的损坏条目） |
 | `mcp_client.http_status_error` | WARNING | `tool`, `status_code`, `error_type`, `error_message` |

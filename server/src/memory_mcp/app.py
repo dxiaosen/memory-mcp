@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 from memory_mcp.auth import StaticTokenVerifier, current_request_principal
 from memory_mcp.core import (
     CandidateExtractor,
+    CaptureReprocessResult,
     MaintenanceResult,
     MemoryProfile,
     MemoryService,
@@ -57,7 +58,12 @@ class _RunnableServer(Protocol):
 
 
 class MaintenanceHealth:
-    """维护循环的进程内、无正文健康快照。"""
+    """维护/worker 循环的进程内、无正文健康快照。
+
+    复用于 maintenance 与 capture-reprocess 两个后台循环：两者都返回带
+    ``has_more`` 的结果对象，``observe_success`` 只需要其 ``effective_at``
+    作时间戳；capture-reprocess 结果无 ``effective_at`` 时回退到内部时钟。
+    """
 
     def __init__(
         self,
@@ -74,12 +80,17 @@ class MaintenanceHealth:
         self._last_failure_at: datetime | None = None
         self._last_error_type: str | None = None
 
-    def observe_success(self, result: MaintenanceResult) -> None:
+    def observe_success(
+        self,
+        result: MaintenanceResult | CaptureReprocessResult,
+    ) -> None:
         """记录一次成功并从 degraded 恢复。"""
 
         self._state = "ok"
         self._consecutive_failures = 0
-        self._last_success_at = result.effective_at
+        self._last_success_at = getattr(result, "effective_at", None) or (
+            self._clock()
+        )
         self._last_error_type = None
 
     def observe_failure(self, error: Exception) -> None:
@@ -113,6 +124,8 @@ class MemoryMcpServer(FastMCP[Any]):
         maintenance_interval_seconds: int = 0,
         run_team_extraction: Callable[[], object] | None = None,
         team_extraction_interval_seconds: int = 0,
+        run_capture_reprocess: Callable[[], CaptureReprocessResult] | None = None,
+        capture_reprocess_interval_seconds: int = 0,
         **kwargs: Any,
     ) -> None:
         self._close_storage = close_storage
@@ -120,8 +133,14 @@ class MemoryMcpServer(FastMCP[Any]):
         self._maintenance_interval_seconds = maintenance_interval_seconds
         self._run_team_extraction = run_team_extraction
         self._team_extraction_interval_seconds = team_extraction_interval_seconds
+        self._run_capture_reprocess = run_capture_reprocess
+        self._capture_reprocess_interval_seconds = capture_reprocess_interval_seconds
         self._maintenance_health = MaintenanceHealth(
             enabled=run_maintenance is not None and maintenance_interval_seconds > 0
+        )
+        self._capture_reprocess_health = MaintenanceHealth(
+            enabled=run_capture_reprocess is not None
+            and capture_reprocess_interval_seconds > 0
         )
         self._streamable_app = None
         super().__init__(*args, **kwargs)
@@ -131,6 +150,12 @@ class MemoryMcpServer(FastMCP[Any]):
         """返回当前进程维护健康状态。"""
 
         return self._maintenance_health
+
+    @property
+    def capture_reprocess_health(self) -> MaintenanceHealth:
+        """返回当前进程 capture-reprocess worker 健康状态。"""
+
+        return self._capture_reprocess_health
 
     async def list_tools(self) -> list[Any]:
         """按 principal scopes 过滤可见工具。
@@ -158,6 +183,9 @@ class MemoryMcpServer(FastMCP[Any]):
         # 时启动后台维护任务，关闭时先停止维护再释放存储。
         if self._close_storage is not None or (
             self._run_maintenance is not None and self._maintenance_interval_seconds > 0
+        ) or (
+            self._run_capture_reprocess is not None
+            and self._capture_reprocess_interval_seconds > 0
         ):
             session_manager_lifespan = app.router.lifespan_context
 
@@ -190,6 +218,21 @@ class MemoryMcpServer(FastMCP[Any]):
                         and self._team_extraction_interval_seconds > 0
                         else None
                     )
+                    capture_reprocess_task = (
+                        asyncio.create_task(
+                            _run_capture_reprocess_loop(
+                                self._run_capture_reprocess,
+                                interval_seconds=(
+                                    self._capture_reprocess_interval_seconds
+                                ),
+                                stop_event=stop_maintenance,
+                                health=self._capture_reprocess_health,
+                            )
+                        )
+                        if self._run_capture_reprocess is not None
+                        and self._capture_reprocess_interval_seconds > 0
+                        else None
+                    )
                     try:
                         yield state
                     finally:
@@ -198,6 +241,8 @@ class MemoryMcpServer(FastMCP[Any]):
                             await maintenance_task
                         if team_extraction_task is not None:
                             await team_extraction_task
+                        if capture_reprocess_task is not None:
+                            await capture_reprocess_task
                         if self._close_storage is not None:
                             await asyncio.to_thread(self._close_storage)
 
@@ -296,6 +341,10 @@ def create_memory_mcp_server(
             else None
         ),
         team_extraction_interval_seconds=settings.team_extraction_interval_seconds,
+        run_capture_reprocess=memory_service.run_capture_reprocess,
+        capture_reprocess_interval_seconds=(
+            settings.capture_reprocess_interval_seconds
+        ),
         token_verifier=StaticTokenVerifier(principals),
         auth=AuthSettings(
             issuer_url=settings.auth_issuer_url,
@@ -326,6 +375,7 @@ def create_memory_mcp_server(
                 {
                     "status": "unhealthy",
                     "maintenance": server.maintenance_health.snapshot(),
+                    "capture_reprocess": server.capture_reprocess_health.snapshot(),
                 },
                 status_code=503,
             )
@@ -337,6 +387,7 @@ def create_memory_mcp_server(
                 "mcp_path": settings.mcp_path,
                 "storage": "postgresql",
                 "maintenance": server.maintenance_health.snapshot(),
+                "capture_reprocess": server.capture_reprocess_health.snapshot(),
             }
         )
 
@@ -383,6 +434,67 @@ async def _run_maintenance_loop(
                 _LOGGER,
                 logging.ERROR,
                 "memory.maintenance.failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            delay = interval_seconds
+        if stop_event.is_set():
+            break
+        if delay == 0:
+            await asyncio.sleep(0)
+            continue
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        except TimeoutError:
+            pass
+
+
+# capture-reprocess 续批软上限与退避秒数；capture 时效性高于 maintenance，
+# 默认轮询间隔更短，积压时连续续批的软上限也更大。
+_CAPTURE_REPROCESS_HAS_MORE_SOFT_LIMIT = 16
+_CAPTURE_REPROCESS_HAS_MORE_BACKOFF_SECONDS = 1
+
+
+async def _run_capture_reprocess_loop(
+    operation: Callable[[], CaptureReprocessResult],
+    *,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+    health: MaintenanceHealth | None = None,
+) -> None:
+    """周期性处理 PENDING capture 行，异常不影响 MCP 服务。
+
+    与 ``_run_maintenance_loop`` 同构：每轮成功且 ``has_more`` 时立即续批，
+    超过 ``_CAPTURE_REPROCESS_HAS_MORE_SOFT_LIMIT`` 后插入
+    ``_CAPTURE_REPROCESS_HAS_MORE_BACKOFF_SECONDS`` 短延迟防紧密循环；
+    异常只记录和降级健康状态，不向外传播。
+    """
+
+    consecutive_has_more = 0
+    while not stop_event.is_set():
+        try:
+            result = await asyncio.to_thread(operation)
+            if health is not None:
+                health.observe_success(result)
+            if result.has_more:
+                consecutive_has_more += 1
+                delay = (
+                    0
+                    if consecutive_has_more
+                    <= _CAPTURE_REPROCESS_HAS_MORE_SOFT_LIMIT
+                    else _CAPTURE_REPROCESS_HAS_MORE_BACKOFF_SECONDS
+                )
+            else:
+                consecutive_has_more = 0
+                delay = interval_seconds
+        except Exception as exc:
+            if health is not None:
+                health.observe_failure(exc)
+            consecutive_has_more = 0
+            log_event(
+                _LOGGER,
+                logging.ERROR,
+                "memory.capture.reprocess.failed",
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )

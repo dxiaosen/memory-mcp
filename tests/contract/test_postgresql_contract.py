@@ -132,6 +132,8 @@ def test_postgresql_repository_exposes_the_memory_repository_contract() -> None:
         "get_history",
         "get_capture",
         "commit_capture",
+        "commit_capture_enqueue",
+        "list_pending_captures",
         "list_reviews",
         "get_review",
         "resolve_review",

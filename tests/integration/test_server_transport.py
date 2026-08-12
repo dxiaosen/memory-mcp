@@ -20,6 +20,7 @@ from memory_mcp.core import (
     AssertionKind,
     ExpressionBasis,
     MemoryRelationPolicy,
+    MemoryService,
     PrincipalContext,
 )
 from memory_mcp.core.adapters.in_memory import InMemoryMemoryRepository
@@ -135,9 +136,11 @@ def _running_server(
     *,
     extractor: FakeCandidateExtractor,
     memory_service=None,
-) -> Iterator[str]:
+    capture_enqueue_enabled: bool = False,
+) -> Iterator[tuple[str, MemoryService]]:
     port = _free_port()
     settings = _settings(port)
+    settings.capture_enqueue_enabled = capture_enqueue_enabled
     service = memory_service or create_memory_service(
         InMemoryMemoryRepository(),
         [GeneralWorkProfile()],
@@ -176,7 +179,10 @@ def _running_server(
         thread.join(timeout=5)
         raise RuntimeError("Memory MCP test server did not become healthy")
     try:
-        yield f"http://{settings.host}:{settings.port}{settings.mcp_path}"
+        yield (
+            f"http://{settings.host}:{settings.port}{settings.mcp_path}",
+            service,
+        )
     finally:
         uvicorn_server.should_exit = True
         thread.join(timeout=10)
@@ -215,7 +221,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
     try:
         with _running_server(
             extractor=first_extractor,
-        ) as url:
+        ) as (url, _service):
             unauthenticated = httpx.post(
                 url,
                 json={},
@@ -526,7 +532,7 @@ def test_remote_transport_auth_schema_capture_and_governance() -> None:
 
 def test_remote_transport_uses_principal_default_when_profile_is_omitted() -> None:
     extractor = _extractor()
-    with _running_server(extractor=extractor) as url:
+    with _running_server(extractor=extractor) as (url, _service):
 
         async def call_without_profile(session: ClientSession) -> None:
             event = _event()
@@ -585,7 +591,7 @@ def test_remote_transport_memory_relation_scopes_isolation_and_history() -> None
     with _running_server(
         extractor=FakeCandidateExtractor(),
         memory_service=service,
-    ) as url:
+    ) as (url, _service):
 
         async def link_and_read(session: ClientSession):
             extra_identity = await session.call_tool(
@@ -770,7 +776,10 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
                 assert content not in completed.stderr
         return json.loads(completed.stdout)
 
-    with _running_server(extractor=extractor) as url:
+    with _running_server(
+        extractor=extractor,
+        capture_enqueue_enabled=True,
+    ) as (url, service):
         codex_before = handle(
             url,
             _TOKEN_A_AGENT_A,
@@ -795,22 +804,11 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
                 "last_assistant_message": "好的，以后默认使用表格。",
             },
         )
+        # Stop hook 入队 capture（毫秒级返回，无 warning）。
         assert codex_after == {}
 
-        # Phase 1: Stop hook 不再捕获，模型自主调用 capture_completed_turn。
-        # 这里模拟模型在 codex 轮结束后直接调用 MCP 工具捕获。
-        def codex_capture(session: ClientSession):
-            return session.call_tool(
-                "capture_completed_turn",
-                arguments={
-                    "conversation_id": "codex-session",
-                    "turn_id": "codex-turn-1",
-                    "user_input": "以后项目周报默认用表格",
-                    "final_output": "好的，以后默认使用表格。",
-                },
-            )
-
-        anyio.run(_with_session, url, _TOKEN_A_AGENT_A, codex_capture)
+        # worker 异步抽取 codex 轮捕获的记忆。
+        service.run_capture_reprocess()
 
         claude_recall = handle(
             url,
@@ -840,9 +838,7 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
         )
         generic_context = generic_recall["hookSpecificOutput"]["additionalContext"]
         assert "项目周报默认使用表格" in generic_context
-        # Phase 1: BeforeRun 不再写 outbox 状态文件。
-        assert list((generic_cwd / ".memory-mcp/hooks").glob("*.json")) == []
-
+        # BeforeRun 写 TurnState（prompt 暂存），AfterRun 入队后删除。
         generic_after = handle(
             url,
             _TOKEN_A_AGENT_B,
@@ -854,23 +850,12 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
                 "final_output": "应该继续使用表格。",
             },
         )
+        # Stop hook 入队 capture，无 warning；入队后删本地暂存。
         assert generic_after == {}
-        # Phase 1: Stop hook 不再写 outbox，glob 为空。
         assert list((generic_cwd / ".memory-mcp/hooks").glob("*.json")) == []
 
-        # Phase 1: 模型自主调用 capture 模拟 generic 轮捕获。
-        def generic_capture(session: ClientSession):
-            return session.call_tool(
-                "capture_completed_turn",
-                arguments={
-                    "conversation_id": "generic-conversation",
-                    "turn_id": "generic-run-1",
-                    "user_input": "以后项目周报默认用表格，项目周报应该使用什么格式？",
-                    "final_output": "应该继续使用表格。",
-                },
-            )
-
-        anyio.run(_with_session, url, _TOKEN_A_AGENT_B, generic_capture)
+        # worker 抽取 generic 轮捕获的记忆。
+        service.run_capture_reprocess()
 
         isolated = handle(
             url,
@@ -884,3 +869,60 @@ def test_agent_hook_adapter_cross_host_transport_and_owner_isolation(
             },
         )
         assert isolated == {}
+
+
+def test_capture_enqueue_returns_pending_then_worker_completes() -> None:
+    """capture_enqueue_enabled=True 时 capture 返回 pending，worker 跑完后能 recall。
+
+    验证异步队列路径：capture_completed_turn 毫秒级返回 status=pending，
+    手动触发 worker 后记忆落库且 recall 能命中。
+    """
+
+    extractor = _extractor()
+    with _running_server(
+        extractor=extractor,
+        capture_enqueue_enabled=True,
+    ) as (url, service):
+        captured = anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_A,
+            lambda session: session.call_tool(
+                "capture_completed_turn",
+                arguments=_event(),
+            ),
+        )
+        payload = _payload(captured)
+        assert payload["ok"] is True
+        assert payload["status"] == "pending"
+        assert payload["replayed"] is False
+        assert payload["summary"]["auto_saved_count"] == 0
+        assert payload["summary"]["pending_count"] == 0
+
+        # worker 还没跑，recall 不应命中
+        before = anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_A,
+            lambda session: session.call_tool(
+                "recall_memory",
+                arguments={"query": "项目周报应该使用什么格式？"},
+            ),
+        )
+        assert len(_payload(before)["items"]) == 0
+
+        # 手动触发 worker 抽取
+        service.run_capture_reprocess()
+
+        after = anyio.run(
+            _with_session,
+            url,
+            _TOKEN_A_AGENT_A,
+            lambda session: session.call_tool(
+                "recall_memory",
+                arguments={"query": "项目周报应该使用什么格式？"},
+            ),
+        )
+        items = _payload(after)["items"]
+        assert len(items) >= 1
+        assert items[0]["subject"] == "weekly-report"

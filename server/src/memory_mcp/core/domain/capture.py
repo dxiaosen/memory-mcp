@@ -64,6 +64,7 @@ class ExpressionBasis(StrEnum):
 class CaptureStatus(StrEnum):
     """一次会话轮次捕获的持久化处理状态。"""
 
+    PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
     REPROCESS_REQUIRED = "reprocess_required"
@@ -524,7 +525,12 @@ class CaptureResult:
                 "event_id, contract_version, and payload_fingerprint "
                 "must be supplied together"
             )
-        if self.status is CaptureStatus.COMPLETED:
+        if self.status is CaptureStatus.PENDING:
+            if self.failure_code is not None:
+                raise ValueError("pending capture cannot have failure_code")
+            if self.outcomes:
+                raise ValueError("pending capture cannot contain outcomes")
+        elif self.status is CaptureStatus.COMPLETED:
             if self.failure_code is not None:
                 raise ValueError("completed capture cannot have failure_code")
         else:
@@ -532,3 +538,31 @@ class CaptureResult:
                 raise ValueError("failed capture requires failure_code")
             if self.outcomes:
                 raise ValueError("failed capture cannot contain outcomes")
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureReprocessResult:
+    """一轮 worker 异步抽取批次的结果计数。
+
+    由 ``CaptureService.run_capture_reprocess`` 返回，供 ``app.py`` 的
+    capture-reprocess 后台循环像 maintenance loop 一样据 ``has_more`` 续批。
+    """
+
+    processed_count: int
+    completed_count: int
+    reprocess_required_count: int
+    failed_count: int
+    has_more: bool
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "processed_count",
+            "completed_count",
+            "reprocess_required_count",
+            "failed_count",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if not isinstance(self.has_more, bool):
+            raise ValueError("has_more must be a boolean")
