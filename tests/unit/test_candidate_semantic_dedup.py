@@ -622,3 +622,299 @@ def test_semantic_replacement_fallback_triggers_on_revised_judgment() -> None:
     active = [m for m in service.list_memories(_PRINCIPAL)]
     assert len(active) == 1
     assert active[0].item.memory_id == original_id
+
+
+def test_incremental_expansion_triggers_replacement() -> None:
+    """用户"增加…关注"增量扩展已有判断 -> replacement，而非降 pending。
+
+    覆盖生产漏洞（B 轮 6cb78316）：用户说"对于出海跑通的判断标准，增加对于
+    增长回落点的关注"，这是对既有判断的增量修订——旧判断应被扩展后的新版本
+    supersede。但"增加…关注"不命中原 `_EXPLICIT_REPLACEMENT` 词表 ->
+    `_is_explicit_replacement`=False -> `_resolve_semantic_target` 走非替换分支
+    -> `semantic_lifecycle_conflict` 降 pending，用户修订无法落地。
+    """
+
+    original_content = "出海跑通判断标准：重点看海外增速"
+    # candidate content 含"增加…关注"——命中扩充后的 _EXPLICIT_REPLACEMENT。
+    expanded_content = "出海跑通的判断标准增加对增长回落点的关注：重点看海外收入是否出现回落"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 original 余弦相似度 1.0，超 replacement fallback 阈值 0.60。
+        expanded_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="oversea-passthrough-standard",
+            memory_type="research_decision",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    original_memories = service.list_memories(_PRINCIPAL)
+    assert len(original_memories) == 1
+    original_id = original_memories[0].item.memory_id
+
+    # 用户增量扩展：source_expression 含"增加…关注"（命中扩充词表），
+    # 且是 user 消息逐字子串（provenance 校验）。
+    expansion_user_msg = "对于出海跑通的判断标准，增加对于增长回落点的关注"
+    extractor.proposals = (
+        candidate_proposal(
+            expansion_user_msg,
+            subject="oversea-passthrough-standard-expanded",
+            memory_type="research_decision",
+            content=expanded_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{expansion_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=expansion_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # 应生成 replacement（增量扩展命中 _EXPLICIT_REPLACEMENT），而非 pending。
+    replacement_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.AUTO_SAVE
+        and o.reason_code == "semantic_explicit_replacement"
+        and o.memory_id == original_id
+    ]
+    assert len(replacement_outcomes) == 1
+    pending_outcomes = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.PENDING
+    ]
+    assert len(pending_outcomes) == 0
+    # 旧判断被 superseded，不新增第二条 active。
+    active = service.list_memories(_PRINCIPAL)
+    assert len(active) == 1
+    assert active[0].item.memory_id == original_id
+
+
+def test_strong_match_overrides_ambiguous_margin() -> None:
+    """replacement fallback：top1 强匹配（>=0.75）时即使 margin 不足也替换。
+
+    覆盖生产漏洞（C 轮 f6e287b7）：用户复合修订被抽成一条涵盖多个子判断的
+    超长 candidate，与两条相近记忆的 top1-top2 margin 不足 0.08 ->
+    `ambiguous_semantic_replacement_target` 降 pending，修订无法落地。
+    修复后：top1 相似度达强匹配阈值（0.75）时，top2 仅是同主题相关判断、
+    不构成真歧义，允许替换 top1。
+    """
+
+    target_content = "出海跑通判断标准：重点看海外收入的回落点"
+    sibling_content = "出海跑通判断标准：海外增速不是唯一指标"
+    # candidate：含"调整"（命中 _EXPLICIT_REPLACEMENT），语义与 target 高度重叠。
+    revised_content = "用户调整了出海跑通判断标准：海外部分重点看收入回落点而非增速"
+    vectors = {
+        # target 与 candidate 共用向量 -> 余弦相似度 1.0（>=0.75 强匹配）。
+        target_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # sibling 与 candidate 相似度 0.93：margin 0.07 < 0.08，但 top1=1.0 >= 0.75。
+        # 构造：sibling = 0.93*e1 + 0.367*e2，归一化后与 e1 夹角余弦=0.93。
+        sibling_content: (0.93, 0.367, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 先建两条同 type 的 active 记忆。
+    extractor.proposals = (
+        candidate_proposal(
+            target_content,
+            subject="oversea-standard-decline-point",
+            memory_type="research_decision",
+            content=target_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+        candidate_proposal(
+            sibling_content,
+            subject="oversea-standard-growth-speed",
+            memory_type="research_decision",
+            content=sibling_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t1",
+            content=f"[user]\n{target_content}。{sibling_content}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=f"{target_content}。{sibling_content}",
+                    message_id="message-t1",
+                ),
+            ),
+        ),
+    )
+    assert len(service.list_memories(_PRINCIPAL)) == 2
+    target_id = service.list_memories(_PRINCIPAL)[0].item.memory_id
+
+    # 用户明确修订（含"调整"），语义与 target 高度重叠（sim=1.0），sibling 干扰（0.93）。
+    revised_user_msg = "我调整下出海跑通的判断标准，海外部分重点看收入回落点"
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject="oversea-standard-revised",
+            memory_type="research_decision",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # top1=1.0 >= 0.75（强匹配）-> 即使 margin 0.07 < 0.08 也替换，不降 pending。
+    pending_outcomes = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.PENDING
+    ]
+    assert len(pending_outcomes) == 0
+    replacement_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.AUTO_SAVE
+        and o.reason_code == "semantic_explicit_replacement"
+    ]
+    assert len(replacement_outcomes) == 1
+    assert replacement_outcomes[0].memory_id == target_id
+
+
+def test_ambiguous_margin_below_strong_match_still_pending() -> None:
+    """replacement fallback：top1 未达强匹配（<0.75）且 margin 不足 -> 仍降 pending。
+
+    对照测试：确认 strong-match 豁免没有过度放松——top1 只刚过 fallback 阈值、
+    与 top2 接近时仍保守判歧义降 pending，交用户确认。
+    """
+
+    target_content = "出海跑通判断标准 A 版本"
+    sibling_content = "出海跑通判断标准 B 版本"
+    revised_content = "用户调整了出海跑通的判断标准"
+    vectors = {
+        # target / sibling 与 candidate 相似度都 ~0.70（<0.75 强匹配，>=0.60 fallback）。
+        target_content: (0.7, 0.714, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        sibling_content: (0.68, 0.733, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            target_content,
+            subject="oversea-standard-a",
+            memory_type="research_decision",
+            content=target_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+        candidate_proposal(
+            sibling_content,
+            subject="oversea-standard-b",
+            memory_type="research_decision",
+            content=sibling_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t1",
+            content=f"[user]\n{target_content}。{sibling_content}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=f"{target_content}。{sibling_content}",
+                    message_id="message-t1",
+                ),
+            ),
+        ),
+    )
+    assert len(service.list_memories(_PRINCIPAL)) == 2
+
+    revised_user_msg = "我调整下出海跑通的判断标准"
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject="oversea-standard-c",
+            memory_type="research_decision",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # top1~0.70 < 0.75、margin ~0.02 < 0.08 -> 仍判歧义降 pending。
+    pending_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.PENDING
+        and o.reason_code == "ambiguous_semantic_replacement_target"
+    ]
+    assert len(pending_outcomes) == 1
+    replacement_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.AUTO_SAVE
+        and o.reason_code == "semantic_explicit_replacement"
+    ]
+    assert len(replacement_outcomes) == 0

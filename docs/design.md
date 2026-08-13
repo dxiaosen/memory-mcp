@@ -654,7 +654,12 @@ real_holding/transaction_instruction。`RegexSensitiveContentGuard.from_config` 
 Profile `semantic_dedup_threshold` 声明）。对 `_is_explicit_replacement(candidate)` 且字面
 未命中的情况，使用更宽松的 `_REPLACEMENT_FALLBACK_THRESHOLD=0.60` 查同 owner+profile+type
 旧 active memory（新旧判断措辞不同但仍语义相关），找到即作为 replacement 目标
-（recommend.md A2）；未找到或歧义则走新增/ambiguous。
+（recommend.md A2）；未找到或歧义则走新增/ambiguous。显式替换 fallback 用 top2+margin
+判定唯一明显目标：top1 达阈值但 top1-top2 < `_REPLACEMENT_FALLBACK_MARGIN=0.08` -> 歧义
+降 pending；**强匹配豁免**：top1 相似度 >= `_REPLACEMENT_STRONG_MATCH_THRESHOLD=0.75` 时，
+即使 margin 不足也允许替换——top2 多半是同主题的另一条相关判断、不构成"无法确定替谁"
+的真歧义，而用户已明确表达修订意图，错替 top1 的代价远低于降 pending 导致修订不落地。
+仅当 top1 刚过 fallback 阈值（< 0.75）且与 top2 接近时才保守判歧义。
 
 显式替换需同时满足：source_role=USER、expression_basis=EXPLICIT、assertion_kind∈
 {user_view, user_provided_fact}、`source_expression` **或** `content` 匹配
@@ -668,13 +673,18 @@ source_expression 原文摘录：
 改(?:一下|了)?|调整(?:下)?|修订|修正|更新|变更|
 不能只看[^。；！？]{0,20}?还要|
 不再关注|不在关注|不再看|去掉|删掉|移除|
+增加对?[^。；！？]{0,15}?关注|扩展对?[^。；！？]{0,15}?(?:关注|维度)|
+补充[^。；！？]{0,10}?(?:指标|维度|关注)|纳入[^。；！？]{0,10}?(?:指标|维度|关注)|
+新增对?[^。；！？]{0,15}?关注|
 \bno longer\b|\binstead\b|\breplace\b|\bnew default\b|
-\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b
+\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b|
+\badd\b.+\b(?:focus|attention|metric)\b|\bexpand\b.+\bto\b
 )
 ```
 
 即用户明确表达"当前值/默认值变更"或"修订/调整已有判断"（如"改成""换成""改一下""
-调整下""修订""不能只看…还要""不再关注"）。
+调整下""修订""不能只看…还要""不再关注"），以及**增量扩展**已有研究框架（"增加…
+关注""扩展…维度""补充…指标""纳入…关注"——旧判断被扩展后的新版本 supersede）。
 
 当 `find_current` 字面无命中、候选为 `auto_save` 时，追加一层语义去重：读 Profile
 `metadata_policies.semantic_dedup_threshold`，非 None 时计算候选嵌入并查

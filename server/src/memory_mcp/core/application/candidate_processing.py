@@ -60,6 +60,10 @@ from memory_mcp.core.support import log_event
 # 加 top1-top2 margin 约束，避免误伤独立 thesis（宁可 Pending 不替错）。
 _REPLACEMENT_FALLBACK_THRESHOLD = 0.60
 _REPLACEMENT_FALLBACK_MARGIN = 0.08
+# replacement fallback 歧义豁免：top1 达此阈值即视为强匹配（明显是真目标），
+# 即使 top1-top2 margin 不足也允许替换——top2 多半是同主题的另一条相关判断，
+# 不构成"无法确定替谁"的真歧义。低于此值、刚过 fallback 阈值时仍走 margin 歧义保护。
+_REPLACEMENT_STRONG_MATCH_THRESHOLD = 0.75
 
 # assistant 跨类型回声检测的保守默认阈值：当 candidate 所属 memory_type 未配
 # semantic_dedup_threshold 时用此值。回声是高度重复，0.90 足够保守不会误杀
@@ -72,8 +76,14 @@ _EXPLICIT_REPLACEMENT = re.compile(
     r"改(?:一下|了)?|调整(?:下)?|修订|修正|更新|变更|"
     r"不能只看[^。；！？]{0,20}?还要|"
     r"不再关注|不在关注|不再看|去掉|删掉|移除|"
+    # 增量扩展/框架调整：在既有判断上增加关注点、扩展维度——属于对已有研究框架
+    # 的修订，旧判断被扩展后的新版本 supersede，与"改成/调整"同列。
+    r"增加对?[^。；！？]{0,15}?关注|扩展对?[^。；！？]{0,15}?(?:关注|维度)|"
+    r"补充[^。；！？]{0,10}?(?:指标|维度|关注)|纳入[^。；！？]{0,10}?(?:指标|维度|关注)|"
+    r"新增对?[^。；！？]{0,15}?关注|"
     r"\bno longer\b|\binstead\b|\breplace\b|\bnew default\b|"
-    r"\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b"
+    r"\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b|"
+    r"\badd\b.+\b(?:focus|attention|metric)\b|\bexpand\b.+\bto\b"
     r")",
     re.IGNORECASE,
 )
@@ -941,11 +951,16 @@ class CandidateProcessor:
             return admission
         if is_explicit_replacement and top2 is not None:
             if top1[0] - top2[0] < _REPLACEMENT_FALLBACK_MARGIN:
-                # top1 和 top2 太接近，无法确定唯一替换目标 -> 交用户确认。
-                return AdmissionOutcome(
-                    AdmissionDecision.PENDING,
-                    "ambiguous_semantic_replacement_target",
-                )
+                # top1 相似度足够高（强匹配）时，即使 margin 不足也允许替换：
+                # top2 多半是同主题的另一条相关判断，不构成"无法确定替谁"的真歧义。
+                # 仅当 top1 刚过 fallback 阈值、与 top2 接近时才保守降 pending。
+                if top1[0] < _REPLACEMENT_STRONG_MATCH_THRESHOLD:
+                    # top1 和 top2 太接近，无法确定唯一替换目标 -> 交用户确认。
+                    return AdmissionOutcome(
+                        AdmissionDecision.PENDING,
+                        "ambiguous_semantic_replacement_target",
+                    )
+                # top1 >= 强匹配阈值：允许替换，不因相近 top2 判歧义。
         target = top1[1]
         if target.item.memory_id in lifecycle_target_ids:
             return AdmissionOutcome(
