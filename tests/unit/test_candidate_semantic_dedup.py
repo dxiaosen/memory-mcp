@@ -20,6 +20,7 @@ from memory_mcp.core import (
     AdmissionDecision,
     AssertionKind,
     EvidenceSourceType,
+    ExpressionBasis,
     MemoryService,
     MessageRole,
     PrincipalContext,
@@ -539,3 +540,85 @@ def test_assistant_cross_type_echo_below_threshold_not_discarded() -> None:
         and o.reason_code == "assistant_cross_type_echo"
     ]
     assert len(cross_type_discard) == 0
+
+
+def test_semantic_replacement_fallback_triggers_on_revised_judgment() -> None:
+    """用户修订已有判断、model 抽的 subject 不同、语义近似 -> replacement fallback。
+
+    覆盖生产漏洞：用户说"改一下/调整下"修订已有判断，但 model 抽的 subject 是
+    新的（带"（修订）"后缀或换了措辞），字面 find_current 查不到。修复后：
+    content 含修订意图词（"修订了"）-> _is_explicit_replacement 命中 ->
+    semantic replacement fallback 用 0.60 宽松阈值查到语义近似的原判断 ->
+    生成 replacement，原判断 superseded，而非新增第二条 active。
+    """
+
+    original_content = "示例公司出海是结构性的，海外占比持续提升"
+    revised_content = "用户修订了示例公司出海判断标准：不能只看海外增速，还要看海外收入和多 IP 贡献"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 original 余弦相似度 1.0，超 replacement fallback 阈值 0.60。
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 1) 用户原始判断 -> auto_save。
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="example-company-oversea-thesis",
+            memory_type="thesis",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    original_memories = service.list_memories(_PRINCIPAL)
+    assert len(original_memories) == 1
+    original_id = original_memories[0].item.memory_id
+
+    # 2) 用户修订，model 抽的 subject 不同、content 含"修订了" -> replacement。
+    # source_expression 必须是 user 消息的逐字子串（provenance 校验）。
+    revised_user_msg = (
+        "我想改一下最开始那个判断。以后我判断示例公司出海不能只看海外增速，"
+        "还要看多 IP 贡献"
+    )
+    extractor.proposals = (
+        candidate_proposal(
+            "以后我判断示例公司出海不能只看海外增速，还要看多 IP 贡献",
+            subject="example-company-oversea-thesis-revised",  # 字面不同
+            memory_type="thesis",
+            content=revised_content,  # 含"修订了...判断标准"
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    revised_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[user]\n{revised_user_msg}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=revised_user_msg,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, revised_turn)
+    # 应生成 replacement，指向原判断 memory_id，reason_code=semantic_explicit_replacement。
+    replacement_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.AUTO_SAVE
+        and o.reason_code == "semantic_explicit_replacement"
+        and o.memory_id == original_id
+    ]
+    assert len(replacement_outcomes) == 1
+    # 不应新增第二条 active（原判断被 superseded）。
+    active = [m for m in service.list_memories(_PRINCIPAL)]
+    assert len(active) == 1
+    assert active[0].item.memory_id == original_id

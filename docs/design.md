@@ -652,21 +652,29 @@ real_holding/transaction_instruction。`RegexSensitiveContentGuard.from_config` 
 
 字面 subject 未命中时，`_resolve_semantic_target` 尝试基于 embedding 的语义去重（阈值由
 Profile `semantic_dedup_threshold` 声明）。对 `_is_explicit_replacement(candidate)` 且字面
-未命中的情况，使用更宽松的 `_REPLACEMENT_FALLBACK_THRESHOLD=0.45` 查同 owner+profile+type
+未命中的情况，使用更宽松的 `_REPLACEMENT_FALLBACK_THRESHOLD=0.60` 查同 owner+profile+type
 旧 active memory（新旧判断措辞不同但仍语义相关），找到即作为 replacement 目标
 （recommend.md A2）；未找到或歧义则走新增/ambiguous。
 
 显式替换需同时满足：source_role=USER、expression_basis=EXPLICIT、assertion_kind∈
-{user_view, user_provided_fact}、原文匹配 `_EXPLICIT_REPLACEMENT` 正则（`candidate_processing.py`）：
+{user_view, user_provided_fact}、`source_expression` **或** `content` 匹配
+`_EXPLICIT_REPLACEMENT` 正则（`candidate_processing.py`）。同时检查 content 是因为
+修订意图词常出现在 model 生成的 content 概述里（"用户修订了…判断标准"），而非
+source_expression 原文摘录：
 
 ```regex
-(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|
+(?:
+不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|
+改(?:一下|了)?|调整(?:下)?|修订|修正|更新|变更|
+不能只看[^。；！？]{0,20}?还要|
+不再关注|不在关注|不再看|去掉|删掉|移除|
 \bno longer\b|\binstead\b|\breplace\b|\bnew default\b|
-\bchange\b.+\bto\b)
+\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b
+)
 ```
 
-即用户须明确表达"当前值/默认值变更"（如"改成""换成""以后用""no longer""replace""new default"），
-模糊的"改一下"不触发。
+即用户明确表达"当前值/默认值变更"或"修订/调整已有判断"（如"改成""换成""改一下""
+调整下""修订""不能只看…还要""不再关注"）。
 
 当 `find_current` 字面无命中、候选为 `auto_save` 时，追加一层语义去重：读 Profile
 `metadata_policies.semantic_dedup_threshold`，非 None 时计算候选嵌入并查

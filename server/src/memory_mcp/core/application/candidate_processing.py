@@ -67,9 +67,14 @@ _REPLACEMENT_FALLBACK_MARGIN = 0.08
 _ASSISTANT_ECHO_DEFAULT_THRESHOLD = 0.90
 
 _EXPLICIT_REPLACEMENT = re.compile(
-    r"(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
+    r"(?:"
+    r"不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
+    r"改(?:一下|了)?|调整(?:下)?|修订|修正|更新|变更|"
+    r"不能只看[^。；！？]{0,20}?还要|"
+    r"不再关注|不在关注|不再看|去掉|删掉|移除|"
     r"\bno longer\b|\binstead\b|\breplace\b|\bnew default\b|"
-    r"\bchange\b.+\bto\b)",
+    r"\bchange\b.+\bto\b|\brevise\b|\bupdate\b|\bmodify\b"
+    r")",
     re.IGNORECASE,
 )
 # 操作指令模式：不要使用/读取/调用/打开工具、文件、skill、memory、联网。
@@ -1106,14 +1111,24 @@ def _normalize_assertion_kind(
 
 
 def _is_explicit_replacement(candidate: Candidate) -> bool:
-    """判断候选是否构成对已有记忆的显式替换：必须由用户明确表达当前值/默认值变更。"""
+    """判断候选是否构成对已有记忆的显式替换：必须由用户明确表达当前值/默认值变更。
 
-    return (
-        candidate.source_role is MessageRole.USER
-        and candidate.expression_basis is ExpressionBasis.EXPLICIT
-        and candidate.assertion_kind
-        in {AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT}
-        and _EXPLICIT_REPLACEMENT.search(candidate.source_expression) is not None
+    修订意图词（\"改一下/调整下/修订/不能只看...还要\"）可能出现在 model 生成的
+    content 概述里（\"用户修订了...判断标准\"），而非 source_expression 原文摘录，
+    因此同时检查 content 与 source_expression。
+    """
+
+    if (
+        candidate.source_role is not MessageRole.USER
+        or candidate.expression_basis is not ExpressionBasis.EXPLICIT
+        or candidate.assertion_kind
+        not in {AssertionKind.USER_VIEW, AssertionKind.USER_PROVIDED_FACT}
+    ):
+        return False
+    return any(
+        _EXPLICIT_REPLACEMENT.search(text) is not None
+        for text in (candidate.source_expression, candidate.content)
+        if text
     )
 
 
