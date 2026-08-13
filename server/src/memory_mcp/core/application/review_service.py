@@ -121,9 +121,18 @@ class ReviewService:
         # 用该 owner 做 find_current，避免误命中个人同主题记忆。
         if review.candidate.owner_id != principal.owner_id:
             target_owner_id = review.candidate.owner_id
+        # lookup_principal 的可见 owner 集合决定 find_current 的查询范围。
+        # 当 target 是团队 owner（与个人 owner 不同）时，必须把可见集合收窄为
+        # 仅 target 自己——否则成员个人同 subject+type 的记忆会因 visible 仍含
+        # 个人 owner 而被 find_current 命中，团队候选被关联到个人记忆、team owner
+        # 下无记忆落地（其他成员召回时看不到团队共识）。
+        if target_owner_id != principal.owner_id:
+            lookup_visible = (target_owner_id,)
+        else:
+            lookup_visible = principal.visible_owner_ids
         lookup_principal = PrincipalContext(
             target_owner_id,
-            tuple(oid for oid in principal.visible_owner_ids if oid != target_owner_id),
+            lookup_visible,
         )
         current_scope = self._repository.find_current(
             lookup_principal,

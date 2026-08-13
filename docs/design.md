@@ -752,6 +752,13 @@ stateDiagram-v2
 | `reject_pending_memory` | reject：标记 rejected，幂等 |
 | 到期 | pending 超 30 天（`PENDING_REVIEW_RETENTION`）或 valid_until 到达 → expired |
 
+`confirm_review` 的 `find_current` 查询范围由 lookup principal 的可见 owner 集合
+决定。当目标 owner 是团队 owner（手动 `promote_to_team` 或团队自动提取候选的
+candidate.owner 为团队 owner）时，可见集合收窄为**仅团队 owner 自己**——不带入
+confirm 者的个人 owner，避免成员个人同 subject+type 的记忆被 `find_current` 误命中，
+导致团队候选关联到个人记忆、team owner 下无记忆落地（其他成员召回时看不到团队共识）。
+个人候选的可见集合保持 `visible_owner_ids` 全集（个人 + 其团队）。
+
 ### 8.4 Revoke 与到期
 
 revoke 和 replacement 都不物理删除，保留可追溯 history。到期采用两阶段：读取谓词
