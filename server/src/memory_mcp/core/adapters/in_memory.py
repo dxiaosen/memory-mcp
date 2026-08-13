@@ -688,16 +688,34 @@ class InMemoryMemoryRepository:
             )
             # 幂等：同 subject+type 的 pending 或 confirmed 不重复创建。
             # 扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。
+            # 但 confirmed review 指向的 memory 若已被 revoke，其唯一索引槽位已释放，
+            # 与个人记忆 find_current 只查 active 对齐：已 revoke 的团队记忆不应挡住
+            # 重建，否则一次撤销后相同判断永远无法再升级为团队共识。
             # 注：生产 PostgreSQL 版本额外按 embedding 余弦距离做语义去重，
             # in_memory 版本因 Candidate 无 embedding 字段只做精确 subject 匹配。
-            already_exists = any(
-                review.owner_id == team_owner_id
-                and review.candidate.subject == subject
-                and review.candidate.memory_type == memory_type
-                and review.status
-                in (ReviewStatus.PENDING, ReviewStatus.CONFIRMED)
-                for review in self._reviews.values()
-            )
+            already_exists = False
+            for review in self._reviews.values():
+                if (
+                    review.owner_id != team_owner_id
+                    or review.candidate.subject != subject
+                    or review.candidate.memory_type != memory_type
+                    or review.status not in (ReviewStatus.PENDING, ReviewStatus.CONFIRMED)
+                ):
+                    continue
+                if review.status is ReviewStatus.PENDING:
+                    already_exists = True
+                    break
+                # confirmed：仅当指向的 memory 仍 active 才视为已存在。
+                resolved_id = review.resolved_memory_id
+                if resolved_id is not None:
+                    resolved = self._records.get(resolved_id)
+                    if (
+                        resolved is not None
+                        and resolved.current_revision.lifecycle_status
+                        is LifecycleStatus.ACTIVE
+                    ):
+                        already_exists = True
+                        break
             if already_exists:
                 continue
             confidence = round(unique_owners / len(members), 6)

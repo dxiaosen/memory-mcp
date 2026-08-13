@@ -425,7 +425,7 @@ reference，不参与授权。`current_request_principal()` 只根据已验证 M
 | 簇内字段 | subject/content 用确定性纯函数选择（频次优先 + 字典序兜底，跨进程可复现）；当簇内存在与主表达分叉的少数视角时，在 `save_rationale` 追加分歧摘要（引用成员 content 前 40 字符 + owner 标识） |
 | 产出 | 共性候选写入团队 owner 的 pending review；`TeamExtractionResult` 记录成员数/记忆数/簇数/候选数 |
 | 隔离 | 提取只读成员个人记忆、只写团队公共空间；不改变个人记忆 |
-| 幂等 | 同 subject+type 已有团队 pending **或 confirmed** 不重复创建；PG 版本额外按 embedding 余弦距离 < 0.05 检测语义重复。扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending |
+| 幂等 | 同 subject+type 已有团队 pending **或 confirmed** 不重复创建；PG 版本额外按 embedding 余弦距离 < 0.05 检测语义重复。扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。但 confirmed review 指向的 memory 若已被 revoke，唯一索引槽位已释放，与个人记忆 `find_current` 只查 active 对齐：不挡住重建，避免一次撤销后相同判断永远无法再升级为团队共识 |
 | 依赖向量 | 聚类用 embedding 相似度，未配置 provider 时该服务不产出候选但不影响主链路 |
 
 提取阶段不做 LLM 合成——原文保留在个人记忆里、分歧摘要在 rationale 给人审阅，人决定是否

@@ -2333,16 +2333,26 @@ def _extract_team_common(
         cluster_embedding = average_embedding([m["embedding"] for m in cluster])
         # 幂等：同 subject+type 的 pending 或 confirmed 不重复；并按 embedding 余弦相似度
         # 检测语义重复（距离 < 0.05 视为同义）。扩到 confirmed 防止一条共识被确认后、
-        # 成员继续写同样东西时又产出新 pending（确认时才撞 subject 槽位冲突，但垃圾已留）。
+        # 成员继续写同样东西时又产出新 pending。
+        # 但 confirmed review 指向的 memory 若已被 revoke，其唯一索引槽位已释放，
+        # 与个人记忆 find_current 只查 active 对齐：已 revoke 的团队记忆不应挡住
+        # 重建，否则一次撤销后相同判断永远无法再升级为团队共识。因此 confirmed 需
+        # LEFT JOIN memory_items 且仅当指向的 memory 仍 active 才视为已存在。
         existing = connection.execute(
             """
-            SELECT 1 FROM memory_reviews
-            WHERE owner_id = %s AND memory_type = %s
-              AND status IN ('pending', 'confirmed')
+            SELECT 1 FROM memory_reviews mr
+            LEFT JOIN memory_items mi ON mi.memory_id = mr.resolved_memory_id
+            WHERE mr.owner_id = %s AND mr.memory_type = %s
               AND (
-                  subject = %s
-                  OR (embedding IS NOT NULL
-                      AND embedding <=> %s::vector < 0.05)
+                  mr.status = 'pending'
+                  OR (mr.status = 'confirmed'
+                      AND mr.resolved_memory_id IS NOT NULL
+                      AND mi.lifecycle_status = 'active')
+              )
+              AND (
+                  mr.subject = %s
+                  OR (mr.embedding IS NOT NULL
+                      AND mr.embedding <=> %s::vector < 0.05)
               )
             """,
             (team_owner_id, memory_type, subject, _embedding_param(cluster_embedding)),
