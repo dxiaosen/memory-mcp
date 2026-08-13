@@ -191,6 +191,26 @@ class MemoryRepository(Protocol):
 
         ...
 
+    def find_assistant_echo(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> MemoryRecord | None:
+        """跨 memory_type 查 assistant 回声：同 owner+profile 的活动记忆里
+        （不限 memory_type）找余弦相似度最高且 >= threshold 的一条。
+
+        用于 assistant 源候选的跨类型回声检测：assistant 复述已有判断时，模型
+        可能把它抽成不同 memory_type 的新候选（如已有 risk，新抽 thesis），
+        同类型语义去重查不到。这里不限 memory_type，命中即视为回声，供调用方
+        discard。无嵌入或无命中返回 None。
+        """
+
+        ...
+
     def find_semantically_similar_top2(
         self,
         principal: PrincipalContext,

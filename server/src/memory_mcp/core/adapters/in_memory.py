@@ -224,6 +224,39 @@ class InMemoryMemoryRepository:
                 best = (similarity, record)
         return best[1] if best is not None else None
 
+    def find_assistant_echo(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> MemoryRecord | None:
+        """跨 memory_type 查 assistant 回声：不限 memory_type 的最高相似度命中。"""
+
+        query = tuple(embedding)
+        owner_ids = principal.visible_owner_ids
+        best: tuple[float, MemoryRecord] | None = None
+        for record in self._records.values():
+            if (
+                record.item.owner_id not in owner_ids
+                or record.item.profile_id != profile_id
+                or record.current_revision.lifecycle_status
+                is not LifecycleStatus.ACTIVE
+                or not _is_effective(record.current_revision, effective_at)
+            ):
+                continue
+            similarity = _cosine_similarity(
+                record.current_revision.embedding,
+                query,
+            )
+            if similarity >= threshold and (
+                best is None or similarity > best[0]
+            ):
+                best = (similarity, record)
+        return best[1] if best is not None else None
+
     def find_semantically_similar_top2(
         self,
         principal: PrincipalContext,

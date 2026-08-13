@@ -186,7 +186,9 @@ class InvestmentResearchProfile:
                 validity_days=365,
                 semantic_dedup_threshold=0.90,
             ),
-            "research_decision": MemoryMetadataPolicy(),
+            "research_decision": MemoryMetadataPolicy(
+                semantic_dedup_threshold=0.90,
+            ),
         }
     )
     timeline_relation_types: frozenset[str] = field(

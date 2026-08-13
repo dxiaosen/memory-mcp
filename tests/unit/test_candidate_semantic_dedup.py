@@ -342,6 +342,9 @@ def test_semantic_tool_restatement_with_different_subject_is_discarded() -> None
     assert discard[0].reason_code == "semantic_assistant_restatement"
     assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
     assert len(service.list_memories(_PRINCIPAL)) == 1
+
+
+def test_assistant_restatement_same_subject_near_duplicate_content_discarded() -> None:
     """非用户源（assistant）+ 字面 subject 相同 + content 归一不等价但语义近似 -> discard。
 
     覆盖 Case B：subject 完全相同，但 content 差几个字（归一化不等价也不包含），
@@ -404,3 +407,135 @@ def test_semantic_tool_restatement_with_different_subject_is_discarded() -> None
     }
     assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
     assert len(service.list_memories(_PRINCIPAL)) == 1
+
+
+def test_assistant_cross_type_echo_discarded() -> None:
+    """assistant 跨 memory_type 复述已有记忆 -> discard（assistant_cross_type_echo）。
+
+    覆盖生产漏洞：已有 risk「海外增速回落则打折」，assistant 复述后模型抽成
+    thesis「证伪条件」——subject 措辞不同 + memory_type 不同，同类型语义去重
+    查不到（find_semantically_similar 限定 memory_type），字面也不命中，
+    原 logic 直接进 Pending。修复后跨类型回声检测（find_assistant_echo）命中
+    -> discard，不进 Pending。
+    """
+
+    risk_content = "示例公司海外增速快速回落时出海判断要打折"
+    thesis_content = "示例公司出海判断的证伪条件是海外增速快速回落"
+    vectors = {
+        risk_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 risk_content 余弦相似度 1.0，跨类型回声阈值 0.92（thesis）命中。
+        thesis_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 1) 用户陈述 risk -> auto_save 一条 active。
+    extractor.proposals = (
+        candidate_proposal(
+            risk_content,
+            subject="example-company-oversea-discount-condition",
+            memory_type="risk",
+            content=risk_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(risk_content, turn_id="t1"))
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+    # 2) Assistant 复述，模型抽成 thesis（不同 memory_type + 不同 subject）-> discard。
+    extractor.proposals = (
+        candidate_proposal(
+            thesis_content,
+            subject="example-company-oversea-falsification",  # 字面不同
+            memory_type="thesis",  # 类型不同
+            content=thesis_content,
+            assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+            business_progress="monitoring",
+        ),
+    )
+    assistant_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[assistant]\n{thesis_content}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=thesis_content,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, assistant_turn)
+    discard = [
+        o for o in result.outcomes if o.decision is AdmissionDecision.DISCARD
+    ]
+    assert len(discard) == 1
+    assert discard[0].reason_code == "assistant_cross_type_echo"
+    # 不新增 Pending、不新增记忆。
+    assert len(service.list_pending_reviews(_PRINCIPAL)) == 0
+    assert len(service.list_memories(_PRINCIPAL)) == 1
+
+
+def test_assistant_cross_type_echo_below_threshold_not_discarded() -> None:
+    """跨类型回声未达阈值 -> 不 discard，正常走后续路径。
+
+    防止回声检测过严误杀独立判断：assistant 输出与已有记忆语义相似度低于
+    阈值时不应拦截。
+    """
+
+    risk_content = "示例公司海外增速快速回落时出海判断要打折"
+    independent_content = "示例公司国内渠道下沉到三四线城市是新增量"
+    vectors = {
+        risk_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 risk_content 余弦相似度 0.0，远低于阈值。
+        independent_content: (0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            risk_content,
+            subject="example-company-oversea-discount-condition",
+            memory_type="risk",
+            content=risk_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(risk_content, turn_id="t1"))
+
+    # assistant 输出独立判断（语义不相似）-> 不应被跨类型回声拦截。
+    extractor.proposals = (
+        candidate_proposal(
+            independent_content,
+            subject="example-company-domestic-channels",
+            memory_type="thesis",
+            content=independent_content,
+            assertion_kind=AssertionKind.SYSTEM_INFERENCE,
+            business_progress="monitoring",
+        ),
+    )
+    assistant_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[assistant]\n{independent_content}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.ASSISTANT,
+                content=independent_content,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, assistant_turn)
+    cross_type_discard = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.DISCARD
+        and o.reason_code == "assistant_cross_type_echo"
+    ]
+    assert len(cross_type_discard) == 0

@@ -61,6 +61,11 @@ from memory_mcp.core.support import log_event
 _REPLACEMENT_FALLBACK_THRESHOLD = 0.60
 _REPLACEMENT_FALLBACK_MARGIN = 0.08
 
+# assistant 跨类型回声检测的保守默认阈值：当 candidate 所属 memory_type 未配
+# semantic_dedup_threshold 时用此值。回声是高度重复，0.90 足够保守不会误杀
+# 独立判断，又能拦住 assistant 复述已有记忆换类型抽取的情况。
+_ASSISTANT_ECHO_DEFAULT_THRESHOLD = 0.90
+
 _EXPLICIT_REPLACEMENT = re.compile(
     r"(?:不再|不要再|改成|改为|换成|替换为|以后用|默认(?:改|换)|"
     r"\bno longer\b|\binstead\b|\breplace\b|\bnew default\b|"
@@ -728,6 +733,21 @@ class CandidateProcessor:
                 # 复述换了 subject 措辞就会绕过去重直接进 Pending，用户 confirm 后
                 # 变成第二条语义重复的 active。阈值由 Profile 的 metadata_policies
                 # 声明，None 表示该类型不启用。
+                if (
+                    candidate.source_role is MessageRole.ASSISTANT
+                    and self._is_cross_type_echo(principal, candidate)
+                ):
+                    # assistant 跨类型复述已有活动记忆（如已有 risk，新抽 thesis）
+                    # -> discard，不进 Pending、不合并（跨类型合并会语义错位）。
+                    outcomes.append(
+                        CaptureOutcome(
+                            candidate_id=candidate.candidate_id,
+                            decision=AdmissionDecision.DISCARD,
+                            reason_code="assistant_cross_type_echo",
+                        )
+                    )
+                    _lifecycle_duration += perf_counter() - _lifecycle_started_at
+                    continue
                 admission = self._resolve_semantic_target(
                     principal,
                     candidate,
@@ -824,6 +844,40 @@ class CandidateProcessor:
             principal,
             profile_id=candidate.profile_id,
             memory_type=candidate.memory_type,
+            embedding=embedding,
+            threshold=threshold,
+            effective_at=self._clock(),
+        )
+        return target is not None
+
+    def _is_cross_type_echo(
+        self,
+        principal: PrincipalContext,
+        candidate: Candidate,
+    ) -> bool:
+        """assistant 源候选是否跨 memory_type 复述已有活动记忆。
+
+        同类型语义去重（``_resolve_semantic_target`` / ``_is_assistant_restatement``）
+        只查同 memory_type，但 assistant 复述已有判断时模型可能把它抽成不同
+        类型的新候选（如已有 risk，新抽 thesis/research_question）。这里不限
+        memory_type 查余弦相似度，命中即视为回声。阈值取该类型 Profile 的
+        ``semantic_dedup_threshold``；未配时用一个保守默认（0.90），因为回声
+        是高度重复，0.90 足够保守不会误杀独立判断。
+        """
+
+        metadata_policy = self._profile_registry.metadata_policy(
+            candidate.profile_id,
+            candidate.memory_type,
+        )
+        threshold = metadata_policy.semantic_dedup_threshold
+        if threshold is None:
+            threshold = _ASSISTANT_ECHO_DEFAULT_THRESHOLD
+        embedding = self._materializer._compute_embedding(candidate.content)
+        if embedding is None:
+            return False
+        target = self._repository.find_assistant_echo(
+            principal,
+            profile_id=candidate.profile_id,
             embedding=embedding,
             threshold=threshold,
             effective_at=self._clock(),

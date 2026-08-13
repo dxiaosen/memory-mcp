@@ -684,8 +684,16 @@ Profile `semantic_dedup_threshold` 声明）。对 `_is_explicit_replacement(can
 避免 assistant/tool 复述换了 subject 措辞后绕过去重直接进 Pending、用户 confirm 后
 变成第二条语义重复的 active。未声明 threshold（如 general-work）、嵌入不可用、
 无命中时回退到原有新增路径。阈值由 Profile 按 memory_type 声明（投研 thesis/risk=0.92，
-evidence_claim/research_preference/research_question/ongoing_research=0.90），
+evidence_claim/research_preference/research_question/ongoing_research/research_decision=0.90），
 不硬编码于 Core。
+
+assistant 源候选在 `target is None`（字面 subject 无命中）时还走一层**跨类型回声检测**
+（`_is_cross_type_echo` -> `find_assistant_echo`）：不限 memory_type 查余弦相似度
+最高且 >= 阈值的活动记忆，命中即 discard（`assistant_cross_type_echo`）。覆盖同类型
+语义去重查不到的漏洞——assistant 复述已有判断时模型可能抽成不同 memory_type 的新候选
+（如已有 risk、新抽 thesis），跨类型查询兜底拦截。阈值取该类型 Profile 的
+`semantic_dedup_threshold`，未配时用保守默认 0.90。跨类型只做 discard、不做合并
+（risk 合并进 thesis 会语义错位）。
 
 ## 8. 生命周期与 Review
 
