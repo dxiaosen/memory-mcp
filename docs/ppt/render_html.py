@@ -445,8 +445,8 @@ def core_loop():
 
 # ===== P10 记忆数据模型（详细解释治理字段）=====
 def memory_model():
-    """记忆数据模型 = 五张表结构图。顶部横向主轴(items→1:N→revisions 虚线框=两层结构)，
-    下方三列附属表(evidence/reviews/relations)，表框自然高度+说明文字填空白。经 schema.sql 核实。"""
+    """记忆数据模型 = 六张表结构图。上区三表主轴(captures→items 1:N revisions，
+    对话→身份→版本)，下区三附属表(evidence/reviews/relations)。经 schema.sql 核实。"""
     def tbl(name, rows, accent, descs=None):
         """表框，自然高度。字段行：字段名(左)+解释(中,可选)+类型/PK/FK标签(右)。"""
         fr = ""
@@ -462,29 +462,29 @@ def memory_model():
             if desc:
                 fr += (f"<div style='display:flex;justify-content:space-between;align-items:center;gap:6px;"
                        f"padding:3px 10px;border-bottom:1px solid {C['vly']};font-family:monospace;'>"
-                       f"<span style='font-size:11.5px;color:{C['ink']};flex:0 0 auto;'>{fname}</span>"
+                       f"<span style='font-size:11px;color:{C['ink']};flex:0 0 auto;'>{fname}</span>"
                        f"<span style='font-size:8.5px;color:{C['gray']};line-height:1.25;flex:1;text-align:left;'>{desc}</span>"
                        f"<span style='flex:0 0 auto;'>{right}</span></div>")
             else:
                 fr += (f"<div style='display:flex;justify-content:space-between;align-items:center;"
                        f"padding:3px 10px;border-bottom:1px solid {C['vly']};font-family:monospace;'>"
-                       f"<span style='font-size:11.5px;color:{C['ink']};'>{fname}</span>"
+                       f"<span style='font-size:11px;color:{C['ink']};'>{fname}</span>"
                        f"<span>{right}</span></div>")
         return f"""
         <div style='border:1px solid {C['light']};border-radius:8px;overflow:hidden;background:#fff;flex:0 0 auto;'>
-          <div style='background:{accent};color:#fff;padding:5px 12px;font-size:12.5px;font-weight:800;font-family:monospace;'>{name}</div>
+          <div style='background:{accent};color:#fff;padding:5px 12px;font-size:12px;font-weight:800;font-family:monospace;'>{name}</div>
           {fr}
         </div>"""
 
-    def col(table_html, desc):
-        """下方附属表列：表(顶) + 说明文字(flex:1 填底)。"""
-        return f"""
-        <div style='flex:1;display:flex;flex-direction:column;'>
-          {table_html}
-          <div style='flex:1;margin-top:8px;font-size:10.5px;line-height:1.55;color:{C['mid']};'>{desc}</div>
-        </div>"""
-
-    # 五张表（经 schema.sql 核实字段名/类型/关系；上区两表带字段解释）
+    # 六张表（经 schema.sql 核实字段名/类型/关系；上区三表带字段解释）
+    cap_descs = {
+        "capture_id": "对话轮次 ID，写入链路源头",
+        "conversation_id": "会话 ID，跨轮幂等键",
+        "source_turn_id": "本轮 ID，Hook 传入",
+        "content": "用户/Agent 原话",
+        "status": "入队/抽取/失败",
+        "event_id": "幂等键，防重复入队",
+    }
     items_descs = {
         "memory_id": "记忆唯一 ID，跨版本不变——身份层",
         "owner_id": "归属身份（tenant:subject），隔离边界",
@@ -501,41 +501,65 @@ def memory_model():
         "assertion_kind": "断言来源：user_view/外部 fact/系统推断",
         "lifecycle_status": "本版本状态（与 items 独立，支持旧版归档）",
     }
+    cap_tbl = tbl("memory_captures", [
+        ("capture_id", "UUID", "PK"), ("conversation_id", "TEXT", ""),
+        ("source_turn_id", "TEXT", ""), ("content", "TEXT", ""),
+        ("status", "TEXT", ""), ("event_id", "TEXT", ""),
+    ], C["blue"], cap_descs)
     items_tbl = tbl("memory_items", [
-        ("memory_id", "UUID", "PK"), ("owner_id", "TEXT", ""), ("profile_id", "TEXT", ""),
-        ("subject", "TEXT", ""), ("memory_type", "TEXT", ""), ("lifecycle_status", "TEXT", ""),
+        ("memory_id", "UUID", "PK"), ("owner_id", "TEXT", ""),
+        ("profile_id", "TEXT", ""), ("subject", "TEXT", ""),
+        ("memory_type", "TEXT", ""), ("lifecycle_status", "TEXT", ""),
     ], C["navy"], items_descs)
     rev_tbl = tbl("memory_revisions", [
         ("revision_id", "UUID", "PK"), ("memory_id", "UUID", "FK→items"),
         ("revision_number", "INT", ""), ("content", "TEXT", ""),
         ("assertion_kind", "TEXT", ""), ("lifecycle_status", "TEXT", ""),
     ], C["deepnavy"], rev_descs)
+    ev_descs = {
+        "evidence_id": "证据 ID",
+        "revision_id": "FK→哪个版本的证据",
+        "memory_id": "FK→哪条记忆",
+        "source_turn_id": "来自哪轮对话",
+        "source_expression": "用户/助手原话——溯源落点",
+        "source_role": "来源角色：user / assistant / tool",
+    }
     ev_tbl = tbl("memory_evidence", [
         ("evidence_id", "UUID", "PK"), ("revision_id", "UUID", "FK→revisions"),
         ("memory_id", "UUID", "FK→items"), ("source_turn_id", "TEXT", ""),
-        ("source_expression", "TEXT", ""), ("source_tool_name", "TEXT", ""),
-    ], C["navy"])
+        ("source_expression", "TEXT", ""), ("source_role", "TEXT", ""),
+    ], C["navy"], ev_descs)
+    rv_descs = {
+        "review_id": "审查项 ID",
+        "candidate_id": "待确认候选来源（唯一）",
+        "subject": "候选主语",
+        "content": "候选正文",
+        "status": "pending→confirmed/rejected/expired",
+        "resolved_memory_id": "确认后落到 items 的记忆 ID",
+    }
     rev2_tbl = tbl("memory_reviews", [
         ("review_id", "UUID", "PK"), ("candidate_id", "UUID", ""),
         ("subject", "TEXT", ""), ("content", "TEXT", ""),
         ("status", "TEXT", ""), ("resolved_memory_id", "UUID", "FK→items"),
-    ], C["mid"])
+    ], C["mid"], rv_descs)
     rel_tbl = tbl("memory_relations", [
         ("relation_id", "UUID", "PK"), ("source_memory_id", "UUID", "FK→items"),
         ("target_memory_id", "UUID", "FK→items"), ("relation_type", "TEXT", ""),
         ("status", "TEXT", ""),
     ], C["navy"])
 
-    # 横向 1:N 箭头：items → revisions（两层结构主轴）
-    harrow = f"""
-    <div style='display:flex;flex-direction:column;align-items:center;justify-content:center;flex:0 0 auto;align-self:center;'>
-      <div style='font-size:11px;font-weight:800;color:{C['navy']};'>1 : N</div>
-      <div style='font-size:22px;color:{C['navy']};line-height:0.6;'>→</div>
-    </div>"""
+    # 横向箭头
+    def harrow(label):
+        return f"""
+        <div style='display:flex;flex-direction:column;align-items:center;justify-content:center;flex:0 0 auto;align-self:center;'>
+          <div style='font-size:10px;font-weight:800;color:{C['navy']};'>{label}</div>
+          <div style='font-size:20px;color:{C['navy']};line-height:0.6;'>→</div>
+        </div>"""
     layer_tag = f"""
-    <div style='position:absolute;top:-9px;left:24px;background:#fff;padding:0 6px;font-size:10px;font-weight:800;color:{C['navy']};letter-spacing:0.5px;'>两层结构 · 主轴</div>"""
-    l1 = f"<div style='font-size:9.5px;color:{C['mid']};font-weight:700;text-align:center;margin-bottom:3px;'>① 身份层</div>"
-    l2 = f"<div style='font-size:9.5px;color:{C['mid']};font-weight:700;text-align:center;margin-bottom:3px;'>② 版本层</div>"
+    <div style='position:absolute;top:-9px;left:24px;background:#fff;padding:0 6px;font-size:10px;font-weight:800;color:{C['navy']};letter-spacing:0.5px;'>写入→治理 · 主轴</div>"""
+    l0 = f"<div style='font-size:9.5px;color:{C['mid']};font-weight:700;text-align:center;margin-bottom:3px;'>① 对话层</div>"
+    l1 = f"<div style='font-size:9.5px;color:{C['mid']};font-weight:700;text-align:center;margin-bottom:3px;'>② 主体层</div>"
+    l2 = f"<div style='font-size:9.5px;color:{C['mid']};font-weight:700;text-align:center;margin-bottom:3px;'>③ 版本层</div>"
 
     # 附属表说明文字（核实语义）
     ev_desc = "每条证据绑定到具体 revision，记录哪一轮、哪条表达、哪个工具产出——可溯源到原始对话，拒绝无来源的记忆。"
@@ -544,21 +568,22 @@ def memory_model():
 
     body = f"""
     <div style='padding:8px 28px 0 28px;'>
-      <div class='h2' style='font-size:20px;'>记忆数据模型：五张表，两层结构</div>
-      <div class='sub' style='margin-top:2px;font-size:12px;'>memory_items（稳定身份）1:N memory_revisions（版本快照）——旧版不删只 superseded；evidence / reviews / relations 通过 FK 引用主轴</div>
+      <div class='h2' style='font-size:20px;'>记忆数据模型：五张表，写入→治理→溯源</div>
+      <div class='sub' style='margin-top:2px;font-size:11.5px;'>captures（对话轮次）→ items（稳定身份 1:N revisions 版本快照）——旧版不删只 superseded；evidence / reviews 通过 FK 引用主轴</div>
     </div>
-    <!-- 上区：两层结构主轴（虚线框只包 items→revisions） -->
-    <div style='position:relative;border:1.5px dashed {C['navy']};border-radius:10px;padding:14px 20px 12px;margin:14px 28px 0 28px;display:flex;align-items:flex-start;gap:18px;background:rgba(0,89,130,0.035);'>
+    <!-- 上区：三表主轴（虚线框包 captures→items→revisions） -->
+    <div style='position:relative;border:1.5px dashed {C['navy']};border-radius:10px;padding:12px 18px 10px;margin:12px 28px 0 28px;display:flex;align-items:flex-start;gap:10px;background:rgba(0,89,130,0.035);'>
       {layer_tag}
+      <div style='flex:1;'>{l0}{cap_tbl}</div>
+      {harrow("抽取")}
       <div style='flex:1;'>{l1}{items_tbl}</div>
-      {harrow}
+      {harrow("1 : N")}
       <div style='flex:1;'>{l2}{rev_tbl}</div>
     </div>
-    <!-- 下区：三张附属表横排（均在两层结构之外，FK 引用主轴） -->
-    <div style='display:flex;gap:16px;margin:14px 28px 0 28px;align-items:stretch;'>
-      <div style='flex:1;display:flex;flex-direction:column;'>{ev_tbl}<div style='flex:1;margin-top:6px;font-size:10.5px;line-height:1.55;color:{C['mid']};'>{ev_desc}</div></div>
-      <div style='flex:1;display:flex;flex-direction:column;'>{rev2_tbl}<div style='flex:1;margin-top:6px;font-size:10.5px;line-height:1.55;color:{C['mid']};'>{rv_desc}</div></div>
-      <div style='flex:1;display:flex;flex-direction:column;'>{rel_tbl}<div style='flex:1;margin-top:6px;font-size:10.5px;line-height:1.55;color:{C['mid']};'>{rl_desc}</div></div>
+    <!-- 下区：两张附属表横排（FK 引用主轴：证据 + 审查） -->
+    <div style='display:flex;gap:16px;margin:12px 28px 0 28px;align-items:stretch;'>
+      <div style='flex:1;display:flex;flex-direction:column;'>{ev_tbl}<div style='flex:1;margin-top:6px;font-size:10px;line-height:1.55;color:{C['mid']};'>{ev_desc}</div></div>
+      <div style='flex:1;display:flex;flex-direction:column;'>{rev2_tbl}<div style='flex:1;margin-top:6px;font-size:10px;line-height:1.55;color:{C['mid']};'>{rv_desc}</div></div>
     </div>"""
     return _page(body)
 
@@ -1089,29 +1114,21 @@ def test_design_full():
 
 
 # ===== P18 演示 =====
-def _demo_contrast_page(title, condition, left_one, right_one):
-    """对照页：顶部标题 → 左右对话截图占位（撑满到底，无 DB 条）。
-    要点压成一句，截图区留空，画布绝大部分留给截图。"""
+def _demo_contrast_page(title, left_tag, right_tag):
+    """对照页：标题 → 左右对话截图占位撑满到底，只留左右标签区分。"""
     NAVY = C["navy"]
     body = f"""
-    <div style='padding:20px 30px 0 30px;display:flex;align-items:baseline;justify-content:space-between;gap:24px;'>
+    <div style='padding:20px 30px 0 30px;'>
       <div class='h2' style='font-size:21px;'>{title}</div>
-      <div class='sub' style='font-size:12.5px;white-space:nowrap;'>{condition}</div>
     </div>
-    <div style='position:absolute;top:74px;left:30px;right:30px;bottom:20px;display:flex;gap:16px;'>
+    <div style='position:absolute;top:64px;left:30px;right:30px;bottom:20px;display:flex;gap:16px;'>
       <div style='flex:1;background:{C['vly']};border:1.5px dashed {C['light']};border-radius:10px;padding:12px 16px;display:flex;flex-direction:column;'>
-        <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px;'>
-          <span style='background:#bbb;color:#fff;border-radius:3px;padding:2px 8px;font-size:11px;font-weight:700;'>无记忆</span>
-          <span style='font-size:12px;color:{C['mid']};'>{left_one}</span>
-        </div>
-        <div style='flex:1;background:#fff;border-radius:6px;'></div>
+        <span style='background:#bbb;color:#fff;border-radius:3px;padding:3px 10px;font-size:12px;font-weight:700;align-self:flex-start;'>{left_tag}</span>
+        <div style='flex:1;background:#fff;border-radius:6px;margin-top:10px;'></div>
       </div>
       <div style='flex:1;background:{C['pblue']};border:1.5px solid {NAVY};border-radius:10px;padding:12px 16px;display:flex;flex-direction:column;'>
-        <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px;'>
-          <span style='background:{NAVY};color:#fff;border-radius:3px;padding:2px 8px;font-size:11px;font-weight:700;'>有记忆</span>
-          <span style='font-size:12px;color:{NAVY};'>{right_one}</span>
-        </div>
-        <div style='flex:1;background:#fff;border-radius:6px;'></div>
+        <span style='background:{NAVY};color:#fff;border-radius:3px;padding:3px 10px;font-size:12px;font-weight:700;align-self:flex-start;'>{right_tag}</span>
+        <div style='flex:1;background:#fff;border-radius:6px;margin-top:10px;'></div>
       </div>
     </div>"""
     return _page(body)
@@ -1121,34 +1138,26 @@ def demo_contrast_continue():
     """P19 延续性对照"""
     return _demo_contrast_page(
         "延续性：新开会话能不能从上次判断继续",
-        "同一投资对象，新开一个会话再问",
-        "每次从零开始，泛泛而谈",
-        "召回上次判断，延续推理",
+        "无记忆",
+        "有记忆",
     )
 
 
-def _demo_scene_page(title, condition, one_liner, db_label):
-    """场景页：顶部标题 → 左对话截图 + 右 DB 截图（左右撑满到底，截图区留空）。"""
+def _demo_scene_page(title):
+    """场景页：标题 → 左对话截图 + 右 DB 截图撑满到底，只留左右标签。"""
     NAVY = C["navy"]
     body = f"""
-    <div style='padding:20px 30px 0 30px;display:flex;align-items:baseline;justify-content:space-between;gap:24px;'>
+    <div style='padding:20px 30px 0 30px;'>
       <div class='h2' style='font-size:21px;'>{title}</div>
-      <div class='sub' style='font-size:12.5px;white-space:nowrap;'>{condition}</div>
     </div>
-    <div style='position:absolute;top:74px;left:30px;right:30px;bottom:20px;display:flex;gap:16px;'>
+    <div style='position:absolute;top:64px;left:30px;right:30px;bottom:20px;display:flex;gap:16px;'>
       <div style='flex:1.15;background:{C['pblue']};border:1.5px solid {NAVY};border-radius:10px;padding:12px 16px;display:flex;flex-direction:column;'>
-        <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px;'>
-          <span style='background:{NAVY};color:#fff;border-radius:3px;padding:2px 8px;font-size:11px;font-weight:700;'>对话</span>
-          <span style='font-size:12px;color:{NAVY};'>{one_liner}</span>
-        </div>
-        <div style='flex:1;background:#fff;border-radius:6px;'></div>
+        <span style='background:{NAVY};color:#fff;border-radius:3px;padding:3px 10px;font-size:12px;font-weight:700;align-self:flex-start;'>对话</span>
+        <div style='flex:1;background:#fff;border-radius:6px;margin-top:10px;'></div>
       </div>
       <div style='flex:1;background:#fff;border:1px solid {NAVY};border-radius:10px;padding:12px 16px;display:flex;flex-direction:column;'>
-        <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px;'>
-          <span style='background:{NAVY};color:#fff;border-radius:3px;padding:2px 8px;font-size:11px;font-weight:700;'>DB</span>
-          <span style='font-size:12px;color:{NAVY};'>{db_label}</span>
-        </div>
-        <div style='flex:1;background:#fff;border:1px solid {C['light']};border-radius:6px;'></div>
+        <span style='background:{NAVY};color:#fff;border-radius:3px;padding:3px 10px;font-size:12px;font-weight:700;align-self:flex-start;'>DB</span>
+        <div style='flex:1;background:#fff;border:1px solid {C['light']};border-radius:6px;margin-top:10px;'></div>
       </div>
     </div>"""
     return _page(body)
@@ -1156,44 +1165,44 @@ def _demo_scene_page(title, condition, one_liner, db_label):
 
 def demo_scene_revise():
     """P20 判断演进场景"""
-    return _demo_scene_page(
-        "判断演进：改判断，记忆怎么跟着变",
-        "用户中途修正投资判断",
-        "用户改判断 A→B，capture 自动 replacement，旧版保留",
-        "memory_revisions 表：每次修订留痕",
-    )
+    return _demo_scene_page("判断演进：改判断，记忆怎么跟着变")
 
 
 def demo_scene_converge():
     """P21 跨人收敛场景"""
-    return _demo_scene_page(
-        "跨人收敛：两人各建各的，能否收敛到团队共识",
-        "subject-001 / subject-002 各自建判断",
-        "两人各建判断、互相可见，收敛后 confirm 成团队记忆",
-        "团队记忆 + confirm 记录",
-    )
+    return _demo_scene_page("跨人收敛：两人各建各的，能否收敛到团队共识")
 
 
 # ===== P23 总结 =====
 def summary_full():
-    """P23 总结：上工作量(3) + 下优化点(3) + 底部项目地址页脚条"""
+    """P23 总结：工作量(三大数字 + 表名/工具名标签云) + 优化点(3) + 项目地址页脚"""
     NAVY = C["navy"]
-    work = [
-        ("10", "张数据表", "记忆身份·版本·证据·审查·关系\n治理全沉淀在 schema 层"),
-        ("13", "个 MCP 工具", "捕获·召回·审查·关系·撤销\n标准协议，换 Agent 不丢记忆"),
-        ("2.2 万", "行实现代码", "Server + 轻量 Agent Client\n含 PostgreSQL 适配与异步治理"),
+    # 三大数字横排（数字+单位，无清单，纯数字醒目）
+    nums = [
+        ("10", "张数据表"),
+        ("13", "个 MCP 工具"),
+        ("1.8 万", "行实现代码"),
     ]
-    wcards = ""
-    for n, u, d in work:
-        dd = d.replace("\n", "<br>")
-        wcards += f"""
-        <div style='flex:1;background:{C['pblue']};border-radius:14px;padding:22px 26px;display:flex;flex-direction:column;justify-content:center;gap:14px;'>
-          <div style='display:flex;align-items:baseline;gap:8px;'>
-            <span style='font-size:42px;font-weight:800;color:{NAVY};line-height:1;'>{n}</span>
-            <span style='font-size:17px;font-weight:700;color:{NAVY};'>{u}</span>
-          </div>
-          <div style='font-size:17px;color:{C['ink']};line-height:1.95;'>{dd}</div>
+    ncards = ""
+    for n, u in nums:
+        ncards += f"""
+        <div style='flex:1;background:#fff;border-radius:10px;padding:14px 18px;display:flex;align-items:baseline;justify-content:center;gap:10px;'>
+          <span style='font-size:44px;font-weight:800;color:{NAVY};line-height:1;'>{n}</span>
+          <span style='font-size:17px;font-weight:700;color:{NAVY};'>{u}</span>
         </div>"""
+    # 表名 + 工具名做小标签云
+    tables = ["memory_items", "memory_revisions", "memory_captures", "memory_evidence",
+              "memory_reviews", "memory_relations", "memory_evidence_documents",
+              "memory_review_documents", "memory_capture_outcomes", "memory_team_extractions"]
+    tools = ["capture_completed_turn", "recall_memory", "search_memories", "list_memories",
+             "get_memory", "revoke_memory", "link_memories", "revoke_memory_relation",
+             "list_pending_reviews", "confirm_pending_memory", "reject_pending_memory",
+             "batch_confirm_pending", "get_memory_stats"]
+    def chips(names):
+        return "".join(
+            f"<span style='background:#fff;border:1px solid {C['light']};border-radius:4px;"
+            f"padding:3px 8px;font-size:10.5px;font-family:monospace;color:{NAVY};'>{n}</span>"
+            for n in names)
     nxt = [
         ("记忆质量闭环", "抽取置信度评分 + 召回未命中信号回流，反哺 prompt 与阈值迭代"),
         ("真实鉴权逻辑", "当前静态 Token，接入 OAuth/JWT 等真实鉴权与租户管理"),
@@ -1202,21 +1211,36 @@ def summary_full():
     nrows = ""
     for h, b in nxt:
         nrows += f"""
-        <div style='flex:1;background:#fff;border:1.5px solid {NAVY};border-radius:14px;padding:22px 26px;display:flex;flex-direction:column;justify-content:center;gap:14px;'>
-          <div style='font-size:20px;font-weight:800;color:{NAVY};'>{h}</div>
-          <div style='font-size:17px;color:{C['ink']};line-height:1.95;'>{b}</div>
+        <div style='flex:1;background:#fff;border:1.5px solid {NAVY};border-radius:14px;padding:16px 22px;display:flex;flex-direction:column;justify-content:center;gap:10px;'>
+          <div style='font-size:18px;font-weight:800;color:{NAVY};'>{h}</div>
+          <div style='font-size:15px;color:{C['ink']};line-height:1.8;'>{b}</div>
         </div>"""
     body = f"""
-    <div style='padding:26px 30px 0 30px;'>
+    <div style='padding:22px 30px 0 30px;'>
       <div class='h2' style='font-size:22px;'>总结：工作量与后续优化</div>
     </div>
-    <div style='position:absolute;top:72px;left:30px;right:30px;height:198px;display:flex;gap:16px;'>{wcards}
+    <!-- 上段：工作量（数字 + 标签云包在同一个 pblue 大容器） -->
+    <div style='position:absolute;top:62px;left:30px;right:30px;height:290px;background:{C['pblue']};border-radius:14px;padding:18px 24px;display:flex;flex-direction:column;'>
+      <div style='display:flex;gap:16px;margin-bottom:14px;'>{ncards}
+      </div>
+      <div style='display:flex;align-items:center;gap:10px;margin-bottom:8px;'>
+        <span style='font-size:12px;font-weight:800;color:{NAVY};white-space:nowrap;'>10 张表</span>
+        <div style='flex:1;height:1px;background:rgba(0,89,130,0.25);'></div>
+      </div>
+      <div style='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;'>{chips(tables)}</div>
+      <div style='display:flex;align-items:center;gap:10px;margin-bottom:8px;'>
+        <span style='font-size:12px;font-weight:800;color:{NAVY};white-space:nowrap;'>13 个工具</span>
+        <div style='flex:1;height:1px;background:rgba(0,89,130,0.25);'></div>
+      </div>
+      <div style='display:flex;flex-wrap:wrap;gap:6px;'>{chips(tools)}</div>
     </div>
-    <div style='position:absolute;top:294px;left:30px;right:30px;'>
-      <div style='font-size:18px;font-weight:800;color:{NAVY};margin-bottom:12px;'>后续优化方向</div>
-      <div style='display:flex;gap:16px;height:185px;'>{nrows}</div>
+    <!-- 下段：后续优化方向（三白底卡）紧跟上段下方 -->
+    <div style='position:absolute;top:366px;left:30px;right:30px;'>
+      <div style='font-size:16px;font-weight:800;color:{NAVY};margin-bottom:8px;'>后续优化方向</div>
+      <div style='display:flex;gap:16px;height:118px;'>{nrows}</div>
     </div>
-    <div style='position:absolute;bottom:16px;left:30px;right:30px;background:{NAVY};border-radius:8px;padding:10px 20px;display:flex;align-items:center;justify-content:center;gap:14px;'>
+    <!-- 项目地址页脚 -->
+    <div style='position:absolute;bottom:14px;left:30px;right:30px;background:{NAVY};border-radius:8px;padding:9px 20px;display:flex;align-items:center;justify-content:center;gap:14px;'>
       <span style='font-size:13px;color:#cfe;'>项目地址</span>
       <span style='font-size:15px;font-weight:700;color:#fff;font-family:monospace;letter-spacing:0.3px;'>https://github.com/dxiaosen/memory-mcp</span>
     </div>"""
@@ -1255,7 +1279,7 @@ RENDERERS = {
     "P14": team_flow, "P15": isolation,
     # P17 第三章章封 —— 待做
     "P18": test_design_full,
-    "P19": demo_contrast_continue, "P20": demo_scene_revise, "P21": demo_scene_converge,
+    # P19~ 演示页：用户用真实截图贴 PPT，不渲染占位 —— 待定页号
     # P22 第四章章封 —— 待做
     "P23": summary_full,
 }
