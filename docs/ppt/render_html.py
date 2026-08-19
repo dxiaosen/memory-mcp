@@ -2,7 +2,7 @@
 
 浏览器有真正的字体度量、word-break、flexbox，文字溢出问题从根上消失。
 画布固定 1210×585px（对应 12.1×5.85 英寸，PPT 插入用）。
-输出到 docs/ppt/imgs/，供 build_ppt.py 插入。
+输出到 docs/ppt/imgs/，供 PPT 直接插入。
 """
 from __future__ import annotations
 
@@ -203,13 +203,13 @@ def background_full():
         <text x='449' y='147' text-anchor='middle' fill='{C['mid']}' font-size='9'>最多5条 · token预算600 · 15s</text>
         <rect x='344' y='177' width='210' height='44' rx='6' fill='#fff' stroke='{C['navy']}' stroke-width='1'/>
         <text x='449' y='195' text-anchor='middle' fill='{C['navy']}' font-size='11' font-weight='700'>AfterRun 捕获入队</text>
-        <text x='449' y='211' text-anchor='middle' fill='{C['mid']}' font-size='9'>5s超时 · 幂等 · fail-open</text>
+        <text x='449' y='211' text-anchor='middle' fill='{C['mid']}' font-size='9'>5s超时 · fail-open（服务端event_id幂等）</text>
         <rect x='344' y='241' width='210' height='44' rx='6' fill='#fff' stroke='{C['navy']}' stroke-width='1'/>
         <text x='449' y='259' text-anchor='middle' fill='{C['navy']}' font-size='11' font-weight='700'>多宿主适配</text>
         <text x='449' y='275' text-anchor='middle' fill='{C['mid']}' font-size='9'>归一化到通用生命周期事件</text>
         <rect x='344' y='305' width='210' height='44' rx='6' fill='#fff' stroke='{C['navy']}' stroke-width='1'/>
-        <text x='449' y='323' text-anchor='middle' fill='{C['navy']}' font-size='11' font-weight='700'>幂等去重</text>
-        <text x='449' y='339' text-anchor='middle' fill='{C['mid']}' font-size='9'>run_key 三元组 · 1000条LRU</text>
+        <text x='449' y='323' text-anchor='middle' fill='{C['navy']}' font-size='11' font-weight='700'>召回去重缓存</text>
+        <text x='449' y='339' text-anchor='middle' fill='{C['mid']}' font-size='9'>run_key三元组 · 1000条LRU（入队幂等在服务端）</text>
         <!-- 宿主 -> client -->
         <path d='M297 66 L 331 66' fill='none' stroke='{C['navy']}' stroke-width='1.8' marker-end='url(#an)'/>
         <path d='M297 203 L 331 203' fill='none' stroke='{C['navy']}' stroke-width='1.8' marker-end='url(#an)'/>
@@ -263,15 +263,16 @@ def background_full():
 
 # ===== P6 竞品对比表（撑满画布，行高加大）=====
 def competitor_table():
-    """4 列竞品对比表，撑满画布。TencentDB 按核实事实填。"""
+    """4 列竞品对比表，撑满画布。各列据公开文档核实：Mem0=docs.mem0.ai；
+    TencentDB=github.com/TencentCloud/tencentdb-agent-memory README/ROADMAP v2.0.1-beta。"""
     headers = ["维度", "ChatGPT\nMemory", "Mem0", "TencentDB\nAgent Memory", "Memory MCP"]
     rows = [
-        ("接入形态", "平台内置", "SDK 嵌入", "独立服务·MCP 式", "MCP 标准协议"),
-        ("身份隔离", "无（单账号）", "客户端自管", "有（团队/ACL）", "服务端强制（Token 派生）"),
-        ("记忆结构", "扁平键值", "扁平事实", "L0–L3 分层", "带立场的判断（4 类）"),
-        ("判断演进", "直接覆盖", "覆盖", "资产版本号（无审计链）", "改判断不改历史（留版本+provenance）"),
-        ("团队记忆", "无", "无", "有（手动共享）", "自动提取共识"),
-        ("失效治理", "黑箱", "半自动", "状态+撤销（无到期）", "准入+生命周期+到期+脱敏"),
+        ("接入形态", "平台内置", "SDK+托管平台", "Proxy+自有HTTP API（非MCP）", "MCP 标准协议"),
+        ("身份隔离", "无（单账号）", "有user_id（客户端传）", "private/team/restricted+ACL", "服务端强制（Token 派生）"),
+        ("记忆结构", "扁平文本条目", "四层 conv/session/user/org", "L0–L3 分层", "带立场的判断（4 类）"),
+        ("判断演进", "直接覆盖", "覆盖（无版本链）", "资产版本号（无provenance）", "改判断不改历史（版本链+provenance）"),
+        ("团队记忆", "无", "有（org 层）", "有（手动共享·Beta）", "自动提取共识"),
+        ("失效治理", "手动删除", "session靠run_id（无TTL）", "状态+可见性收回（无到期）", "准入+生命周期+到期+脱敏"),
     ]
     hd = "".join(
         f"<th style='background:{bg};color:#fff;font-size:16px;white-space:pre-line;padding:16px 8px;'>{h}</th>"
@@ -362,11 +363,11 @@ def three_diffs():
     return _page(f"<div style='display:flex;gap:20px;padding:20px 28px;height:545px;'>{cards}</div>")
 
 
-# ===== P9 核心闭环（去掉准入状态，丰富读写链路每个环节）=====
+# ===== P12 核心闭环（去掉准入状态，丰富读写链路每个环节）=====
 def core_loop():
     """上下两条链路，白底 navy 框 + 分区色带。字号放大，拉开间距，无底部条。
-    业务逻辑经代码核实：抽取=结构化(非聚类)；召回=词法+向量+近期三路+关系感知补漏；
-    准入=三级决策+replacement(auto_save 子动作)。"""
+    业务逻辑经代码核实：写入 4 步(入队→异步抽取→准入与生命周期→事务落库)，准入细节归 P13；
+    召回 5 步=词法+向量+近期三路+关系感知补漏。"""
     # 链路色带：写入淡蓝、读取更浅
     band_w = "#EEF4F9"; band_r = "#F4F6F8"
     # 链路强调色：写入 navy、读取 blue
@@ -403,11 +404,10 @@ def core_loop():
         return "".join(parts)
 
     write = [
-        ("①", "Stop Hook 入队", ["Agent 输出完成即触发", "强制每轮提交，毫秒级返回", "身份/幂等字段服务端组装"], wc),
-        ("②", "队列异步抽取", ["Worker 周期捞取 PENDING", "LLM 结构化抽取候选", "逐轮逐条，非跨轮聚类"], wc),
-        ("③", "准入三级决策", ["auto_save 自动落库", "pending 待人确认一次", "discard 丢弃闲聊噪声"], wc),
-        ("④", "replacement", ["auto_save 子动作", "命中显式替换意图时", "supersede 旧版，留版本链"], wc),
-        ("⑤", "事务化落库", ["advisory lock 幂等提交", "memories/relations/reviews", "PostgreSQL 唯一权威"], wc),
+        ("①", "Stop Hook 入队", ["输出完成即触发", "毫秒级返回不阻塞", "身份幂等字段服务端组装"], wc),
+        ("②", "异步抽取", ["Worker 周期捞 PENDING", "LLM 结构化抽候选", "逐轮逐条，不跨轮聚类"], wc),
+        ("③", "准入与生命周期", ["auto_save/pending/discard", "新判断取代旧版", "并入或留版本链"], wc),
+        ("④", "事务化落库", ["advisory lock 幂等提交", "写 items+revisions+evidence", "单一事务一致落库"], wc),
     ]
     read = [
         ("①", "BeforeRun Hook", ["新一轮提问即触发", "召回由 Hook 自动完成", "模型无需自找记忆"], rc),
@@ -427,7 +427,7 @@ def core_loop():
         <!-- 写入色带 -->
         <rect x='14' y='10' width='1126' height='205' rx='12' fill='{band_w}'/>
         <text x='34' y='38' fill='{wc}' font-size='17' font-weight='800'>写入链路：异步治理，用户不手动存</text>
-        <text x='34' y='57' fill='{C['mid']}' font-size='12'>模型不需自判存不存——Hook 强制每轮入队，准入由服务端统一决策</text>
+        <text x='34' y='57' fill='{C['mid']}' font-size='12'>入队毫秒级不阻塞用户；抽取与准入在后台 Worker 异步完成</text>
         {chain(write, 70, 'wa')}
         <!-- 读取色带 -->
         <rect x='14' y='250' width='1126' height='205' rx='12' fill='{band_r}'/>
@@ -445,8 +445,8 @@ def core_loop():
 
 # ===== P10 记忆数据模型（详细解释治理字段）=====
 def memory_model():
-    """记忆数据模型 = 六张表结构图。上区三表主轴(captures→items 1:N revisions，
-    对话→身份→版本)，下区三附属表(evidence/reviews/relations)。经 schema.sql 核实。"""
+    """记忆数据模型 = 五张表结构图。上区三表主轴(captures→items 1:N revisions，
+    对话→身份→版本)，下区两附属表(evidence/reviews)。经 schema.sql 核实。"""
     def tbl(name, rows, accent, descs=None):
         """表框，自然高度。字段行：字段名(左)+解释(中,可选)+类型/PK/FK标签(右)。"""
         fr = ""
@@ -476,13 +476,13 @@ def memory_model():
           {fr}
         </div>"""
 
-    # 六张表（经 schema.sql 核实字段名/类型/关系；上区三表带字段解释）
+    # 五张表（经 schema.sql 核实字段名/类型/关系；上区三表带字段解释）
     cap_descs = {
-        "capture_id": "对话轮次 ID，写入链路源头",
-        "conversation_id": "会话 ID，跨轮幂等键",
+        "capture_id": "捕获记录 ID，写入链路源头",
+        "conversation_id": "会话 ID",
         "source_turn_id": "本轮 ID，Hook 传入",
-        "content": "用户/Agent 原话",
-        "status": "入队/抽取/失败",
+        "content": "用户/Agent 原话（已脱敏）",
+        "status": "pending/completed/failed/reprocess",
         "event_id": "幂等键，防重复入队",
     }
     items_descs = {
@@ -498,7 +498,7 @@ def memory_model():
         "memory_id": "FK→items，此版本属于哪条记忆",
         "revision_number": "版本号，递增；旧版不删只 superseded",
         "content": "记忆正文，本次版本的实际内容",
-        "assertion_kind": "断言来源：user_view/外部 fact/系统推断",
+        "assertion_kind": "user_view/user_provided_fact/external_fact/system_inference",
         "lifecycle_status": "本版本状态（与 items 独立，支持旧版归档）",
     }
     cap_tbl = tbl("memory_captures", [
@@ -531,7 +531,7 @@ def memory_model():
     ], C["navy"], ev_descs)
     rv_descs = {
         "review_id": "审查项 ID",
-        "candidate_id": "待确认候选来源（唯一）",
+        "candidate_id": "候选 UUID（候选处理派生）",
         "subject": "候选主语",
         "content": "候选正文",
         "status": "pending→confirmed/rejected/expired",
@@ -542,11 +542,6 @@ def memory_model():
         ("subject", "TEXT", ""), ("content", "TEXT", ""),
         ("status", "TEXT", ""), ("resolved_memory_id", "UUID", "FK→items"),
     ], C["mid"], rv_descs)
-    rel_tbl = tbl("memory_relations", [
-        ("relation_id", "UUID", "PK"), ("source_memory_id", "UUID", "FK→items"),
-        ("target_memory_id", "UUID", "FK→items"), ("relation_type", "TEXT", ""),
-        ("status", "TEXT", ""),
-    ], C["navy"])
 
     # 横向箭头
     def harrow(label):
@@ -564,7 +559,6 @@ def memory_model():
     # 附属表说明文字（核实语义）
     ev_desc = "每条证据绑定到具体 revision，记录哪一轮、哪条表达、哪个工具产出——可溯源到原始对话，拒绝无来源的记忆。"
     rv_desc = "候选进入 Pending 等人确认；确认后 resolved_memory_id 落到 items——可疑但不直接写库，确认才提升为正式记忆。"
-    rl_desc = "source 与 target 都是 items 行，关系类型如 supports / challenges / supersedes——记忆间的论证结构靠此表自引用表达。"
 
     body = f"""
     <div style='padding:8px 28px 0 28px;'>
@@ -588,76 +582,118 @@ def memory_model():
     return _page(body)
 
 
-# ===== P11 准入（候选处理流水线：四道防线 + reason_code 证据）=====
+# ===== P13 准入（候选处理流水线：四道防线 + reason_code 证据）=====
 def admission_full():
-    """候选从对话到入库的完整防线，对照 candidate_processing.process() 四段：
+    """候选从对话到入库的完整处理流水线，对照 candidate_processing.process() 四段：
     ①来源校验 ②准入判定(6道规则) ③生命周期去重 ④分类写入。
-    每段配真实 reason_code（代码核实），不只列规则。replacement/状态转换细节归 P13。"""
-    # 四道防线：序号/名/职责/分点(专业中文)/色。沉稳配色：石板灰蓝→主蓝→深蓝→深青绿
+    横向一条流程：候选流入 →→ 四步顺序处理 →→ 落库。每步块内上为处理点（关键词+解释），
+    下为产出分流条（该步处理后各类候选的去向：✕/⏸/✓），流向与分流在流程内一气贯通。"""
+    GO, HOLD, DROP = C["green"], C["orange"], C["gray"]
+    # 流程节点: (序号, 名称, 处理点[(关键词,解释)], 产出分流[(类别, 状态符, 说明)], 色)
+    # 状态符（等大色块）：弃=丢弃不写记忆 / 待=写reviews待确认 / →=进入下一步 / ✓=落库active
     stages = [
-        ("①", "来源校验", "防模型编造 · 防误抽",
-         ["原文逐字核对：候选出处必须能在本轮对话原文里逐字找到，编造即丢单条",
-          "操作指令剔除：「别用某工具、别联网」是临时指令，不是长期研究偏好",
-          "敏感信息拦截：候选含密钥等敏感词直接拦截，不进库",
-          "断言来源纠正：模型把助手推断误标成用户原话的，按真实来源纠正",
-          "单条容错：一条候选出错只丢弃它，不影响同轮其它有效候选"],
+        ("①", "来源校验",
+         [("逐字核对出处", "source_expression 须在脱敏原文逐字找到"),
+          ("剔除操作指令", "「别用某工具/别联网」是临时指令"),
+          ("敏感词拦截", "含密钥等敏感词直接 BLOCKED"),
+          ("断言来源纠正", "助手推断误标用户原话按真实来源改"),
+          ("单条容错", "一条出错只丢它，不拖垮同轮其它")],
+         [("编造/操作/敏感", "弃", "出处不可追溯，丢弃不写记忆"),
+          ("可信候选", "→", "出处核实通过，进入准入判定")],
          C["slate"]),
-        ("②", "准入判定", "保守策略 · 六道顺序",
-         ["临时内容丢弃：今日行情、盘中异动这类短期内容不进库",
-          "存疑内容待审：模型拿不准的、用户明说「也许」的，先存疑等人确认",
-          "系统推断待审：模型归纳的结论、含糊表达、低置信的，不替用户拍板",
-          "非用户源降级：即便全过，助手或工具产出的仍降为待审",
-          "全过方入库：只有用户明确、持久、高置信的判断才自动入库"],
+        ("②", "准入判定",
+         [("临时内容丢弃", "今日行情、盘中异动等短期内容"),
+          ("存疑内容待审", "用户明说「也许/猜测/不确定」"),
+          ("系统推断待审", "模型归纳的结论 system_inference"),
+          ("非显式或低置信待审", "含糊表达、置信度<0.9 的"),
+          ("全过方放行", "用户明确+持久+高置信+来源为用户")],
+         [("临时内容", "弃", "短期内容不进长期记忆"),
+          ("存疑/推断/非用户源", "待", "写 reviews 表，待人工确认"),
+          ("显式持久高置信", "→", "通过保守判定，进入去重")],
          C["navy"]),
-        ("③", "生命周期去重", "防重复 · 防碎片化",
-         ["近似重复并入：与已有记忆语义相近的，并入旧记忆当证据，不新建条目",
-          "显式替换取代：用户说「改成/调整/不再」时，新版本取代旧版、旧版标记归档",
-          "替换碎片丢弃：一次修正产生的拆解碎片丢弃，防多条并存",
-          "歧义降级待审：无法确定该更新哪条时，交人指认",
-          "回声丢弃：助手复述已有记忆或跨类型复述的，视为回声丢弃"],
+        ("③", "生命周期去重",
+         [("字面命中去重", "同 subject+type 已有 active 并入当证据"),
+          ("语义命中去重", "字面对不上用 embedding 找近似 active"),
+          ("显式替换取代", "用户说「改成/调整」时新版取代旧版"),
+          ("歧义降级待审", "多条目标相近分不清替谁，交人确认"),
+          ("回声丢弃", "助手复述已有记忆或跨类型复述")],
+         [("回声/碎片", "弃", "复述或碎片化重复，丢弃"),
+          ("歧义目标", "待", "替换目标不唯一，待人工指认"),
+          ("新增/合并/取代", "→", "进入分类写入")],
          C["darknavy"]),
-        ("④", "分类写入", "落库分流 · 可审计",
-         ["自动入库：写入主体表与版本表，进入有效状态参与召回",
-          "待确认：写入待确认表，等人确认后才转为正式记忆",
-          "不入库：只留处理记录备审计，不污染判断池"],
+        ("④", "分类写入",
+         [("自动入库", "写 items+revisions+evidence 进 active"),
+          ("待确认", "写 reviews 表 pending，人确认才转正"),
+          ("不入库留痕", "只留处理记录备审计，不污染判断池")],
+         [("不入库留痕", "弃", "只留审计记录，不写记忆"),
+          ("待确认", "待", "写 reviews 表，确认后转 active"),
+          ("全过", "✓", "写 items+revisions，落库 active")],
          C["teal"]),
     ]
-    cols = ""
-    for i, (num, name, role, points, c) in enumerate(stages):
-        last = i == len(stages) - 1
+    # 状态符 → (色, 是否描边)：→ 用描边绿区别于 ✓ 实心绿（续 vs 落库）
+    SYM = {"弃": (DROP, False), "待": (HOLD, False), "→": (GO, True), "✓": (GO, False)}
+    def status_box(sym):
+        rc, outline = SYM[sym]
+        if outline:
+            return (f"<span style='width:24px;height:24px;display:inline-flex;align-items:center;"
+                    f"justify-content:center;border-radius:6px;flex:0 0 auto;font-size:14px;font-weight:800;"
+                    f"background:#fff;color:{rc};border:1.5px solid {rc};line-height:1;'>{sym}</span>")
+        return (f"<span style='width:24px;height:24px;display:inline-flex;align-items:center;"
+                f"justify-content:center;border-radius:6px;flex:0 0 auto;font-size:12px;font-weight:800;"
+                f"background:{rc};color:#fff;line-height:1;'>{sym}</span>")
+    # 节点模板：色块标题条 + 白底处理点 + 产出分流区（flex:1 撑满到节点底，四节点底部对齐）
+    def node(num, name, points, routes, c):
         pts = ""
-        for p in points:
-            pts += (f"<div style='display:flex;gap:8px;align-items:flex-start;line-height:1.65;margin-bottom:13px;'>"
-                    f"<span style='color:{c};font-weight:800;font-size:16px;flex:0 0 auto;line-height:1.4;'>●</span>"
-                    f"<span style='font-size:13.5px;color:{C['ink']};'>{p}</span></div>")
-        cols += f"""
-        <div style='flex:1;display:flex;flex-direction:column;min-width:0;'>
-          <div style='background:{c};color:#fff;border-radius:8px 8px 0 0;padding:13px 12px;text-align:center;flex:0 0 auto;'>
-            <div style='font-size:21px;font-weight:800;'>{num} {name}</div>
-            <div style='font-size:12px;opacity:0.92;margin-top:4px;'>{role}</div>
-          </div>
-          <div style='background:#fff;border:1px solid {c};border-top:none;border-radius:0 0 8px 8px;padding:16px 15px 18px;flex:1;display:flex;flex-direction:column;justify-content:flex-start;'>
-            {pts}
-          </div>
-        </div>
-        <div style='display:flex;align-items:center;color:{C['mid']};font-size:28px;padding:0 3px;flex:0 0 auto;'>{"→" if not last else ""}</div>"""
+        for kw, desc in points:
+            pts += (f"<div style='margin-bottom:10px;'>"
+                    f"<div style='font-size:13px;font-weight:800;color:{c};line-height:1.25;'>{kw}</div>"
+                    f"<div style='font-size:10.5px;color:{C['mid']};line-height:1.4;margin-top:2px;'>{desc}</div></div>")
+        rt = ""
+        for txt, sym, note in routes:
+            rt += (f"<div style='display:flex;align-items:flex-start;gap:7px;margin-bottom:8px;'>"
+                   f"{status_box(sym)}"
+                   f"<div style='flex:1 1 0;min-width:0;line-height:1.4;padding-top:1px;'>"
+                   f"<div style='font-size:11px;font-weight:700;color:{C['ink']};'>{txt}</div>"
+                   f"<div style='font-size:10px;color:{C['mid']};margin-top:1px;'>{note}</div></div></div>")
+        return (f"<div style='display:flex;flex-direction:column;height:100%;min-height:0;flex:1 1 0;box-sizing:border-box;'>"
+                f"<div style='background:{c};color:#fff;border-radius:8px 8px 0 0;padding:11px 8px;text-align:center;flex:0 0 auto;'>"
+                f"<div style='font-size:18px;font-weight:800;line-height:1.2;'>{num} {name}</div></div>"
+                f"<div style='background:#fff;border:1px solid {c};border-top:none;padding:12px 12px;flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:flex-start;'>{pts}</div>"
+                f"<div style='background:{C['vly']};border:1px solid {c};border-top:none;border-radius:0 0 8px 8px;padding:10px 11px;flex:0 0 168px;display:flex;flex-direction:column;justify-content:flex-start;'>"
+                f"<div style='font-size:10px;font-weight:700;color:{c};margin-bottom:7px;letter-spacing:0.5px;'>产出分流</div>{rt}</div>"
+                f"</div>")
+    def arrow():
+        return (f"<div style='display:flex;align-items:center;color:{C['mid']};font-size:22px;"
+                f"padding:0 3px;flex:0 0 auto;font-weight:700;'>→</div>")
+    cols = ""
+    for i, st in enumerate(stages):
+        cols += node(*st)
+        if i < len(stages) - 1:
+            cols += arrow()
     body = f"""
-    <div style='padding:14px 28px 0 28px;'>
-      <div class='h2'>准入：候选到入库的四道防线——不只判规则，更防编造、防重复、防碎片化</div>
-      <div class='sub' style='margin-top:4px;'>一条候选要过来源校验、六道保守判定、生命周期去重三关才落库；任一关拦截都留处理记录可审计，单条失败不拖垮整轮</div>
+    <div style='padding:10px 28px 0 28px;'>
+      <div class='h2'>候选处理流水线：来源校验 → 准入判定 → 生命周期去重 → 分类写入</div>
+      <div class='sub' style='margin-top:3px;'>候选经四步顺序处理，每步产出按去向分流（✓落库 / 待确认写 reviews / 弃丢弃）；任一步拦截均留处理记录，单条失败不拖垮整轮</div>
     </div>
-    <div style='padding:18px 28px 0 28px;display:flex;align-items:stretch;gap:0;height:485px;'>{cols}</div>"""
+    <div style='padding:16px 28px 0 28px;display:flex;align-items:stretch;gap:0;height:480px;'>{cols}</div>
+    <div style='padding:6px 28px 0 28px;display:flex;gap:20px;justify-content:center;'>
+      <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('✓')}落库 active</span>
+      <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('待')}待确认（写 reviews）</span>
+      <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('弃')}丢弃（不写记忆）</span>
+      <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('→')}进入下一步</span>
+    </div>"""
     return _page(body)
 
 
-# ===== P12 召回（HTML flexbox 流水线，统一卡片模板）=====
+# ===== P14 召回（HTML flexbox 流水线，统一卡片模板）=====
 def recall_three_path():
     """三路混合召回 + 召回后加权打分。严格对照 recall.py _three_way_query + recall_service._score_record。
     三路 = 词法(40%)+向量(30%)+近期(30%)；关系是召回后加权(_RELATION_BOOST=0.12)，非独立路。
+    词法路用 pg_jieba 中文分词全文检索（ts_rank + @@），替代原 pg_trgm 三元组（trgm 对中文短词弱）。
     打分常量：subject +0.20 / 向量 +0.15 / profile提示 +0.16 / 关系 +0.12 / 时效衰减0.15(半衰期90天)。
     阈值 _RELEVANCE_THRESHOLD=0.18。优先级：偏好>决策>判断>风险（investment_research.py）。
     统一卡片模板：色块标题条 + 白底主体 + 同色细边框；字多模块大、字少模块小。"""
-    paths = [("词法路", "pg_trgm 相似度", "subject 与 content 三元组命中", "配额 40%"),
+    paths = [("词法路", "pg_jieba 全文检索", "subject 与 content 分词命中", "配额 40%"),
              ("向量路", "embedding 余弦", "语义近义，Qwen 向量化", "配额 30%"),
              ("近期路", "observed_at 补额", "补足配额，按时间排序", "配额 30%")]
     prio = ["偏好 > 决策 > 判断 > 风险", "仅召回 active 记忆", "关系链追一层防漂移", "过期 / 撤销不召回"]
@@ -754,13 +790,13 @@ def recall_three_path():
     return _page(body)
 
 
-# ===== P13 生命周期（状态机：active→三终态 + 槽位释放）=====
+# ===== P11 生命周期（状态机：active→三终态 + 槽位释放）=====
 def lifecycle():
     """记忆生命周期状态机。严格对照 schema CHECK(0001_memory_schema.sql:22-23) 4 状态：
     active/superseded/expired/revoked。转换：
-    - active→superseded: replacement，旧 revision 留 is_current=FALSE+superseded，新版 active (repository.py:1090-1113)
+    - active→superseded: replacement，旧 revision 留 is_current=FALSE+superseded，新版 active (repository.py:1090-1120)
     - active→revoked: revoke_memory 工具，释放唯一索引槽位、活动边 stale，幂等 (repository.py:618-675)
-    - active→expired: maintenance 周期物化 valid_until<=now (maintenance.py:30-62)
+    - active→expired: maintenance 周期物化 valid_until<=now (maintenance.py:31-72)
     召回只查 active (recall.py:286)。superseded/revoked/expired 均终态(design.md §8.1)。
     槽位释放：唯一索引 WHERE lifecycle_status='active' (schema:41-43)，revoke 后可新建 active，非旧记忆复活。"""
     # HTML grid：左 active（跨三行）| 带规则的转移边 | 终态框
@@ -780,17 +816,17 @@ def lifecycle():
         f"<div style='border-top:1px solid {C['pblue']};opacity:0.4;margin:8px 4px;'></div>"
         f"<div>"
         f"<div style='font-size:12.5px;font-weight:700;color:#fff;margin-bottom:5px;'>召回作用域</div>"
-        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>仅有效态注入模型上下文<br/>其余三态退场、不参与召回</div>"
+        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>只有 active 注入模型<br/>其余三态不再召回</div>"
         f"</div>"
         f"<div style='border-top:1px solid {C['pblue']};opacity:0.4;margin:6px 4px;'></div>"
         f"<div>"
         f"<div style='font-size:12.5px;font-weight:700;color:#fff;margin-bottom:5px;'>不变量约束</div>"
-        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>(主题, 类型) 唯一索引<br/>valid_until 控制时效边界</div>"
+        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>(主题, 类型) 唯一索引<br/>valid_until 定到期时间</div>"
         f"</div>"
         f"<div style='border-top:1px solid {C['pblue']};opacity:0.4;margin:6px 4px;'></div>"
         f"<div>"
         f"<div style='font-size:12.5px;font-weight:700;color:#fff;margin-bottom:5px;'>转换可追溯</div>"
-        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>三条转换均留版本记录<br/>历史不丢 · 槽位释放可重建</div>"
+        f"<div style='font-size:11.5px;color:{C['pblue']};line-height:1.7;'>三条转换都留版本记录<br/>历史不丢 · 槽位释放可重建</div>"
         f"</div>"
         f"</div></div>"
     )
@@ -798,26 +834,26 @@ def lifecycle():
     rows = [
         dict(name="superseded", cn="已取代",
              op="判断修订", op_code="replacement",
-             rule="用户改判断 → capture 识别修订语义 → 旧版归档、新版上位",
-             trig="触发词：改成 / 调整 / 不再持有",
-             mech="旧版置为非当前（is_current=否）并标记已取代；新版成为当前有效态",
-             recall="不再召回，旧版保留供演进追溯",
-             ex="例：看多 IP 判断被新版取代",
+             rule="用户改了判断 → capture 认出是修订 → 旧版归档、新版顶上",
+             trig="触发词：改成 / 调整 / 不再（见正则 _EXPLICIT_REPLACEMENT）",
+             mech="旧版 is_current=否、标已取代；新版成为当前有效态",
+             recall="不再召回，旧版留着能看演进",
+             ex="例：看多某标的判断被新版取代",
              extra=""),
         dict(name="revoked", cn="已撤销",
              op="显式撤销", op_code="revoke_memory",
-             rule="用户显式调用撤销工具，操作幂等、可重复执行",
+             rule="用户显式调撤销工具，可重复调不会出错",
              trig="触发：误录入 / 失效 / 无效判断",
-             mech="释放唯一索引槽位，关联关系标记失效；保留记录供审计",
-             recall="不再召回，保留完整审计痕迹",
+             mech="释放唯一索引槽位，关联关系标成失效；记录留着备查",
+             recall="不再召回，撤销记录还在",
              ex="例：撤销误入库的错误判断",
-             extra=f"<div style='margin-top:6px;padding:4px 8px;background:{C['pgreen']};border-radius:6px;border:1px dashed {C['green']};'><span style='color:{C['green']};font-size:11.5px;font-weight:700;'>↻ 槽位释放后可新建有效态（非旧记忆复活）</span></div>"),
+             extra=f"<div style='margin-top:6px;padding:4px 8px;background:{C['pgreen']};border-radius:6px;border:1px dashed {C['green']};'><span style='color:{C['green']};font-size:11.5px;font-weight:700;'>↻ 槽位释放后能新建有效态（不是旧记忆复活）</span></div>"),
         dict(name="expired", cn="已到期",
-             op="到期物化", op_code="maintenance 周期",
-             rule="有效期届满（valid_until ≤ 当前时间），维护循环自动物化失效",
+             op="到期失效", op_code="maintenance 周期",
+             rule="到点了（valid_until ≤ 现在），维护循环把它标成失效",
              trig="触发：valid_until 到期",
-             mech="版本与条目同步置为已到期，关联关系标记失效",
-             recall="不再召回，不污染模型上下文",
+             mech="版本和条目一起改成已到期，关联关系标成失效",
+             recall="不再召回，不会塞进模型上下文",
              ex="例：旺季判断到期自动退场",
              extra=""),
     ]
@@ -855,7 +891,7 @@ def lifecycle():
     body = f"""
     <div style='padding:14px 28px 0 28px;'>
       <div class='h2'>生命周期：判断能改、能废、能过期——但都不丢历史</div>
-      <div class='sub' style='margin-top:3px;'>四状态机：有效态唯一参与召回，已取代 / 已撤销 / 已到期均退场不召回；撤销释放唯一索引槽位后允许新建有效态，而非旧记忆复活</div>
+      <div class='sub' style='margin-top:3px;'>四状态机：只有 active 参与召回，其余三态不再召回；撤销释放唯一索引槽位后能新建 active，不是旧记忆复活</div>
     </div>
     <div style='position:absolute;top:88px;bottom:14px;left:28px;right:28px;'>
       <div style='display:grid;grid-template-columns:215px 1fr 1.4fr;grid-template-rows:1fr 1fr 1fr;gap:11px 0;height:100%;'>
@@ -865,7 +901,7 @@ def lifecycle():
     return _page(body)
 
 
-# ===== P14 团队流程 =====
+# ===== P15 团队流程 =====
 def team_flow():
     """团队公共记忆自动提取流程。严格对照 design.md §5.5（行412-433）：
     触发：_run_team_extraction_loop 周期 3600s（默认，0 关闭）
@@ -934,7 +970,7 @@ def team_flow():
     return _page(body)
 
 
-# ===== P15 身份隔离（派生链居中 + 三卡环绕）=====
+# ===== P16 身份隔离（派生链居中 + 三卡环绕）=====
 def isolation():
     """身份隔离机制。严格对照 design.md §5.1-5.4（行360-410）：
     派生链：Bearer Token → StaticTokenVerifier → claims(tenant_id/subject_id/team_ids)
@@ -1275,8 +1311,8 @@ RENDERERS = {
     "P06": competitor_table, "P07": three_diffs,
     # P08 第二章章封 —— 待做
     "P09": background_full, "P10": memory_model, "P11": lifecycle,
-    "P12": admission_full, "P13": recall_three_path,
-    "P14": team_flow, "P15": isolation,
+    "P12": core_loop, "P13": admission_full, "P14": recall_three_path,
+    "P15": team_flow, "P16": isolation,
     # P17 第三章章封 —— 待做
     "P18": test_design_full,
     # P19~ 演示页：用户用真实截图贴 PPT，不渲染占位 —— 待定页号

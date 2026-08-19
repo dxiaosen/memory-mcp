@@ -1,4 +1,9 @@
-"""PostgreSQL owner-first 混合召回查询：词法、向量和近期三路。"""
+"""PostgreSQL owner-first 混合召回查询：词法、向量和近期三路。
+
+词法路用 pg_jieba 中文分词全文检索（ts_rank + @@），替代原 pg_trgm 三元组方案——
+trgm 对中文短词区分度弱，pg_jieba 词典与项目 jieba 依赖同源，DB 侧分词与服务端
+_text_relevance 的 jieba 分词一致。向量路用 pgvector 余弦，近期路按 observed_at 补齐。
+"""
 
 from collections.abc import Sequence
 from datetime import datetime
@@ -46,7 +51,7 @@ def find_recall_candidates(
 ) -> RecallCandidateSet:
     """三路混合召回：词法（40%）、向量（30%）、近期（30%）。
 
-    - 词法路：``pg_trgm`` 相似度，抓字面匹配。
+    - 词法路：``pg_jieba`` 中文分词全文检索（ts_rank + @@），抓字面匹配。
     - 向量路：embedding 余弦相似度，抓语义匹配；需要 ``query_embedding``
       非空且记忆有 embedding 列。
     - 近期路：按 ``observed_at`` 补齐剩余配额。
@@ -108,16 +113,18 @@ def _three_way_query(
     query = f"""
         WITH lexical AS (
             SELECT {_RECORD_FIELDS},
-                   GREATEST(
-                       similarity(lower(i.subject), lower(%s)),
-                       similarity(lower(r.content), lower(%s))
-                   ) AS retrieval_score,
+                   -- ts_rank 无上界，LEAST(*2,1) 归一化到 0-1，保持与原 trgm
+                   -- similarity 相同的语义，供服务端 _score_record ×0.15 加成。
+                   LEAST(GREATEST(
+                       ts_rank(to_tsvector('jiebacfg', i.subject), plainto_tsquery('jiebacfg', %s)),
+                       ts_rank(to_tsvector('jiebacfg', r.content), plainto_tsquery('jiebacfg', %s))
+                   ) * 2.0, 1.0) AS retrieval_score,
                    'lexical'::text AS retrieval_source
             {_CURRENT_JOIN}
             WHERE {conditions}
               AND (
-                  lower(i.subject) %% lower(%s)
-                  OR lower(r.content) %% lower(%s)
+                  to_tsvector('jiebacfg', i.subject) @@ plainto_tsquery('jiebacfg', %s)
+                  OR to_tsvector('jiebacfg', r.content) @@ plainto_tsquery('jiebacfg', %s)
               )
             ORDER BY retrieval_score DESC,
                      r.observed_at DESC,
@@ -179,7 +186,6 @@ def _three_way_query(
         *base_parameters,
         limit,
     ]
-    connection.execute("SET LOCAL pg_trgm.similarity_threshold = 0.08")
     rows = connection.execute(query, parameters).fetchall()
     candidates = tuple(to_recall_candidate(row) for row in rows)
     lexical_count = sum(1 for r in rows if r["retrieval_source"] == "lexical")
@@ -212,16 +218,16 @@ def _two_way_query(
     query = f"""
         WITH lexical AS (
             SELECT {_RECORD_FIELDS},
-                   GREATEST(
-                       similarity(lower(i.subject), lower(%s)),
-                       similarity(lower(r.content), lower(%s))
-                   ) AS retrieval_score,
+                   LEAST(GREATEST(
+                       ts_rank(to_tsvector('jiebacfg', i.subject), plainto_tsquery('jiebacfg', %s)),
+                       ts_rank(to_tsvector('jiebacfg', r.content), plainto_tsquery('jiebacfg', %s))
+                   ) * 2.0, 1.0) AS retrieval_score,
                    'lexical'::text AS retrieval_source
             {_CURRENT_JOIN}
             WHERE {conditions}
               AND (
-                  lower(i.subject) %% lower(%s)
-                  OR lower(r.content) %% lower(%s)
+                  to_tsvector('jiebacfg', i.subject) @@ plainto_tsquery('jiebacfg', %s)
+                  OR to_tsvector('jiebacfg', r.content) @@ plainto_tsquery('jiebacfg', %s)
               )
             ORDER BY retrieval_score DESC,
                      r.observed_at DESC,
@@ -260,7 +266,6 @@ def _two_way_query(
         *base_parameters,
         limit,
     ]
-    connection.execute("SET LOCAL pg_trgm.similarity_threshold = 0.08")
     rows = connection.execute(query, parameters).fetchall()
     candidates = tuple(to_recall_candidate(row) for row in rows)
     lexical_count = sum(1 for r in rows if r["retrieval_source"] == "lexical")

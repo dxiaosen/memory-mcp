@@ -1656,7 +1656,13 @@ def _is_effective(revision: MemoryRevision, at_time: datetime) -> bool:
 
 
 def _trigram_similarity(left: str, right: str) -> float:
-    """用于 InMemory 契约测试的稳定 trigram 近似。"""
+    """用于 InMemory 契约测试的稳定词法召回近似。
+
+    生产 PostgreSQL 词法路用 pg_jieba 中文分词全文检索（ts_rank + @@）；
+    InMemory 契约测试无 pg_jieba，用字符 trigram 近似召回候选选择。
+    真正的相关度打分由服务端 _score_record（jieba 分词 + bigram）统一负责，
+    此处仅用于契约测试验证 owner/profile/lifecycle 隔离下的召回候选选择。
+    """
 
     left_trigrams = _trigrams(normalize_memory_text(left))
     right_trigrams = _trigrams(normalize_memory_text(right))

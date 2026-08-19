@@ -343,7 +343,7 @@ class MemoryService:
         """按关键词搜索当前用户的活动记忆，返回完整记录列表（不裁剪 token 预算）。
 
         与 recall_memory 的区别：recall 做相关性排序并裁剪到 token 预算生成
-        rendered context；search 只按 pg_trgm 相似度排序返回完整记录列表，
+        rendered context；search 只按词法/向量匹配返回完整记录列表（排除近期补齐），
         供研究员精准检索特定主题的历史证据和判断。
         """
 

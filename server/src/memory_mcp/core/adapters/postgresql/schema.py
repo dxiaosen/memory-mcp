@@ -29,12 +29,12 @@ _REQUIRED_TABLES = frozenset(
         "memory_team_extractions",
     }
 )
-_REQUIRED_EXTENSIONS = frozenset({"pg_trgm", "vector"})
+_REQUIRED_EXTENSIONS = frozenset({"pg_jieba", "vector"})
 _REQUIRED_INDEXES = frozenset(
     {
-        "memory_items_recall_subject_trgm_idx",
+        "memory_items_recall_subject_fts_idx",
         "memory_items_one_active_scope_idx",
-        "memory_revisions_recall_content_trgm_idx",
+        "memory_revisions_recall_content_fts_idx",
         "memory_revisions_embedding_idx",
         "memory_revisions_maintenance_expiry_idx",
         "memory_reviews_maintenance_idx",

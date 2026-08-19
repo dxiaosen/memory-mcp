@@ -3,8 +3,12 @@
 -- 外键约束全部移除：owner/profile 引用完整性由应用层事务和 advisory lock 保证，
 -- 不依赖数据库外键；CHECK 和 UNIQUE 约束保留。
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS vector;
+-- pg_jieba：中文分词全文检索扩展，词典与项目 jieba 依赖同源，
+-- 保证 DB 侧分词与服务端 _text_relevance 的 jieba 分词一致。
+-- 替换原 pg_trgm 三元组方案：trgm 对中文短词区分度弱（见 recall.py 词法路），
+-- pg_jieba 词级分词 + ts_rank 对投研实体/标的精确命名更准。
+CREATE EXTENSION IF NOT EXISTS pg_jieba;
 
 CREATE TABLE memory_items (
     memory_id UUID PRIMARY KEY,
@@ -32,8 +36,12 @@ CREATE INDEX memory_items_owner_scope_idx
 CREATE INDEX memory_items_owner_profile_type_idx
     ON memory_items (owner_id, profile_id, memory_type, created_at);
 
-CREATE INDEX memory_items_recall_subject_trgm_idx
-    ON memory_items USING GIN (lower(subject) gin_trgm_ops);
+-- subject 全文检索：pg_jieba 分词生成 tsvector，GIN 索引支撑词法路召回。
+-- pg_jieba 注册的 text search configuration 名为 jiebacfg（parser 名 jieba）。
+-- 替换原 trgm 三元组索引。词法路 ORDER BY ts_rank，命中用 @@。
+CREATE INDEX memory_items_recall_subject_fts_idx
+    ON memory_items USING GIN (to_tsvector('jiebacfg', subject))
+    WHERE lifecycle_status = 'active';
 
 -- 同一 owner/profile 下，每个 (subject, memory_type) 至多一条活动记忆，
 -- 防止并发 auto_save 产生双写（find_current 与 commit_capture 跨事务时的 TOCTOU）。
@@ -134,8 +142,9 @@ CREATE INDEX memory_revisions_owner_effective_idx
     ON memory_revisions (owner_id, lifecycle_status, valid_from, valid_until)
     WHERE is_current;
 
-CREATE INDEX memory_revisions_recall_content_trgm_idx
-    ON memory_revisions USING GIN (lower(content) gin_trgm_ops)
+-- content 全文检索：pg_jieba 分词 GIN 索引，与 subject 索引同理。
+CREATE INDEX memory_revisions_recall_content_fts_idx
+    ON memory_revisions USING GIN (to_tsvector('jiebacfg', content))
     WHERE is_current AND lifecycle_status = 'active';
 
 CREATE INDEX memory_revisions_embedding_idx

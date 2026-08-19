@@ -821,7 +821,7 @@ flowchart LR
     O[owner 集合: 个人 + 团队] --> A[active/current + profile_id]
     A --> VF[valid_from <= now < valid_until]
     VF --> S[optional subject]
-    S --> L["pg_trgm subject/content 词法 top-K (~70%)"]
+    S --> L["pg_jieba subject/content 全文检索词法 top-K (~70%)"]
     S --> V["vector embedding cosine top-K (~30%, 需 provider)"]
     S --> R["observed_at DESC 近期补齐"]
     L --> D[去重 + 限制为 candidate_limit]
@@ -835,7 +835,7 @@ flowchart LR
 | 项 | 规则 |
 | --- | --- |
 | 候选上限 | 由 Application 下推，默认总计 500 |
-| 候选选择 | PostgreSQL 在 owner/Profile/current/active/effective/type/subject 条件内使用 `pg_trgm` GIN 索引选词法候选（约 70%），再用 embedding 向量余弦距离选语义候选（约 30%，需 pgvector 与 `EmbeddingProvider`），最后用近期候选补齐 |
+| 候选选择 | PostgreSQL 在 owner/Profile/current/active/effective/type/subject 条件内使用 `pg_jieba` 中文分词全文检索（ts_rank + @@）选词法候选（约 70%），再用 embedding 向量余弦距离选语义候选（约 30%，需 pgvector 与 `EmbeddingProvider`），最后用近期候选补齐 |
 | 优势 | 词法找回较早相关记忆，向量找回字面不重叠但语义相关的内容，近期保证最新上下文 |
 | 向量降级 | 未配置 `EmbeddingProvider` 或计算失败时跳过 vector 路，仅用词法+近期两路 |
 | 排除内容 | pending、superseded、expired、revoked、deleted 和 blocked |
@@ -1097,8 +1097,8 @@ last_success_at/last_error_type）。`MaintenanceHealth` observe_success/observe
 
 | 项 | 值 |
 | --- | --- |
-| 扩展 | `pg_trgm`、`vector`（pgvector） |
-| 必需索引 | `memory_items_recall_subject_trgm_idx`、`memory_items_one_active_scope_idx`、`memory_revisions_recall_content_trgm_idx`、`memory_revisions_embedding_idx`、`memory_revisions_maintenance_expiry_idx`、`memory_reviews_maintenance_idx` |
+| 扩展 | `pg_jieba`（中文分词全文检索）、`vector`（pgvector） |
+| 必需索引 | `memory_items_recall_subject_fts_idx`、`memory_items_one_active_scope_idx`、`memory_revisions_recall_content_fts_idx`、`memory_revisions_embedding_idx`、`memory_revisions_maintenance_expiry_idx`、`memory_reviews_maintenance_idx` |
 
 `schema.py` 的 `_REQUIRED_INDEXES`/`_REQUIRED_EXTENSIONS` 与 `health` 强制校验。
 
