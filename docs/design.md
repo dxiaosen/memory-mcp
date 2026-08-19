@@ -419,7 +419,8 @@ reference，不参与授权。`current_request_principal()` 只根据已验证 M
 | --- | --- |
 | 触发 | Server lifespan 内 `_run_team_extraction_loop` 按 `MEMORY_MCP_TEAM_EXTRACTION_INTERVAL_SECONDS`（默认 3600，0 关闭）周期运行 |
 | 团队配置 | 从认证主体的 `team_ids` 派生 `team_owner_key`；同 tenant 下配相同 team_id 的成员构成一个团队 |
-| embedding 聚类 | `Repository.extract_team_common_memories` 按 `memory_type` 分组后，组内按 embedding 余弦相似度（默认阈值 0.70；投研共性提取场景语义近似但措辞不同是常态，0.85 过严导致漏聚）贪心聚类成员记忆，最小簇大小默认 2 |
+| embedding 聚类 | `Repository.extract_team_common_memories` 按 `memory_type` 分组后，组内用 **全链接层次聚类**（`scipy.cluster.hierarchy` complete linkage，`hierarchical_cluster_complete`）按 embedding 余弦相似度（默认阈值 0.70）归簇，最小簇大小默认 2。全链接要求新点与簇内**所有**点距离都在阈值内才并入，防止单链贪心的传递漂移（A-B、B-C 达阈值但 A-C 不足时，C 不应并入 A-B 簇）。对固定输入顺序（PG `ORDER BY memory_type, owner_id, memory_id` / in_memory sort）跨进程可复现 |
+| 实体一致补聚 | 全链接用 0.70 严格阈值归簇会漏聚同标的、措辞不同的判断（向量落在 0.50~0.70 中间地带）。`merge_by_entity_overlap` 在聚类后补聚：成员 subject token 与某簇 subject token 并集的 Dice 系数 ≥ 0.5 **且** 与簇内至少一条记忆向量相似度 ≥ 0.50（底线）才并入。两道信号各管一头——Dice 挡"不同标的"，向量底线挡"同标的不同维度"（如"Q3 超预期"与"毛利率"不并）。用 jieba 词级分词（`_team_extraction_tokenizer`）比 SimpleTokenizer 单字切分对短 subject 更稳 |
 | 簇门槛 | 簇需同时满足最小尺寸且至少 2 个不同成员，避免单成员回声室；簇内同时出现对立 `business_progress`（`resolved` 与 `invalidated`）时丢弃该簇——弱方向校验，避免把立场相反的判断并成共性 |
 | 候选向量 | 候选 embedding 取簇内成员均值（簇中心），代表性优于任一成员原始向量，且不随成员写新东西/排序变化而漂移，使幂等比对的 embedding 稳定 |
 | 簇内字段 | subject/content 用确定性纯函数选择（频次优先 + 字典序兜底，跨进程可复现）；当簇内存在与主表达分叉的少数视角时，在 `save_rationale` 追加分歧摘要（引用成员 content 前 40 字符 + owner 标识） |
@@ -427,6 +428,7 @@ reference，不参与授权。`current_request_principal()` 只根据已验证 M
 | 隔离 | 提取只读成员个人记忆、只写团队公共空间；不改变个人记忆 |
 | 幂等 | 同 subject+type 已有团队 pending **或 confirmed** 不重复创建；PG 版本额外按 embedding 余弦距离 < 0.05 检测语义重复。扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。但 confirmed review 指向的 memory 若已被 revoke，唯一索引槽位已释放，与个人记忆 `find_current` 只查 active 对齐：不挡住重建，避免一次撤销后相同判断永远无法再升级为团队共识 |
 | 依赖向量 | 聚类用 embedding 相似度，未配置 provider 时该服务不产出候选但不影响主链路 |
+| 依赖 scipy | 全链接层次聚类用 `scipy.cluster.hierarchy`（`linkage`/`fcluster`），属 domain 纯算法层，不违反 Core 自包含约束 |
 
 提取阶段不做 LLM 合成——原文保留在个人记忆里、分歧摘要在 rationale 给人审阅，人决定是否
 接受与改写。弱方向校验只拦截成员显式标注了 `resolved`/`invalidated` 且互斥的少数情况

@@ -70,6 +70,8 @@ from memory_mcp.core.domain.team_extraction_helpers import (
     average_embedding,
     format_divergence_rationale,
     has_conflicting_business_progress,
+    hierarchical_cluster_complete,
+    merge_by_entity_overlap,
     select_cluster_content,
     select_cluster_subject,
 )
@@ -127,6 +129,8 @@ __all__ = [
     "average_embedding",
     "format_divergence_rationale",
     "has_conflicting_business_progress",
+    "hierarchical_cluster_complete",
+    "merge_by_entity_overlap",
     "normalize_compact",
     "normalize_memory_text",
     "normalize_whitespace",

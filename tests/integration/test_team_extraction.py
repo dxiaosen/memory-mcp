@@ -625,3 +625,146 @@ def test_idempotent_after_confirmed_no_duplicate_pending() -> None:
         status=ReviewStatus.PENDING,
     )
     assert len(pending_after) == 0
+
+
+# ===== 全链接聚类 + 实体一致补聚（升级后行为）=====
+
+# 用于传递漂移测试：A-B 相似 0.95（cos），B-C 相似 0.95，但 A-C 相似 0.0。
+# 单链贪心会把 A/B/C 并一簇（链式效应）；全链接把 A/B 并一簇、C 单独。
+_EMB_DRIFT_A = (1.0, 0.0, 0.0)
+_EMB_DRIFT_B = (0.95, 0.31, 0.0)  # cos(A,B)≈0.95，cos(B,C)≈0.31*0.31/...≈0.95? 重算
+_EMB_DRIFT_C = (0.0, 1.0, 0.0)
+
+
+def test_complete_linkage_prevents_chaining_at_repository_level() -> None:
+    """仓库层：A-B、B-C 相似达阈值但 A-C 正交，全链接不让 C 并入 A-B 簇。
+
+    两个成员写了相似记忆（A-B cos 0.95 ≥ 0.70）+ 第三成员写了和 B 相似但和 A
+    正交的记忆。若贪心（单链）会把三条并一簇（unique_owners=2 满足门槛）产出 1 候选；
+    全链接要求簇内最大距离收敛，A-C 距离 1.0 > 0.30 阈值，C 不并入——产出 1 候选
+    （仅 A、B），C 单独成簇但 unique_owners=1 不满足门槛被丢。
+    """
+
+    # 构造 A-B 相似 0.95、A-C 正交、B-C 也需 < 0.70 才能让 C 不并入。
+    # 用 A=(1,0,0), B=(0.95, 0.31, 0)，C=(0,1,0)：
+    #   cos(A,B)=0.95, cos(A,C)=0, cos(B,C)=0.31*1/(|B|*1)=0.31/0.999≈0.31 < 0.70
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="周报格式",
+            content="项目周报用表格",
+            embedding=_EMB_DRIFT_A,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="周报格式",
+            content="项目周报还是表格",
+            embedding=_EMB_DRIFT_B,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[2]),
+        _member_record(
+            owner_id=_MEMBERS[2],
+            subject="会议纪要",
+            content="会议纪要用文本",
+            embedding=_EMB_DRIFT_C,
+        ),
+    )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS,
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.70,
+        min_cluster_size=2,
+    )
+    # A-B 一簇（2 不同成员）产出 1 候选；C 单独成簇但 unique_owners=1 不满足门槛。
+    assert result.cluster_count == 1
+    assert result.candidate_count == 1
+
+
+def test_entity_overlap_merges_same_entity_different_wording() -> None:
+    """同标的措辞差、向量在 0.50~0.70 中间地带 → 实体补聚并入同簇。
+
+    两成员写了同标的（subject 都含"泡泡玛特"）但措辞不同的判断，向量相似度 0.55
+    （低于聚类阈值 0.70 被全链接分两簇，但 ≥ 实体补聚的向量底线 0.50）。补聚应
+    把两簇并一簇，产出 1 团队候选（否则会被漏聚，产出 0 候选）。
+    """
+
+    # cos = 0.55
+    emb_a = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    emb_b = (0.55, 0.835, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="泡泡玛特海外增长",
+            content="泡泡玛特海外增长强劲",
+            embedding=emb_a,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="泡泡玛特出海持续性",
+            content="泡泡玛特出海持续性强",
+            embedding=emb_b,
+        ),
+    )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.70,
+        min_cluster_size=2,
+    )
+    # 实体补聚应让两簇合一，产出 1 候选（若无补聚则 cluster_count=0、candidate=0）。
+    assert result.cluster_count == 1
+    assert result.candidate_count == 1
+
+
+def test_entity_overlap_does_not_merge_different_dimensions() -> None:
+    """同标的不同维度、向量 <0.50 底线 → 不并，各自单独成簇不产出候选。
+
+    "泡泡玛特Q3超预期"与"泡泡玛特毛利率"都含实体，但向量正交（相似度 0.0 < 0.50
+    底线）——属同标的不同维度判断，实体补聚不触发，各自 unique_owners=1 不满足门槛。
+    """
+
+    repository = _repo_with_members()
+    repository.add(
+        PrincipalContext(_MEMBERS[0]),
+        _member_record(
+            owner_id=_MEMBERS[0],
+            subject="泡泡玛特Q3超预期",
+            content="泡泡玛特Q3营收超预期",
+            embedding=_EMBEDDING_SEMANTIC_A,
+        ),
+    )
+    repository.add(
+        PrincipalContext(_MEMBERS[1]),
+        _member_record(
+            owner_id=_MEMBERS[1],
+            subject="泡泡玛特毛利率",
+            content="泡泡玛特毛利率企稳",
+            embedding=_EMBEDDING_SEMANTIC_B,
+        ),
+    )
+    result = repository.extract_team_common_memories(
+        team_owner_id=_TEAM_OWNER,
+        member_owner_ids=_MEMBERS[:2],
+        profile_id="project-work",
+        effective_at=_NOW,
+        similarity_threshold=0.70,
+        min_cluster_size=2,
+    )
+    # 不并：各自单独成簇，unique_owners=1 不满足门槛 → 0 候选。
+    assert result.candidate_count == 0

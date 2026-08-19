@@ -363,86 +363,6 @@ def three_diffs():
     return _page(f"<div style='display:flex;gap:20px;padding:20px 28px;height:545px;'>{cards}</div>")
 
 
-# ===== P12 核心闭环（去掉准入状态，丰富读写链路每个环节）=====
-def core_loop():
-    """上下两条链路，白底 navy 框 + 分区色带。字号放大，拉开间距，无底部条。
-    业务逻辑经代码核实：写入 4 步(入队→异步抽取→准入与生命周期→事务落库)，准入细节归 P13；
-    召回 5 步=词法+向量+近期三路+关系感知补漏。"""
-    # 链路色带：写入淡蓝、读取更浅
-    band_w = "#EEF4F9"; band_r = "#F4F6F8"
-    # 链路强调色：写入 navy、读取 blue
-    wc, rc = C["navy"], C["blue"]
-
-    def chain(items, y0, mk):
-        """白底框 + 左侧色条 + 序号圆角块 + 标题 + 3 行说明。撑满半幅。"""
-        n = len(items)
-        gap = 20
-        node_w = (1098 - (n - 1) * gap) / n
-        node_h = 150
-        x0 = 28
-        parts = []
-        for i, (num, label, lines, col) in enumerate(items):
-            x = x0 + i * (node_w + gap)
-            # 框：白底 + navy 边框
-            parts.append(f"<rect x='{x:.0f}' y='{y0}' width='{node_w:.0f}' height='{node_h}' rx='9' fill='#fff' stroke='{C['light']}' stroke-width='1.5'/>")
-            # 左侧色条
-            parts.append(f"<rect x='{x:.0f}' y='{y0}' width='6' height='{node_h}' rx='3' fill='{col}'/>")
-            cx = x + node_w / 2
-            lx = x + 22   # 文字左对齐起点（避开色条）
-            # 序号 + 标题同行
-            parts.append(f"<text x='{x+18:.0f}' y='{y0+30}' fill='{col}' font-size='19' font-weight='800'>{num}</text>")
-            parts.append(f"<text x='{x+46:.0f}' y='{y0+30}' fill='{C['navy']}' font-size='14.5' font-weight='800'>{label}</text>")
-            # 分隔线
-            parts.append(f"<line x1='{x+16:.0f}' y1='{y0+44}' x2='{x+node_w-16:.0f}' y2='{y0+44}' stroke='{C['light']}' stroke-width='1'/>")
-            # 3 行业务逻辑
-            for j, ln in enumerate(lines):
-                parts.append(f"<text x='{x+18:.0f}' y='{y0+66+j*24}' fill='{C['ink']}' font-size='12.5'>{ln}</text>")
-            # 箭头
-            if i < n - 1:
-                ax1 = x + node_w; ax2 = x + node_w + gap; ay = y0 + node_h / 2
-                parts.append(f"<line x1='{ax1:.0f}' y1='{ay:.0f}' x2='{ax2-6:.0f}' y2='{ay:.0f}' stroke='{C['navy']}' stroke-width='2' marker-end='url(#{mk})'/>")
-        return "".join(parts)
-
-    write = [
-        ("①", "Stop Hook 入队", ["输出完成即触发", "毫秒级返回不阻塞", "身份幂等字段服务端组装"], wc),
-        ("②", "异步抽取", ["Worker 周期捞 PENDING", "LLM 结构化抽候选", "逐轮逐条，不跨轮聚类"], wc),
-        ("③", "准入与生命周期", ["auto_save/pending/discard", "新判断取代旧版", "并入或留版本链"], wc),
-        ("④", "事务化落库", ["advisory lock 幂等提交", "写 items+revisions+evidence", "单一事务一致落库"], wc),
-    ]
-    read = [
-        ("①", "BeforeRun Hook", ["新一轮提问即触发", "召回由 Hook 自动完成", "模型无需自找记忆"], rc),
-        ("②", "身份过滤前置", ["owner 从 Token 派生", "SQL WHERE 内先行过滤", "工具参数拒收 owner"], rc),
-        ("③", "三路召回融合", ["词法 40%·向量 30%·近期 30%", "单 SQL 内 CTE 三路检索", "候选上限 500"], rc),
-        ("④", "关系感知加权", ["补漏候选关系端点", "关系邻居 +0.12 加权", "阈值 0.18 过滤"], rc),
-        ("⑤", "排序注入", ["Profile 优先级排序", "token 预算 600 内截断", "注入 additional_context"], rc),
-    ]
-
-    body = f"""
-    <div style='padding:14px 28px 0 28px;'>
-      <div class='h2'>核心闭环：写入异步治理，读取同步注入</div>
-      <div class='sub' style='margin-top:3px;'>读写解耦——用户不等抽取；召回前服务端 SQL 内身份过滤防越权</div>
-    </div>
-    <div style='position:absolute;top:62px;left:0;right:0;'>
-      <svg viewBox='0 0 1154 480' width='1154' height='480'>
-        <!-- 写入色带 -->
-        <rect x='14' y='10' width='1126' height='205' rx='12' fill='{band_w}'/>
-        <text x='34' y='38' fill='{wc}' font-size='17' font-weight='800'>写入链路：异步治理，用户不手动存</text>
-        <text x='34' y='57' fill='{C['mid']}' font-size='12'>入队毫秒级不阻塞用户；抽取与准入在后台 Worker 异步完成</text>
-        {chain(write, 70, 'wa')}
-        <!-- 读取色带 -->
-        <rect x='14' y='250' width='1126' height='205' rx='12' fill='{band_r}'/>
-        <text x='34' y='278' fill='{rc}' font-size='17' font-weight='800'>读取链路：每轮自动召回，不让模型自己找</text>
-        <text x='34' y='297' fill='{C['mid']}' font-size='12'>词法+向量+近期三路召回，关系感知加权，按 Profile 优先级在 token 预算内注入</text>
-        {chain(read, 310, 'ra')}
-        <defs>
-          <marker id='wa' markerWidth='9' markerHeight='9' refX='7' refY='4.5' orient='auto'><path d='M0,0 L9,4.5 L0,9 z' fill='{C['navy']}'/></marker>
-          <marker id='ra' markerWidth='9' markerHeight='9' refX='7' refY='4.5' orient='auto'><path d='M0,0 L9,4.5 L0,9 z' fill='{C['navy']}'/></marker>
-        </defs>
-      </svg>
-    </div>"""
-    return _page(body)
-
-
 # ===== P10 记忆数据模型（详细解释治理字段）=====
 def memory_model():
     """记忆数据模型 = 五张表结构图。上区三表主轴(captures→items 1:N revisions，
@@ -582,49 +502,59 @@ def memory_model():
     return _page(body)
 
 
-# ===== P13 准入（候选处理流水线：四道防线 + reason_code 证据）=====
+# ===== P12 写入链路全流程（异步治理→来源校验→准入判定→去重→事务落库）=====
 def admission_full():
-    """候选从对话到入库的完整处理流水线，对照 candidate_processing.process() 四段：
-    ①来源校验 ②准入判定(6道规则) ③生命周期去重 ④分类写入。
-    横向一条流程：候选流入 →→ 四步顺序处理 →→ 落库。每步块内上为处理点（关键词+解释），
-    下为产出分流条（该步处理后各类候选的去向：✕/⏸/✓），流向与分流在流程内一气贯通。"""
+    """写入链路全流程：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库。
+    前两步为异步治理（Stop Hook 入队、Worker 异步抽取各独立一块），后四步为候选四道防线。
+    横向六步流程：对话 →→ 六步顺序处理 →→ 落库。每步块内上为处理点（关键词+解释，垂直
+    均匀分布对齐），下为产出分流条（候选去向：弃/待/→/✓）。"""
     GO, HOLD, DROP = C["green"], C["orange"], C["gray"]
     # 流程节点: (序号, 名称, 处理点[(关键词,解释)], 产出分流[(类别, 状态符, 说明)], 色)
+    # ①Stop Hook 触发 / ②异步抽取 拆成两个独立节点（不再合并）；③~⑥ 为候选四道防线
     # 状态符（等大色块）：弃=丢弃不写记忆 / 待=写reviews待确认 / →=进入下一步 / ✓=落库active
     stages = [
-        ("①", "来源校验",
-         [("逐字核对出处", "source_expression 须在脱敏原文逐字找到"),
+        ("①", "Stop Hook 触发",
+         [("输出完成即入队", "毫秒级返回，不阻塞用户"),
+          ("身份幂等服务端组装", "event_id/contract_version 服务端给"),
+          ("只传对话内容", "conversation_id/turn_id/原话")],
+         [],
+         C["slate"]),
+        ("②", "异步抽取",
+         [("Worker 抢占 PENDING", "FOR UPDATE SKIP LOCKED 捞未处理"),
+          ("LLM 结构化抽候选", "with_structured_output 强约束"),
+          ("逐轮逐条不跨轮", "同轮多条独立处理")],
+         [],
+         C["slate"]),
+        ("③", "来源校验",
+         [("逐字核对出处", "source_expression 须在原文逐字找到"),
           ("剔除操作指令", "「别用某工具/别联网」是临时指令"),
-          ("敏感词拦截", "含密钥等敏感词直接 BLOCKED"),
-          ("断言来源纠正", "助手推断误标用户原话按真实来源改"),
+          ("敏感词拦截", "命中凭据/持仓/交易规则直接 BLOCKED"),
           ("单条容错", "一条出错只丢它，不拖垮同轮其它")],
          [("编造/操作/敏感", "弃", "出处不可追溯，丢弃不写记忆"),
           ("可信候选", "→", "出处核实通过，进入准入判定")],
-         C["slate"]),
-        ("②", "准入判定",
-         [("临时内容丢弃", "今日行情、盘中异动等短期内容"),
-          ("存疑内容待审", "用户明说「也许/猜测/不确定」"),
-          ("系统推断待审", "模型归纳的结论 system_inference"),
-          ("非显式或低置信待审", "含糊表达、置信度<0.9 的"),
-          ("全过方放行", "用户明确+持久+高置信+来源为用户")],
-         [("临时内容", "弃", "短期内容不进长期记忆"),
-          ("存疑/推断/非用户源", "待", "写 reviews 表，待人工确认"),
-          ("显式持久高置信", "→", "通过保守判定，进入去重")],
          C["navy"]),
-        ("③", "生命周期去重",
-         [("字面命中去重", "同 subject+type 已有 active 并入当证据"),
-          ("语义命中去重", "字面对不上用 embedding 找近似 active"),
+        ("④", "准入判定",
+         [("临时内容丢弃", "今日行情、盘中异动等短期内容"),
+          ("存疑/推断待审", "猜测、模型归纳的 system_inference"),
+          ("非显式低置信待审", "含糊表达、置信度<0.9 的"),
+          ("全过方放行", "用户明确+持久+高置信")],
+         [("临时内容", "弃", "短期内容不进长期记忆"),
+          ("存疑/推断/非显式", "待", "写 reviews 表，待人工确认"),
+          ("显式持久高置信", "→", "通过保守判定，进入去重")],
+         C["darknavy"]),
+        ("⑤", "生命周期去重",
+         [("字面/语义命中去重", "同 subject+type 或 embedding 近似并入"),
           ("显式替换取代", "用户说「改成/调整」时新版取代旧版"),
           ("歧义降级待审", "多条目标相近分不清替谁，交人确认"),
           ("回声丢弃", "助手复述已有记忆或跨类型复述")],
          [("回声/碎片", "弃", "复述或碎片化重复，丢弃"),
           ("歧义目标", "待", "替换目标不唯一，待人工指认"),
-          ("新增/合并/取代", "→", "进入分类写入")],
+          ("新增/合并/取代", "→", "进入事务化落库")],
          C["darknavy"]),
-        ("④", "分类写入",
-         [("自动入库", "写 items+revisions+evidence 进 active"),
-          ("待确认", "写 reviews 表 pending，人确认才转正"),
-          ("不入库留痕", "只留处理记录备审计，不污染判断池")],
+        ("⑥", "事务化落库",
+         [("advisory lock 幂等", "pg_advisory_xact_lock 防重复提交"),
+          ("单一事务一致写", "items+revisions+evidence 一事务"),
+          ("待确认写 reviews", "pending 人确认才转 active")],
          [("不入库留痕", "弃", "只留审计记录，不写记忆"),
           ("待确认", "待", "写 reviews 表，确认后转 active"),
           ("全过", "✓", "写 items+revisions，落库 active")],
@@ -641,13 +571,16 @@ def admission_full():
         return (f"<span style='width:24px;height:24px;display:inline-flex;align-items:center;"
                 f"justify-content:center;border-radius:6px;flex:0 0 auto;font-size:12px;font-weight:800;"
                 f"background:{rc};color:#fff;line-height:1;'>{sym}</span>")
-    # 节点模板：色块标题条 + 白底处理点 + 产出分流区（flex:1 撑满到节点底，四节点底部对齐）
+    # 处理点统一渲染：关键词在上、解释在下（纵向），间距充足、跨节点对齐
+    def point_row(kw, desc, c):
+        return (f"<div style='margin-bottom:0;'>"
+                f"<div style='font-size:12.5px;font-weight:800;color:{c};line-height:1.3;'>{kw}</div>"
+                f"<div style='font-size:10.5px;color:{C['mid']};line-height:1.45;margin-top:2px;'>{desc}</div></div>")
+    # 节点模板：色块标题条 + 白底处理点（justify:space-between 撑开对齐）+ 产出分流区
     def node(num, name, points, routes, c):
         pts = ""
         for kw, desc in points:
-            pts += (f"<div style='margin-bottom:10px;'>"
-                    f"<div style='font-size:13px;font-weight:800;color:{c};line-height:1.25;'>{kw}</div>"
-                    f"<div style='font-size:10.5px;color:{C['mid']};line-height:1.4;margin-top:2px;'>{desc}</div></div>")
+            pts += point_row(kw, desc, c)
         rt = ""
         for txt, sym, note in routes:
             rt += (f"<div style='display:flex;align-items:flex-start;gap:7px;margin-bottom:8px;'>"
@@ -655,27 +588,40 @@ def admission_full():
                    f"<div style='flex:1 1 0;min-width:0;line-height:1.4;padding-top:1px;'>"
                    f"<div style='font-size:11px;font-weight:700;color:{C['ink']};'>{txt}</div>"
                    f"<div style='font-size:10px;color:{C['mid']};margin-top:1px;'>{note}</div></div></div>")
+        header = (f"<div style='background:{c};color:#fff;border-radius:8px 8px 0 0;padding:11px 8px;text-align:center;flex:0 0 auto;'>"
+                  f"<div style='font-size:18px;font-weight:800;line-height:1.2;'>{num} {name}</div></div>")
+        if not routes:
+            # ①②无产出分流：body 撑满到底并加圆角
+            return (f"<div style='display:flex;flex-direction:column;height:100%;min-height:0;flex:1 1 0;box-sizing:border-box;'>"
+                    f"{header}"
+                    f"<div style='background:#fff;border:1px solid {c};border-top:none;border-radius:0 0 8px 8px;padding:13px 12px;flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:space-around;'>{pts}</div>"
+                    f"</div>")
         return (f"<div style='display:flex;flex-direction:column;height:100%;min-height:0;flex:1 1 0;box-sizing:border-box;'>"
-                f"<div style='background:{c};color:#fff;border-radius:8px 8px 0 0;padding:11px 8px;text-align:center;flex:0 0 auto;'>"
-                f"<div style='font-size:18px;font-weight:800;line-height:1.2;'>{num} {name}</div></div>"
-                f"<div style='background:#fff;border:1px solid {c};border-top:none;padding:12px 12px;flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:flex-start;'>{pts}</div>"
+                f"{header}"
+                f"<div style='background:#fff;border:1px solid {c};border-top:none;padding:13px 12px;flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:space-around;'>{pts}</div>"
                 f"<div style='background:{C['vly']};border:1px solid {c};border-top:none;border-radius:0 0 8px 8px;padding:10px 11px;flex:0 0 168px;display:flex;flex-direction:column;justify-content:flex-start;'>"
                 f"<div style='font-size:10px;font-weight:700;color:{c};margin-bottom:7px;letter-spacing:0.5px;'>产出分流</div>{rt}</div>"
                 f"</div>")
     def arrow():
         return (f"<div style='display:flex;align-items:center;color:{C['mid']};font-size:22px;"
                 f"padding:0 3px;flex:0 0 auto;font-weight:700;'>→</div>")
-    cols = ""
-    for i, st in enumerate(stages):
-        cols += node(*st)
-        if i < len(stages) - 1:
-            cols += arrow()
+    # 纵向箭头（①→② 块内上下衔接）
+    def varrow():
+        return (f"<div style='display:flex;align-items:center;justify-content:center;"
+                f"color:{C['mid']};font-size:20px;font-weight:700;flex:0 0 auto;'>↓</div>")
+    # ①Stop Hook + ②异步抽取 纵向堆成一列，③④⑤⑥ 横向接出
+    col_12 = (f"<div style='display:flex;flex-direction:column;flex:1 1 0;min-width:0;gap:0;'>"
+              f"{node(*stages[0])}{varrow()}{node(*stages[1])}</div>")
+    rest = ""
+    for st in stages[2:]:
+        rest += arrow() + node(*st)
+    cols = col_12 + rest
     body = f"""
     <div style='padding:10px 28px 0 28px;'>
-      <div class='h2'>候选处理流水线：来源校验 → 准入判定 → 生命周期去重 → 分类写入</div>
-      <div class='sub' style='margin-top:3px;'>候选经四步顺序处理，每步产出按去向分流（✓落库 / 待确认写 reviews / 弃丢弃）；任一步拦截均留处理记录，单条失败不拖垮整轮</div>
+      <div class='h2'>写入链路全流程：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库</div>
+      <div class='sub' style='margin-top:3px;'>前两步异步治理不阻塞用户，后四步为候选防线，每步产出按去向分流（✓落库 / 待确认写 reviews / 弃丢弃）</div>
     </div>
-    <div style='padding:16px 28px 0 28px;display:flex;align-items:stretch;gap:0;height:480px;'>{cols}</div>
+    <div style='padding:16px 28px 0 28px;display:flex;align-items:stretch;gap:0;height:470px;'>{cols}</div>
     <div style='padding:6px 28px 0 28px;display:flex;gap:20px;justify-content:center;'>
       <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('✓')}落库 active</span>
       <span style='display:flex;align-items:center;gap:5px;font-size:11.5px;color:{C["mid"]};'>{status_box('待')}待确认（写 reviews）</span>
@@ -685,21 +631,21 @@ def admission_full():
     return _page(body)
 
 
-# ===== P14 召回（HTML flexbox 流水线，统一卡片模板）=====
+# ===== P13 召回（HTML flexbox 流水线，统一卡片模板）=====
 def recall_three_path():
     """三路混合召回 + 召回后加权打分。严格对照 recall.py _three_way_query + recall_service._score_record。
     三路 = 词法(40%)+向量(30%)+近期(30%)；关系是召回后加权(_RELATION_BOOST=0.12)，非独立路。
     词法路用 pg_jieba 中文分词全文检索（ts_rank + @@），替代原 pg_trgm 三元组（trgm 对中文短词弱）。
     打分常量：subject +0.20 / 向量 +0.15 / profile提示 +0.16 / 关系 +0.12 / 时效衰减0.15(半衰期90天)。
     阈值 _RELEVANCE_THRESHOLD=0.18。优先级：偏好>决策>判断>风险（investment_research.py）。
-    统一卡片模板：色块标题条 + 白底主体 + 同色细边框；字多模块大、字少模块小。"""
-    paths = [("词法路", "pg_jieba 全文检索", "subject 与 content 分词命中", "配额 40%"),
-             ("向量路", "embedding 余弦", "语义近义，Qwen 向量化", "配额 30%"),
-             ("近期路", "observed_at 补额", "补足配额，按时间排序", "配额 30%")]
+    统一卡片模板：色块标题条 + 白底主体 + 同色细边框；字多模块大、字少模块小。
+    重设计为上下两区：上区 7 列主流程（加查询归一化列），下区两块技术明细卡（三路机制 + 打分加成）。"""
+    paths = [("词法路", "pg_jieba 全文检索", "subject/content 分词命中", "40%"),
+             ("向量路", "embedding 余弦", "语义近义，Qwen 向量化", "30%"),
+             ("近期路", "observed_at 补额", "补足配额，按时间排序", "30%")]
     prio = ["偏好 > 决策 > 判断 > 风险", "仅召回 active 记忆", "关系链追一层防漂移", "过期 / 撤销不召回"]
 
     # —— 统一配色：全流程 navy 主色，标题条深浅分阶段，主体统一白底 + navy 细边框 ——
-    # 标题条色：端点用 navy，核心（三路/打分）用 darknavy 加深以突出
     HEAD_LIGHT = C["navy"]      # 端点模块标题条
     HEAD_DEEP = C["darknavy"]   # 核心模块标题条（加深突出）
     EDGE = C["navy"]            # 所有主体边框统一 navy
@@ -707,90 +653,118 @@ def recall_three_path():
     # 统一卡片模板：色块标题条 + 白底主体（navy 细边框）。fill=True 撑满父列
     def card(title, sub, head_color, body_html, fill=False):
         return (f"<div style='display:flex;flex-direction:column;{('height:100%;min-height:0;' if fill else '')}'>"
-                f"<div style='background:{head_color};color:#fff;border-radius:8px 8px 0 0;padding:9px 8px;text-align:center;flex:0 0 auto;'>"
-                f"<div style='font-size:16px;font-weight:800;line-height:1.2;'>{title}</div>"
-                f"<div style='font-size:12px;opacity:0.92;margin-top:3px;line-height:1.2;'>{sub}</div></div>"
-                f"<div style='background:#fff;border:1px solid {EDGE};border-top:none;border-radius:0 0 8px 8px;padding:12px 10px;{('flex:1 1 0;min-height:0;' if fill else 'flex:0 0 auto;')}display:flex;flex-direction:column;justify-content:center;text-align:center;align-items:stretch;'>"
+                f"<div style='background:{head_color};color:#fff;border-radius:7px 7px 0 0;padding:7px 6px;text-align:center;flex:0 0 auto;'>"
+                f"<div style='font-size:13.5px;font-weight:800;line-height:1.2;'>{title}</div>"
+                f"<div style='font-size:10px;opacity:0.92;margin-top:2px;line-height:1.2;'>{sub}</div></div>"
+                f"<div style='background:#fff;border:1px solid {EDGE};border-top:none;border-radius:0 0 7px 7px;padding:9px 7px;{('flex:1 1 0;min-height:0;' if fill else 'flex:0 0 auto;')}display:flex;flex-direction:column;justify-content:center;text-align:center;align-items:stretch;'>"
                 f"{body_html}</div></div>")
 
+    # —— 上区：7 列主流程 ——
     # 用户问题（端点）
-    q = card("本轮问题", "检索起点", HEAD_LIGHT,
-             f"<div style='font-size:17px;font-weight:800;color:{C['ink']};line-height:1.4;'>用户提问</div>", fill=True)
+    q = card("本轮问题", "BeforeRun 触发", HEAD_LIGHT,
+             f"<div style='font-size:14px;font-weight:800;color:{C['ink']};line-height:1.4;'>用户提问</div>", fill=True)
+    # 查询归一化（新增列——剔除操作指令，保留实体）
+    norm = card("查询归一化", "剔除指令噪声", HEAD_LIGHT,
+                f"<div style='font-size:11.5px;font-weight:700;color:{C['ink']};line-height:1.5;'>按子句切分<br/>剔「别联网/按表格」<br/>留实体主题</div>"
+                f"<div style='font-size:10px;color:{C['mid']};margin-top:5px;line-height:1.4;'>纯指令则跳召回</div>", fill=True)
     # 身份过滤（端点）
-    f_ = card("身份过滤", "owner 隔离", HEAD_LIGHT,
-              f"<div style='font-size:14px;font-weight:700;color:{C['ink']};line-height:1.55;'>先按 owner 过滤<br/>团队记忆可见</div>", fill=True)
-    # 三路召回（核心，纵向三子卡——统一 pblue 底 + navy 边框，用编号区分）
+    f_ = card("身份过滤", "owner 隔离前置", HEAD_LIGHT,
+              f"<div style='font-size:11.5px;font-weight:700;color:{C['ink']};line-height:1.5;'>owner = ANY(可见集)<br/>active + 未过期</div>"
+              f"<div style='font-size:10px;color:{C['mid']};margin-top:5px;line-height:1.4;'>团队记忆可见</div>", fill=True)
+    # 三路召回（核心，纵向三子卡——统一 pblue 底 + navy 边框）
     path_cards = ""
     for i, (n, method, desc, quota) in enumerate(paths, 1):
-        path_cards += (f"<div style='flex:1;background:{C['pblue']};border:1px solid {EDGE};border-radius:8px;padding:9px 10px;display:flex;flex-direction:column;justify-content:center;text-align:center;min-height:0;'>"
-                       f"<div style='font-size:15px;font-weight:800;color:{C['navy']};line-height:1.2;'>{i}. {n}</div>"
-                       f"<div style='font-size:12.5px;color:{C['ink']};margin-top:4px;line-height:1.3;'>{method}</div>"
-                       f"<div style='font-size:11.5px;color:{C['mid']};margin-top:3px;line-height:1.3;'>{desc}</div>"
-                       f"<div style='font-size:13px;font-weight:700;color:{C['navy']};margin-top:5px;'>{quota}</div></div>")
-    three_body = f"<div style='display:flex;flex-direction:column;gap:9px;flex:1;min-height:0;'>{path_cards}</div>"
+        path_cards += (f"<div style='flex:1;background:{C['pblue']};border:1px solid {EDGE};border-radius:6px;padding:6px 7px;display:flex;flex-direction:column;justify-content:center;text-align:center;min-height:0;'>"
+                       f"<div style='font-size:12.5px;font-weight:800;color:{C['navy']};line-height:1.2;'>{i}. {n}</div>"
+                       f"<div style='font-size:11px;color:{C['ink']};margin-top:3px;line-height:1.25;'>{method}</div>"
+                       f"<div style='font-size:10px;color:{C['mid']};margin-top:2px;line-height:1.25;'>{desc}</div>"
+                       f"<div style='font-size:12px;font-weight:700;color:{C['navy']};margin-top:4px;'>配额 {quota}</div></div>")
+    three_body = f"<div style='display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;'>{path_cards}</div>"
     three = card("三路混合召回", "词法 · 向量 · 近期", HEAD_DEEP, three_body, fill=True)
-    # 打分融合（核心，关系加权为召回后加成框 + 主框居中填满）
+    # 合并去重（单 SQL 三 CTE）
+    dedup = card("合并去重", "单 SQL 三 CTE", HEAD_DEEP,
+                 f"<div style='font-size:12px;font-weight:700;color:{C['navy']};line-height:1.5;'>UNION ALL<br/>NOT EXISTS 去重</div>"
+                 f"<div style='font-size:10px;color:{C['mid']};margin-top:5px;line-height:1.4;'>limit=500<br/>三路互不依赖</div>", fill=True)
+    # 打分融合（关系加权为召回后加成框 + 主框居中填满）
     merge_body = (
-        f"<div style='display:flex;flex-direction:column;flex:1;gap:9px;'>"
-        # 关系加权（召回后加权，非独立路——浅底虚线框区分，仅此一处点缀色）
-        f"<div style='background:{C['pgreen']};border:1px dashed {C['green']};border-radius:6px;padding:8px 6px;text-align:center;'>"
-        f"<div style='font-size:13px;font-weight:800;color:{C['green']};'>关系加权 +0.12</div>"
-        f"<div style='font-size:11px;color:{C['mid']};margin-top:2px;'>supports/challenges 追一层</div></div>"
-        # 主框：合并去重·加权打分（浅底 navy 边框，与全流程统一）
-        f"<div style='background:{C['vly']};border:1px solid {EDGE};border-radius:8px;padding:14px 8px;text-align:center;flex:1;display:flex;flex-direction:column;justify-content:center;'>"
-        f"<div style='font-size:16px;font-weight:800;line-height:1.35;color:{C['navy']};'>合并去重</div>"
-        f"<div style='font-size:16px;font-weight:800;line-height:1.35;margin-top:5px;color:{C['navy']};'>加权打分</div>"
-        f"<div style='font-size:12px;color:{C['mid']};margin-top:10px;'>阈值 ≥ 0.18</div></div></div>")
+        f"<div style='display:flex;flex-direction:column;flex:1;gap:6px;'>"
+        # 关系加权（召回后加权，非独立路——浅底虚线框区分）
+        f"<div style='background:{C['pgreen']};border:1px dashed {C['green']};border-radius:5px;padding:6px 5px;text-align:center;'>"
+        f"<div style='font-size:11.5px;font-weight:800;color:{C['green']};'>关系补漏 +0.12</div>"
+        f"<div style='font-size:10px;color:{C['mid']};margin-top:1px;'>追一层 supports</div></div>"
+        # 主框：加权打分（浅底 navy 边框）
+        f"<div style='background:{C['vly']};border:1px solid {EDGE};border-radius:6px;padding:9px 6px;text-align:center;flex:1;display:flex;flex-direction:column;justify-content:center;'>"
+        f"<div style='font-size:13px;font-weight:800;line-height:1.35;color:{C['navy']};'>加权打分</div>"
+        f"<div style='font-size:10.5px;color:{C['mid']};margin-top:5px;'>阈值 ≥ 0.18</div></div></div>")
     merge = card("打分融合", "召回后加权", HEAD_DEEP, merge_body, fill=True)
-    # top-K 截断（端点）
-    topk = card("top-K 截断", "token 预算内", HEAD_LIGHT,
-                f"<div style='font-size:14.5px;font-weight:700;color:{C['navy']};line-height:1.7;'>按分排序<br/>取前 K 条</div>"
-                f"<div style='font-size:12.5px;color:{C['mid']};margin-top:10px;line-height:1.6;'>超预算低分条<br/>截断丢弃</div>", fill=True)
     # 注入（端点）
-    inj = card("注入上下文", "打分高者优先", HEAD_LIGHT,
-               f"<div style='font-size:16px;font-weight:800;color:{C['ink']};line-height:1.45;'>注入模型上下文</div>"
-               f"<div style='font-size:12.5px;color:{C['mid']};margin-top:10px;line-height:1.6;'>打分高者优先进 LLM</div>", fill=True)
+    inj = card("注入上下文", "topK 截断", HEAD_LIGHT,
+               f"<div style='font-size:12.5px;font-weight:800;color:{C['ink']};line-height:1.4;'>注入模型上下文</div>"
+               f"<div style='font-size:10px;color:{C['mid']};margin-top:5px;line-height:1.4;'>token 预算截断<br/>安全头防注入</div>", fill=True)
 
-    arrow = f"<div style='display:flex;align-items:center;color:{C['mid']};font-size:24px;font-weight:700;flex:0 0 auto;padding:0 3px;'>→</div>"
-
-    # 六列 grid 网格，1fr 等高；箭头单独成列窄宽
-    cols = "1fr 26px 1.1fr 26px 2.4fr 26px 1.4fr 26px 1fr 26px 1.5fr"
-    flow = (f"<div style='display:grid;grid-template-columns:{cols};align-items:stretch;height:378px;'>"
-            f"<div style='display:flex;flex-direction:column;'>{q}</div>"
-            f"<div style='display:flex;align-items:center;justify-content:center;color:{C['mid']};font-size:24px;font-weight:700;'>→</div>"
-            f"<div style='display:flex;flex-direction:column;'>{f_}</div>"
-            f"<div style='display:flex;align-items:center;justify-content:center;color:{C['mid']};font-size:24px;font-weight:700;'>→</div>"
-            f"<div style='display:flex;flex-direction:column;'>{three}</div>"
-            f"<div style='display:flex;align-items:center;justify-content:center;color:{C['mid']};font-size:24px;font-weight:700;'>→</div>"
-            f"<div style='display:flex;flex-direction:column;'>{merge}</div>"
-            f"<div style='display:flex;align-items:center;justify-content:center;color:{C['mid']};font-size:24px;font-weight:700;'>→</div>"
-            f"<div style='display:flex;flex-direction:column;'>{topk}</div>"
-            f"<div style='display:flex;align-items:center;justify-content:center;color:{C['mid']};font-size:24px;font-weight:700;'>→</div>"
+    # 七列 grid：问题/归一化/身份(薄) + 三路(宽) + 合并 + 打分 + 注入；箭头窄列
+    # 13 段 = 7 内容列 + 6 箭头列
+    cols = "0.85fr 20px 0.95fr 20px 0.95fr 20px 2.3fr 20px 1.1fr 20px 1.2fr 20px 1fr"
+    arrow_col = (f"<div style='display:flex;align-items:center;justify-content:center;"
+                 f"color:{C['mid']};font-size:20px;font-weight:700;'>→</div>")
+    flow = (f"<div style='display:grid;grid-template-columns:{cols};align-items:stretch;height:300px;'>"
+            f"<div style='display:flex;flex-direction:column;'>{q}</div>{arrow_col}"
+            f"<div style='display:flex;flex-direction:column;'>{norm}</div>{arrow_col}"
+            f"<div style='display:flex;flex-direction:column;'>{f_}</div>{arrow_col}"
+            f"<div style='display:flex;flex-direction:column;'>{three}</div>{arrow_col}"
+            f"<div style='display:flex;flex-direction:column;'>{dedup}</div>{arrow_col}"
+            f"<div style='display:flex;flex-direction:column;'>{merge}</div>{arrow_col}"
             f"<div style='display:flex;flex-direction:column;'>{inj}</div>"
             f"</div>")
 
+    # —— 下区：两块技术明细卡 ——
+    # 左卡：三路机制（通俗解释 + 关键专业词）
+    mech_items = [
+        ("词法路", "pg_jieba 分词全文检索", "按字面分词匹配，命中 subject/content，占 40%"),
+        ("向量路", "embedding 余弦相似", "按语义近义召回，字面不同意思近也能找，占 30%"),
+        ("近期路", "observed_at 时间补齐", "前两路没召够时按时间新近补满，占 30%"),
+    ]
+    mech_rows = ""
+    for n, m, d in mech_items:
+        mech_rows += (f"<div style='display:flex;gap:9px;align-items:center;flex:1 1 0;min-height:0;'>"
+                      f"<div style='flex:0 0 52px;font-size:12px;font-weight:800;color:{C['navy']};'>{n}</div>"
+                      f"<div style='flex:1 1 0;min-width:0;'>"
+                      f"<div style='font-size:11.5px;font-weight:700;color:{C['ink']};font-family:monospace;line-height:1.3;'>{m}</div>"
+                      f"<div style='font-size:10.5px;color:{C['mid']};margin-top:1px;line-height:1.35;'>{d}</div></div></div>")
+    mech_card = (f"<div style='flex:1.15;background:{C['vly']};border:1px solid {C['light']};border-radius:8px;padding:9px 13px;display:flex;flex-direction:column;'>"
+                 f"<div style='font-size:13px;font-weight:800;color:{C['navy']};margin-bottom:6px;flex:0 0 auto;'>三路机制明细 <span style='font-size:10.5px;font-weight:600;color:{C['mid']};'>· 配额 40/30/30，limit=500</span></div>"
+                 f"{mech_rows}</div>")
+    # 右卡：打分加成（基础分 + 各项加成，通俗解释带关键术语）
+    score_items = [
+        ("基础分", "文本相关度", "子串命中 + jieba 词重叠 + bigram，越像分越高，封顶 0.9"),
+        ("+ 标题命中", "+0.20", "subject 精确对上，强信号加分（下调自 0.45）"),
+        ("+ 向量", "+0.15", "cosine 相似度乘系数叠加，找回义近记忆"),
+        ("+ 场景提示", "+0.16", "recall_hints 命中查询语义，偏好类优先"),
+        ("+ 关系", "+0.12", "relation 邻居补漏加权，被引用的也加一点"),
+        ("− 时效", "0.15 衰减", "越旧越降权但不清零——half-life 90 天"),
+    ]
+    score_rows = ""
+    for n, v, d in score_items:
+        score_rows += (f"<div style='display:flex;gap:9px;align-items:baseline;margin-bottom:3px;'>"
+                       f"<div style='flex:0 0 62px;font-size:11.5px;font-weight:800;color:{C['navy']};'>{n}</div>"
+                       f"<div style='flex:0 0 auto;font-size:11.5px;font-weight:700;color:{C['blue']};font-family:monospace;'>{v}</div>"
+                       f"<div style='flex:1 1 0;min-width:0;font-size:10.5px;color:{C['mid']};line-height:1.3;'>{d}</div></div>")
+    score_card = (f"<div style='flex:1;background:{C['pblue']};border-radius:8px;padding:9px 13px;'>"
+                  f"<div style='font-size:13px;font-weight:800;color:{C['navy']};margin-bottom:6px;'>打分加成明细 <span style='font-size:10.5px;font-weight:600;color:{C['mid']};'>· 阈值 ≥ 0.18</span></div>"
+                  f"{score_rows}</div>")
+
     body = f"""
-    <div style='padding:12px 28px 0 28px;'>
-      <div class='h2'>召回：词法 + 向量 + 近期三路混合，召回后关系加权</div>
-      <div class='sub' style='margin-top:3px;'>词法管字面命中、向量管语义近义、近期补足时间新近度——三路去重合并后打分排序，关系在召回后对候选加权而非独立召回</div>
+    <div style='padding:9px 28px 0 28px;'>
+      <div class='h2'>召回：BeforeRun Hook 触发 → 查询归一化 → 三路混合 → 打分 → 注入</div>
+      <div class='sub' style='margin-top:2px;'>查询归一化剔指令噪声、身份过滤前置 SQL WHERE、三路 CTE 互不依赖合并去重、召回后关系补漏加权；三路机制与打分加成明细见下方</div>
     </div>
-    <div style='padding:10px 28px 0 28px;'>{flow}</div>
-    <div style='position:absolute;bottom:12px;left:28px;right:28px;display:flex;gap:14px;'>
-      <div style='flex:1.2;background:{C['vly']};border:1px solid {C['light']};border-radius:8px;padding:10px 14px;'>
-        <div style='font-size:14.5px;font-weight:800;color:{C['navy']};'>召回优先级（投研 Profile 可调）</div>
-        <div style='display:flex;flex-wrap:wrap;gap:6px 24px;margin-top:7px;'>
-          {''.join(f"<div style='font-size:13px;color:{C['ink']};'><span style='color:{C['blue']};'>●</span>  {p}</div>" for p in prio)}
-        </div>
-      </div>
-      <div style='flex:1;background:{C['pblue']};border-radius:8px;padding:10px 14px;'>
-        <div style='font-size:14.5px;font-weight:800;color:{C['navy']};'>打分加成常量</div>
-        <div style='font-size:12.5px;color:{C['ink']};margin-top:7px;line-height:1.65;'>subject 精确命中 +0.20 · 向量相似度 +0.15 · profile 提示词 +0.16 · 关系加成 +0.12 · 时效衰减 0.15（半衰期 90 天）</div>
-      </div>
-    </div>"""
+    <div style='padding:8px 28px 0 28px;'>{flow}</div>
+    <div style='padding:8px 28px 0 28px;display:flex;gap:12px;'>{mech_card}{score_card}</div>"""
     return _page(body)
 
 
 # ===== P11 生命周期（状态机：active→三终态 + 槽位释放）=====
+# 注：P11 本身页号不变（P11 后的内容连续重排，P11 是分界）
 def lifecycle():
     """记忆生命周期状态机。严格对照 schema CHECK(0001_memory_schema.sql:22-23) 4 状态：
     active/superseded/expired/revoked。转换：
@@ -901,171 +875,215 @@ def lifecycle():
     return _page(body)
 
 
-# ===== P15 团队流程 =====
+# ===== P14 团队流程 =====
 def team_flow():
     """团队公共记忆自动提取流程。严格对照 design.md §5.5（行412-433）：
     触发：_run_team_extraction_loop 周期 3600s（默认，0 关闭）
-    聚类：按 memory_type 分组 → 组内 embedding 余弦(阈值0.70)贪心聚类，最小簇2
+    团队配置：从认证主体 team_ids 派生 team_owner_key，同 tenant 同 team_id 成员构成团队
+    聚类：按 memory_type 分组 → 组内全链接层次聚类(scipy complete linkage, 阈值0.70)防传递漂移
+    实体补聚：merge_by_entity_overlap 用 subject Dice≥0.5 + 向量≥0.50 底线补中间地带漏聚
     簇门槛：≥2 不同成员防回声室；对立 business_progress(resolved/invalidated)丢弃=弱方向校验
+    簇内字段：subject/content 确定性纯函数选(频次+字典序)，分歧摘要在 save_rationale 保留
     候选向量：簇内成员均值(簇中心)，稳定不漂移
     产出：共性候选写团队 owner 的 pending review
     隔离：只读成员个人记忆、只写团队公共空间
     幂等：同 subject+type 已有 pending 或 confirmed 不重复；embedding 余弦<0.05 检测语义重复
-    确认：人工 confirm，不做自动确认。owner_key = tenant:team:team_id，全员可见"""
+    确认：人工 confirm，不做自动确认。owner_key = tenant:team:team_id，全员可见
+    布局：上 4 节点主流程（压扁简洁），下 3 张技术明细卡（双信号归并/簇内字段/幂等防重），
+    底部条簇门槛。覆盖 §5.5 全部 13 项。"""
     NAVY = C["navy"]
     BLUE = C["blue"]
-    # 上方流程节点白底，靠边框色 navy(端点) / blue(中间步骤) 区分类型
-    NODE_BG = "#ffffff"
-    DETAIL_BG = C["pblue"]  # 下方细则卡浅蓝底，与上方白底形成层次区分
-    # 主流程节点（宽矮，标题+一行说明）
-    def node(title, sub, border):
-        return (f"<div style='background:{NODE_BG};border:1.5px solid {border};border-radius:10px;padding:15px 12px;text-align:center;display:flex;flex-direction:column;justify-content:center;'>"
-                f"<div style='font-size:18px;font-weight:800;color:{border};line-height:1.2;'>{title}</div>"
-                f"<div style='font-size:13px;color:{C['mid']};margin-top:7px;line-height:1.55;'>{sub}</div></div>")
-    # 带标签的干净箭头：标签在上，线 + 三角箭头在下
+
+    # —— 上区：4 节点主流程（白底、等宽、无序号、3 行结构化信息对齐）——
+    def node(title, lines, border):
+        sub = "".join(
+            f"<div style='font-size:12.5px;color:{C['ink']};line-height:1.5;display:flex;align-items:baseline;gap:8px;'>"
+            f"<span style='color:{NAVY};font-weight:800;flex:0 0 42px;text-align:justify;'>{k}</span>"
+            f"<span style='color:{C['mid']};'>{v}</span></div>" for k, v in lines)
+        return (f"<div style='background:#fff;border:1.6px solid {border};border-radius:10px;padding:14px 14px;display:flex;flex-direction:column;gap:9px;flex:1 1 0;min-width:0;'>"
+                f"<div style='font-size:15.5px;font-weight:800;color:{border};line-height:1.2;text-align:center;padding-bottom:8px;border-bottom:1px solid {C['light']};'>{title}</div>"
+                f"{sub}</div>")
     def arrow(label):
-        return (f"<div style='display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;'>"
-                f"<div style='font-size:11.5px;color:{NAVY};font-weight:700;white-space:nowrap;letter-spacing:0.5px;'>{label}</div>"
+        return (f"<div style='display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;flex:0 0 70px;'>"
+                f"<div style='font-size:11px;color:{NAVY};font-weight:700;white-space:nowrap;'>{label}</div>"
                 f"<div style='display:flex;align-items:center;width:100%;'>"
                 f"<div style='flex:1;height:2.5px;background:{BLUE};'></div>"
-                f"<div style='width:0;height:0;border-left:12px solid {BLUE};border-top:7px solid transparent;border-bottom:7px solid transparent;'></div>"
+                f"<div style='width:0;height:0;border-left:11px solid {BLUE};border-top:6px solid transparent;border-bottom:6px solid transparent;'></div>"
                 f"</div></div>")
-    # 细则卡：标题 + 条目 + 底注，三段用 space-between 撑满高度，字体放大间距拉开
-    def detail(col, title, items, footer):
-        lis = "".join(f"<div style='font-size:13px;color:{C['ink']};line-height:1.75;margin-top:8px;'><span style='color:{NAVY};font-weight:700;'>{k}</span> {v}</div>" for k, v in items)
-        return (f"<div style='grid-column:{col};background:{DETAIL_BG};border:1px solid {C['light']};border-radius:8px;padding:12px 15px;display:flex;flex-direction:column;justify-content:space-between;'>"
-                f"<div style='font-size:15px;font-weight:800;color:{NAVY};'>{title}</div>"
-                f"<div>{lis}</div>"
-                f"<div style='font-size:12px;color:{C['mid']};line-height:1.6;border-top:1px solid {C['light']};padding-top:8px;margin-top:8px;'>{footer}</div>"
-                f"</div>")
-    # 同一 7 列网格：节点在 1/3/5/7，箭头在 2/4/6
-    COLS = "1fr 78px 1.35fr 78px 1fr 78px 1fr"
     flow = (
-        f"<div style='display:grid;grid-template-columns:{COLS};align-items:stretch;gap:0 0;'>"
-        f"{node('成员个人记忆', '各自捕获落库 · 互相隔离<br/>归属键 tenant:subject-编号', NAVY)}"
-        f"<div style='grid-column:2;'>{arrow('周期扫描')}</div>"
-        f"{node('周期聚类 · 簇校验', '服务端后台周期扫描成员记忆<br/>向量相似度 ≥ 0.70 逐步归并', BLUE)}"
-        f"<div style='grid-column:4;'>{arrow('通过校验')}</div>"
-        f"{node('团队待确认候选', '共性候选写入团队归属 · 待审<br/>幂等 + 语义去重防重复', BLUE)}"
-        f"<div style='grid-column:6;'>{arrow('人工确认')}</div>"
-        f"{node('团队公共记忆', '任一成员确认即转正 · 全员可见<br/>归属键 tenant:team:编号', NAVY)}"
+        f"<div style='display:flex;align-items:stretch;gap:0 0;width:100%;'>"
+        f"{node('成员个人记忆', [('原料', '各成员落库的个人记忆'), ('归属', 'tenant:subject'), ('隔离', '只读不改不串味')], NAVY)}"
+        f"{arrow('周期扫描')}"
+        f"{node('双信号聚类', [('归并', '向量相似或实体重合'), ('防漂', '全链接不越界并入'), ('门槛', '至少2个不同成员')], BLUE)}"
+        f"{arrow('通过校验')}"
+        f"{node('团队待确认候选', [('归属', '写团队公共空间'), ('防重', '同义候选不重复产'), ('状态', '待审不自动确认')], BLUE)}"
+        f"{arrow('人工确认')}"
+        f"{node('团队公共记忆', [('转正', '一人确认即生效'), ('归属', 'tenant:team'), ('可见', '全员召回共享')], NAVY)}"
         f"</div>"
     )
-    # 细则卡用同一 7 列，放在 1/3/5/7，严格对齐节点
-    details = (
-        f"<div style='display:grid;grid-template-columns:{COLS};gap:0 0;height:100%;'>"
-        f"{detail(1, '成员个人记忆', [('落库', '捕获 → 准入 → 归个人归属'), ('归属键', 'tenant:subject-编号'), ('可见性', '只自己可见，互相隔离')], '提取阶段只读，个人记忆不被改变')}"
-        f"{detail(3, '聚类与校验', [('触发', '周期循环（默认每小时，可关闭）'), ('分组', '按记忆类型分组后聚类'), ('相似度', '向量余弦 ≥ 0.70'), ('归并', '逐步归并，最少 2 条成簇'), ('防回声', '需来自 2 个不同成员'), ('防对立', '立场相反（看多/看空）丢弃'), ('候选向量', '取簇内成员均值，代表性强')], '不调用大模型合成，原文留存供人审阅')}"
-        f"{detail(5, '候选与确认', [('产出', '共性候选写入团队归属待审'), ('幂等', '同主题+类型已有待审或已确认不重复'), ('语义去重', '向量余弦距离 < 0.05 判重'), ('确认', '人工确认后转正')], '不做自动确认，由人决定是否沉淀')}"
-        f"{detail(7, '团队公共记忆', [('归属键', 'tenant:team:编号'), ('可见性', '按可见归属集合召回'), ('受众', '同租户下同团队成员')], '个人与团队靠 team: 中缀命名空间隔离，互不可写')}"
-        f"</div>"
-    )
-    body = f"""
-    <div style='padding:14px 28px 0 28px;'>
-      <div class='h2'>团队记忆：从个人共识到团队共识</div>
-      <div class='sub' style='margin-top:3px;'>周期性聚类多个人的相似判断，自动提议共性候选，一人确认即沉淀为团队公共记忆——全程不做自动确认，人决定共识</div>
-    </div>
-    <div style='position:absolute;top:86px;left:28px;right:28px;height:118px;'>{flow}</div>
-    <div style='position:absolute;top:220px;bottom:14px;left:28px;right:28px;'>{details}</div>"""
-    return _page(body)
 
+    # —— 下区：三张明细卡（按流水线处理先后：归并→选字段→写库防重；每行=怎么做→挡住什么问题）——
+    def card(title, hint, rows, footer, bg, accent):
+        rows_html = ""
+        for n, v, d in rows:
+            rows_html += (f"<div style='display:flex;flex-direction:column;'>"
+                         f"<div style='display:flex;gap:10px;align-items:baseline;'>"
+                         f"<span style='font-size:13.5px;font-weight:800;color:{NAVY};'>{n}</span>"
+                         f"<span style='font-size:13.5px;font-weight:700;color:{accent};'>{v}</span>"
+                         f"</div>"
+                         f"<div style='font-size:12.5px;color:{C['ink']};line-height:1.55;margin-top:5px;'>{d}</div>"
+                         f"</div>")
+        return (f"<div style='flex:1;background:{bg};border:1px solid {C['light']};border-radius:8px;padding:16px 18px;display:flex;flex-direction:column;'>"
+                f"<div style='font-size:15.5px;font-weight:800;color:{NAVY};margin-bottom:4px;'>{title}<span style='font-size:11.5px;font-weight:600;color:{C['mid']};margin-left:8px;'>{hint}</span></div>"
+                f"<div style='flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:10px;padding-top:8px;'>{rows_html}</div>"
+                f"<div style='font-size:11.5px;color:{C['mid']};line-height:1.45;border-top:1px solid {C['light']};padding-top:9px;margin-top:12px;'>{footer}</div></div>")
 
-# ===== P16 身份隔离（派生链居中 + 三卡环绕）=====
-def isolation():
-    """身份隔离机制。严格对照 design.md §5.1-5.4（行360-410）：
-    派生链：Bearer Token → StaticTokenVerifier → claims(tenant_id/subject_id/team_ids)
-            → owner_key=tenant_id:subject_id / team:team_id → PrincipalContext → visible_owner_ids
-    双重隔离(§5.2)：认证(Bearer≥32字符)+授权(MemoryScope read/write/review)+存储(owner_id/visible_owner_ids 过滤)
-    命名空间隔离(§5.1)：个人 tenant_id:subject_id、团队 tenant_id:team:team_id，靠 team: 中缀隔离
-    可见性(§5.4)：visible_owner_ids=(owner_id,*team_owner_ids)，非成员 owner 不在集合=等同不存在
-    铁律2(CLAUDE.md)：工具参数不接受 owner，PrincipalContext 由 auth.py 从已验证 Token 派生
-    布局：左纵向派生链（4层▼串联），右三张细则卡竖排，底铁律条置底"""
-    NAVY = C["navy"]
-    BLUE = C["blue"]
-    DETAIL_BG = C["pblue"]
-    # 纵向派生链节点（白底，固定高度 88px，端点 navy / 中间步骤 blue）
-    def vnode(title, sub, border):
-        return (f"<div style='background:#fff;border:1.5px solid {border};border-radius:10px;padding:9px 14px;height:78px;flex:0 0 78px;display:flex;flex-direction:column;justify-content:center;'>"
-                f"<div style='font-size:16px;font-weight:800;color:{border};line-height:1.2;'>{title}</div>"
-                f"<div style='font-size:12.5px;color:{C['mid']};margin-top:5px;line-height:1.5;'>{sub}</div></div>")
-    # 细则卡：标题 + 条目 + 底注，height:100% 撑满外层固定高度容器
-    def detail(title, items, footer):
-        lis = "".join(f"<div style='font-size:12.5px;color:{C['ink']};line-height:1.65;margin-top:5px;'><span style='color:{NAVY};font-weight:700;'>{k}</span> {v}</div>" for k, v in items)
-        return (f"<div style='background:{DETAIL_BG};border:1px solid {C['light']};border-radius:8px;padding:10px 14px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;'>"
-                f"<div style='font-size:14px;font-weight:800;color:{NAVY};'>{title}</div>"
-                f"<div>{lis}</div>"
-                f"<div style='font-size:11.5px;color:{C['mid']};line-height:1.5;border-top:1px solid {C['light']};padding-top:6px;margin-top:6px;'>{footer}</div>"
-                f"</div>")
-    # 左侧纵向派生链：4 节点 + ▼ 箭头，撑满高度
-    layers = [
-        ('认证令牌', 'Bearer Token ≥ 32 字符<br/>HTTP 头传入 · 不可伪造', NAVY),
-        ('身份上下文', '服务端从令牌派生身份<br/>租户/主体/团队标识', BLUE),
-        ('归属键 owner_key', '个人 tenant:主体<br/>团队 tenant:team:编号', BLUE),
-        ('存储行级隔离', '读写按归属过滤<br/>跨归属猜中编号等同不存在', NAVY),
-    ]
-    chain = ""
-    for i, (t, s, c) in enumerate(layers):
-        chain += vnode(t, s, c)
-        if i < 3:
-            chain += f"<div style='text-align:center;color:{BLUE};font-size:16px;font-weight:800;line-height:1;flex:0 0 auto;'>▼</div>"
-    # 右侧三张细则卡：固定高度，不靠 flex/grid 拉伸，避免溢出
-    d1 = detail('三级隔离范围', [('租户级', '不同租户数据互不可见'), ('团队级', '团队成员共享，跨团队不可见'), ('个人级', '只自己可见，连队友都不可见')], '个人 tenant:subject / 团队 tenant:team 靠 team: 中缀命名空间隔离')
-    d2 = detail('防伪造不变量', [('参数拒收归属', '工具不接受 owner 参数，只从令牌派生'), ('召回先过滤', '按可见归属集合过滤，不先搜后过滤'), ('撤销留痕', '不物理删除，全程审计可追溯')], '铁律：owner 只来自认证上下文，不接受调用方传入')
-    d3 = detail('可见性规则', [('可见集合', '本人归属 + 所属团队归属'), ('非成员', '归属不在集合内，等同不存在'), ('团队记忆', '同租户同团队成员可召回')], '写入用记录实际归属，非调用者个人归属')
+    sig_card = card("双信号归并", "找共识不漏判", [
+        ("向量路", "余弦 ≥ 0.70", "语义够接近的判断并成一组，是归并的主力信号"),
+        ("实体路", "Dice ≥ 0.5", "措辞不同但同标的时向量会漏，靠分词实体重合补回来"),
+        ("叠加底线", "余弦 ≥ 0.50", "实体重合须叠加向量底线，挡住同标的不同维度误并"),
+    ], "两路信号各补一种漏判，不靠单一相似度", C["vly"], BLUE)
+    field_card = card("候选代表选取", "不靠 LLM 编造", [
+        ("标题与正文", "频次 + 字典序", "谁出现多就选谁的原文，并列时字典序兜底，结果可复现"),
+        ("分歧摘要", "写入审核备注", "少数不同意见摘录成员原文前 40 字，留给人审阅"),
+        ("候选向量", "簇质心", "取簇内成员向量均值作代表，不随写入顺序漂移"),
+    ], "直接从成员原文选一条代表，不生成新文本", C["pblue"], BLUE)
+    idem_card = card("幂等与防重复", "不重复产出", [
+        ("候选级", "主体同或近义", "字面相同或余弦距离 < 0.05 视为已存在，跳过不写新候选"),
+        ("批次级", "同批跳过", "同一时间戳已运行过直接返回，不重复扫描和聚类"),
+        ("撤销后", "可重建", "已撤销的团队记忆不挡相同判断再次升级为共识"),
+    ], "两层各挡一种重复，且撤销不挡重建", C["pgreen"], C["green"])
+
+    # 整页 flex 纵列填满 585px：标题固定、节点流程占中等比例、三卡占大头但比之前小
     body = f"""
-    <div style='padding:14px 28px 0 28px;'>
-      <div class='h2'>身份隔离：服务端强制，不靠客户端自觉</div>
-      <div class='sub' style='margin-top:3px;'>四层派生链从令牌到存储逐级收敛，工具参数不接受归属——从源头防伪造，跨归属猜中编号等同不存在</div>
-    </div>
-    <div style='position:absolute;top:80px;bottom:14px;left:28px;right:28px;display:grid;grid-template-columns:1fr 1.25fr;gap:24px;overflow:hidden;'>
-      <div style='display:flex;flex-direction:column;overflow:hidden;'>
-        <div style='font-size:14px;font-weight:800;color:{NAVY};margin-bottom:10px;flex:0 0 auto;'>四层派生链（逐级收敛）</div>
-        <div style='flex:1 1 0;display:flex;flex-direction:column;justify-content:space-between;gap:8px;overflow:hidden;'>{chain}</div>
+    <div style='display:flex;flex-direction:column;height:{H}px;padding:15px 28px 14px 28px;'>
+      <div style='flex:0 0 auto;'>
+        <div class='h2'>团队记忆：从个人共识到团队共识</div>
+        <div class='sub' style='margin-top:4px;'>周期扫描各成员个人记忆，把相似的判断聚类成候选，人确认后沉淀为团队公共记忆——只读个人、只写团队、不自动确认</div>
       </div>
-      <div style='display:flex;flex-direction:column;overflow:hidden;'>
-        <div style='font-size:14px;font-weight:800;color:{NAVY};margin-bottom:10px;flex:0 0 auto;'>三类规则</div>
-        <div style='flex:1 1 0;display:flex;flex-direction:column;gap:12px;overflow:hidden;'>
-          <div style='flex:1 1 0;min-height:0;overflow:hidden;'>{d1}</div>
-          <div style='flex:1 1 0;min-height:0;overflow:hidden;'>{d2}</div>
-          <div style='flex:1 1 0;min-height:0;overflow:hidden;'>{d3}</div>
-        </div>
-      </div>
+      <div style='flex:1.1 1 0;min-height:0;margin-top:14px;display:flex;align-items:center;'>{flow}</div>
+      <div style='flex:1.9 1 0;min-height:0;margin-top:14px;display:flex;gap:12px;align-items:stretch;'>{sig_card}{field_card}{idem_card}</div>
     </div>"""
     return _page(body)
 
 
-# ===== P17 测试场景 + 部署形态 =====
+# ===== P15 身份隔离（横向派生链 + JSON 数据结构）=====
+def isolation():
+    """身份隔离机制。对照 design.md §5.1-5.4、settings.py ConfiguredPrincipal、auth.py。
+    派生链：Bearer Token → StaticTokenVerifier → claims(tenant_id/subject_id/team_ids)
+            → derive_owner_key/derive_team_owner_key → owner_key + team_owner_ids → visible_owner_ids
+    命名空间隔离(§5.1)：个人 tenant_id:subject_id、团队 tenant_id:team:team_id，靠 team: 中缀隔离
+    可见性(§5.4)：visible_owner_ids=(owner_id,*team_owner_ids)，非成员 owner 不在集合=等同不存在
+    铁律2(CLAUDE.md)：工具参数不接受 owner，PrincipalContext 由 auth.py 从已验证 Token 派生
+    布局：上横向四步派生链 ▶ 串联，下两块 JSON 代码框（配置态 / 派生态，只说字段含义不标行号）"""
+    NAVY = C["navy"]
+    BLUE = C["blue"]
+    # 横向派生链节点（白底，等宽 flex:1 1 0）：只留标题 + 副标题，居中、行距大
+    def node(title, sub, border):
+        return (f"<div style='background:#fff;border:1.6px solid {border};border-radius:10px;padding:16px 12px;flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:14px;'>"
+                f"<div style='font-size:16px;font-weight:800;color:{border};line-height:1.3;text-align:center;'>{title}</div>"
+                f"<div style='font-size:12.5px;color:{C['mid']};line-height:1.6;text-align:center;'>{sub}</div></div>")
+    arrow = lambda label: (f"<div style='flex:0 0 50px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;'>"
+                           f"<div style='color:{BLUE};font-size:18px;font-weight:800;line-height:1;'>▶</div>"
+                           f"<div style='font-size:10px;color:{C['mid']};'>{label}</div></div>")
+    chain = (
+        f"<div style='display:flex;align-items:stretch;gap:0;width:100%;height:100%;min-height:0;'>"
+        f"{node('认证令牌', 'Bearer Token ≥ 32 字符<br/>只验不签发', NAVY)}"
+        f"{arrow('派生')}"
+        f"{node('身份上下文', '验令牌取 claims<br/>租户/主体/团队', BLUE)}"
+        f"{arrow('收敛')}"
+        f"{node('归属键派生', '个人 tenant:主体<br/>团队 tenant:team:编号', BLUE)}"
+        f"{arrow('过滤')}"
+        f"{node('存储行级隔离', 'visible_owner_ids 过滤<br/>非成员等同不存在', NAVY)}"
+        f"</div>"
+    )
+    # JSON 代码框：monospace，高亮键名 navy / 值 ink，注释 mid 只说字段含义不标行号；居中、行距大
+    def code_block(title, hint, lines):
+        rows = "".join(
+            f"<div style='font-family:monospace;font-size:12.5px;line-height:1.95;white-space:pre;'>{ln}</div>"
+            for ln in lines)
+        return (f"<div style='background:{C['vly']};border:1px solid {C['light']};border-radius:8px;padding:14px 18px;flex:1 1 0;min-width:0;display:flex;flex-direction:column;'>"
+                f"<div style='font-size:14px;font-weight:800;color:{NAVY};margin-bottom:12px;flex:0 0 auto;text-align:center;'>{title}<span style='font-size:11px;font-weight:600;color:{C['mid']};margin-left:8px;'>{hint}</span></div>"
+                f"<div style='flex:1;display:flex;flex-direction:column;justify-content:space-around;'>{rows}</div></div>")
+    # 配置态：MEMORY_MCP_AUTH_TOKENS（.env 静态映射，标准 JSON 缩进，注释只说字段含义）
+    cfg = code_block('配置态 · MEMORY_MCP_AUTH_TOKENS', '.env 静态映射', [
+        "{",
+        "&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'&lt;32位随机Token&gt;'</span>: {",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'tenant_id'</span>: <span style='color:#262B33;'>'tenant-001'</span>,<span style='color:#999;'> // 租户</span>",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'subject_id'</span>: <span style='color:#262B33;'>'subject-001'</span>,<span style='color:#999;'> // 不可变用户标识</span>",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'default_profile_id'</span>: <span style='color:#262B33;'>'investment-research'</span>,<span style='color:#999;'> // 场景策略</span>",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'team_ids'</span>: [<span style='color:#262B33;'>'research-dept'</span>],<span style='color:#999;'> // 所属团队</span>",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'scopes'</span>: [<span style='color:#262B33;'>'memory:read'</span>, <span style='color:#262B33;'>'memory:write'</span>, <span style='color:#262B33;'>'memory:review'</span>]",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#999;'>// 三权：读/写/审</span>",
+        "&nbsp;&nbsp;}",
+        "}",
+    ])
+    # 派生态：运行时单方派生，对象/数组格式，注释只说字段含义
+    drv = code_block('派生态 · 运行时单方派生', '令牌验过 → 服务端算出', [
+        "{",
+        "&nbsp;&nbsp;<span style='color:#999;'>// 从令牌验出的身份</span>",
+        "&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'claims'</span>: {<span style='color:#005982;'>'tenant_id'</span>, <span style='color:#005982;'>'subject_id'</span>, <span style='color:#005982;'>'team_ids'</span>},",
+        "&nbsp;&nbsp;<span style='color:#999;'>// 个人归属键</span>",
+        "&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'owner_key'</span>: <span style='color:#262B33;'>'tenant-001:subject-001'</span>,",
+        "&nbsp;&nbsp;<span style='color:#999;'>// 团队归属键（team:中缀隔离）</span>",
+        "&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'team_owner_ids'</span>: [<span style='color:#262B33;'>'tenant-001:team:research-dept'</span>],",
+        "&nbsp;&nbsp;<span style='color:#999;'>// 召回可见集合 = 个人 + 团队</span>",
+        "&nbsp;&nbsp;<span style='color:#005982;font-weight:700;'>'visible_owner_ids'</span>: [",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#262B33;'>'tenant-001:subject-001'</span>,",
+        "&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:#262B33;'>'tenant-001:team:research-dept'</span>",
+        "&nbsp;&nbsp;]",
+        "}",
+    ])
+    body = f"""
+    <div style='display:flex;flex-direction:column;height:{H}px;padding:16px 28px 14px 28px;'>
+      <div style='flex:0 0 auto;'>
+        <div class='h2'>身份隔离：服务端强制，不靠客户端自觉</div>
+        <div class='sub' style='margin-top:4px;'>工具参数不接受 owner，归属全由服务端从令牌单方派生——从源头防伪造，跨归属猜中编号等同不存在</div>
+      </div>
+      <div style='flex:0.8 1 auto;margin-top:12px;display:flex;min-height:0;'>{chain}</div>
+      <div style='flex:1.6 1 auto;margin-top:14px;display:flex;gap:22px;align-items:stretch;min-height:0;overflow:hidden;'>{cfg}{drv}</div>
+    </div>"""
+    return _page(body)
+
+
+# ===== P16 测试场景 + 部署形态（原P17）=====
 def test_design_full():
     NAVY = C["navy"]; BLUE = C["blue"]; GREEN = C["green"]
-    # 上半：测试场景（充实真实细节）
-    vars_ = ["同一投资对象（泡泡玛特 9992.HK），不同 owner 隔离",
-             "5 个会话，38 轮 capture，全部经 Hook 自动捕获",
-             "材料时点固定 2025-04-23，保证可比",
-             "覆盖建判断→修订→撤销→团队确认全路径"]
+    # 上半三部分：用户团队信息 / 启动命令 / 配置信息
+    # 卡片框：白底 navy 边，标题 + 内容
+    def card(title, hint, body_html, bg):
+        return (f"<div style='flex:1 1 0;min-width:0;background:{bg};border:1.2px solid {C['light']};border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;overflow:hidden;'>"
+                f"<div style='font-size:14px;font-weight:800;color:{NAVY};margin-bottom:8px;flex:0 0 auto;'>{title}<span style='font-size:11px;font-weight:600;color:{C['mid']};margin-left:8px;'>{hint}</span></div>"
+                f"<div style='flex:1;display:flex;flex-direction:column;justify-content:center;'>{body_html}</div></div>")
+    # 用户信息：两个测试用户的归属配置（对应 AUTH_TOKENS 真实配置）
+    users_html = (
+        f"<div style='display:flex;flex-direction:column;gap:12px;'>"
+        f"<div style='font-family:monospace;font-size:13px;line-height:1.7;white-space:pre;'>"
+        f"<span style='color:#005982;font-weight:700;'>subject-001</span>: tenant-001 / research-dept"
+        f"</div>"
+        f"<div style='font-family:monospace;font-size:13px;line-height:1.7;white-space:pre;'>"
+        f"<span style='color:#005982;font-weight:700;'>subject-002</span>: tenant-001 / research-dept"
+        f"</div>"
+        f"</div>"
+    )
+    # 启动命令：MCP 服务启动 + Client 打包 + Client 安装（真实入口）
+    cmds_html = (
+        f"<div style='display:flex;flex-direction:column;gap:7px;font-family:monospace;font-size:11.5px;line-height:1.4;'>"
+        f"<div style='background:#fff;border-radius:6px;padding:7px 10px;display:flex;align-items:center;gap:8px;'>"
+        f"<span style='color:#999;font-size:10px;flex:0 0 auto;'>启动 MCP 服务</span>"
+        f"<span style='color:#005982;font-weight:700;'>.venv/bin/memory-mcp</span></div>"
+        f"<div style='background:#fff;border-radius:6px;padding:7px 10px;display:flex;align-items:center;gap:8px;'>"
+        f"<span style='color:#999;font-size:10px;flex:0 0 auto;'>打包 Client</span>"
+        f"<span style='color:#005982;font-weight:700;'>uv build --package memory-mcp-agent --wheel</span></div>"
+        f"<div style='background:#fff;border-radius:6px;padding:7px 10px;display:flex;align-items:center;gap:8px;'>"
+        f"<span style='color:#999;font-size:10px;flex:0 0 auto;'>安装 Client</span>"
+        f"<span style='color:#005982;font-weight:700;'>uv pip install memory_mcp_agent-0.2.0-*.whl</span></div>"
+        f"</div>"
+    )
     scenario = f"""
-      <div style='display:flex;gap:16px;height:130px;'>
-        <div style='flex:1;background:{C['pblue']};border-radius:10px;padding:13px 18px;display:flex;flex-direction:column;'>
-          <div style='display:flex;align-items:baseline;gap:8px;'>
-            <span style='font-size:16px;font-weight:800;color:{NAVY};'>subject-001</span>
-            <span style='font-size:11px;color:{C['mid']};'>团队 research-dept</span>
-          </div>
-          <div style='font-size:12.5px;color:{C['ink']};line-height:1.55;margin-top:8px;'>从「出海持续性」切入<br/>先讲海外增长，再讲 IP 价值</div>
-          <div style='margin-top:auto;font-size:20px;font-weight:800;color:{NAVY};'>22 轮 capture</div>
-        </div>
-        <div style='flex:1;background:{C['pblue']};border-radius:10px;padding:13px 18px;display:flex;flex-direction:column;'>
-          <div style='display:flex;align-items:baseline;gap:8px;'>
-            <span style='font-size:16px;font-weight:800;color:{NAVY};'>subject-002</span>
-            <span style='font-size:11px;color:{C['mid']};'>团队 research-dept</span>
-          </div>
-          <div style='font-size:12.5px;color:{C['ink']};line-height:1.55;margin-top:8px;'>从「爆款依赖」切入<br/>盯 IP 集中度 + 毛利率变化</div>
-          <div style='margin-top:auto;font-size:20px;font-weight:800;color:{NAVY};'>16 轮 capture</div>
-        </div>
-        <div style='flex:1;background:{C['pblue']};border-radius:10px;padding:13px 18px;display:flex;flex-direction:column;'>
-          <div style='font-size:16px;font-weight:800;color:{NAVY};'>验收变量</div>
-          <div style='display:flex;flex-direction:column;gap:4px;margin-top:8px;'>
-            {''.join(f"<div style='font-size:11.5px;color:{C['ink']};line-height:1.5;'><span style='color:{NAVY};'>●</span> {v}</div>" for v in vars_)}
-          </div>
-        </div>
+      <div style='display:flex;gap:14px;height:148px;'>
+        {card('用户团队信息', 'AUTH_TOKENS 派生', users_html, C['pblue'])}
+        {card('启动命令', '', cmds_html, C['vly'])}
       </div>"""
     # 下半：真实部署形态 + 配置项（Windows→阿里云）
     deploy = f"""
@@ -1091,21 +1109,20 @@ def test_design_full():
         <text x='236' y='135' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>JSON-RPC/HTTP</text>
         <!-- 阿里云容器 -->
         <rect x='272' y='14' width='876' height='258' rx='12' fill='none' stroke='{C['orange']}' stroke-width='1.4' stroke-dasharray='7,4'/>
-        <text x='710' y='36' text-anchor='middle' fill='{C['orange']}' font-size='13' font-weight='800'>阿里云 ECS 开发机（同 VPC）</text>
+        <text x='710' y='36' text-anchor='middle' fill='{C['orange']}' font-size='13' font-weight='800'>阿里云开发环境</text>
         <!-- Memory MCP Server -->
         <rect x='288' y='50' width='300' height='208' rx='10' fill='{NAVY}'/>
         <text x='438' y='74' text-anchor='middle' fill='#fff' font-size='14' font-weight='800'>Memory MCP Server</text>
-        <text x='438' y='92' text-anchor='middle' fill='#cfe' font-size='11'>:8765/mcp · systemd 管理</text>
-        <rect x='300' y='104' width='276' height='54' rx='5' fill='{C['deepnavy']}'/>
-        <text x='438' y='123' text-anchor='middle' fill='#9bc' font-size='10'>数据配置</text>
-        <text x='438' y='140' text-anchor='middle' fill='#fff' font-size='10.5' font-weight='700'>DATABASE_URL · AUTH_TOKENS</text>
-        <text x='438' y='153' text-anchor='middle' fill='#9bc' font-size='9'>(→ tenant / subject / team_ids)</text>
-        <rect x='300' y='164' width='276' height='44' rx='5' fill='{C['deepnavy']}'/>
-        <text x='438' y='183' text-anchor='middle' fill='#9bc' font-size='10'>模型配置</text>
-        <text x='438' y='200' text-anchor='middle' fill='#fff' font-size='10.5' font-weight='700'>MODEL_* · EMBEDDING_*</text>
-        <rect x='300' y='214' width='276' height='38' rx='4' fill='{C['deepnavy']}'/>
-        <text x='438' y='230' text-anchor='middle' fill='#9bc' font-size='10'>运行特征</text>
-        <text x='438' y='245' text-anchor='middle' fill='#fff' font-size='10' font-weight='700'>连接池 · 三个 worker 循环</text>
+        <text x='438' y='92' text-anchor='middle' fill='#cfe' font-size='11'>阿里云 ECS · :8765/mcp</text>
+        <rect x='300' y='113' width='276' height='40' rx='5' fill='{C['deepnavy']}'/>
+        <text x='438' y='128' text-anchor='middle' fill='#9bc' font-size='10'>数据 / 接入配置</text>
+        <text x='438' y='146' text-anchor='middle' fill='#fff' font-size='10.5' font-weight='700'>DATABASE_URL · AUTH_TOKENS</text>
+        <rect x='300' y='161' width='276' height='40' rx='5' fill='{C['deepnavy']}'/>
+        <text x='438' y='176' text-anchor='middle' fill='#9bc' font-size='10'>模型配置</text>
+        <text x='438' y='194' text-anchor='middle' fill='#fff' font-size='10.5' font-weight='700'>MODEL_* · EMBEDDING_*</text>
+        <rect x='300' y='209' width='276' height='40' rx='5' fill='{C['deepnavy']}'/>
+        <text x='438' y='224' text-anchor='middle' fill='#9bc' font-size='10'>运行特征</text>
+        <text x='438' y='242' text-anchor='middle' fill='#fff' font-size='10.5' font-weight='700'>连接池 · 三个 worker 循环</text>
         <!-- 连线 server->后端 -->
         <line x1='588' y1='154' x2='634' y2='154' stroke='{NAVY}' stroke-width='2' marker-end='url(#ad)'/>
         <text x='611' y='147' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>适配层</text>
@@ -1113,43 +1130,40 @@ def test_design_full():
         <rect x='634' y='50' width='232' height='208' rx='10' fill='#fff' stroke='{NAVY}' stroke-width='1.6'/>
         <text x='750' y='74' text-anchor='middle' fill='{NAVY}' font-size='13' font-weight='800'>PostgreSQL</text>
         <text x='750' y='92' text-anchor='middle' fill='{C['mid']}' font-size='10.5'>阿里云 RDS · VPC 私网</text>
-        <rect x='646' y='104' width='208' height='40' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='750' y='120' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>唯一权威存储</text>
-        <text x='750' y='136' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>跨 owner 猜中编号等同不存在</text>
-        <rect x='646' y='150' width='208' height='40' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='750' y='166' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>行级隔离</text>
-        <text x='750' y='182' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>读写按 owner_id 过滤</text>
-        <rect x='646' y='196' width='208' height='56' rx='4' fill='{C['pblue']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='750' y='216' text-anchor='middle' fill='{NAVY}' font-size='11' font-weight='700'>10 表 · 26 索引</text>
-        <text x='750' y='236' text-anchor='middle' fill='{NAVY}' font-size='11' font-weight='700'>72 CHECK 约束</text>
+        <rect x='646' y='104' width='208' height='44' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
+        <text x='750' y='121' text-anchor='middle' fill='{NAVY}' font-size='9' font-weight='700'>SQL 脚本</text>
+        <text x='750' y='139' text-anchor='middle' fill='{NAVY}' font-size='8.5' font-family='monospace'>0001_memory_schema.sql</text>
+        <rect x='646' y='156' width='208' height='44' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
+        <text x='750' y='173' text-anchor='middle' fill='{NAVY}' font-size='9' font-weight='700'>建表命令</text>
+        <text x='750' y='191' text-anchor='middle' fill='{NAVY}' font-size='8.5' font-family='monospace'>.venv/bin/memory-mcp-db migrate</text>
+        <rect x='646' y='208' width='208' height='44' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
+        <text x='750' y='225' text-anchor='middle' fill='{NAVY}' font-size='9' font-weight='700'>健康检查命令</text>
+        <text x='750' y='243' text-anchor='middle' fill='{NAVY}' font-size='8.5' font-family='monospace'>.venv/bin/memory-mcp-db health</text>
         <!-- LLM/Embedding MAAS -->
         <rect x='886' y='50' width='232' height='208' rx='10' fill='#fff' stroke='{NAVY}' stroke-width='1.6'/>
         <text x='1002' y='74' text-anchor='middle' fill='{NAVY}' font-size='13' font-weight='800'>LLM / Embedding</text>
         <text x='1002' y='92' text-anchor='middle' fill='{C['mid']}' font-size='10.5'>阿里云 MAAS（北京）</text>
-        <rect x='898' y='104' width='208' height='40' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='1002' y='120' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>DeepSeek</text>
-        <text x='1002' y='136' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>对话记忆结构化抽取</text>
-        <rect x='898' y='150' width='208' height='40' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='1002' y='166' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>Qwen text-embedding-v3</text>
-        <text x='1002' y='182' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>语义向量化（召回用）</text>
-        <rect x='898' y='196' width='208' height='56' rx='4' fill='{C['pblue']}' stroke='{NAVY}' stroke-width='1'/>
-        <text x='1002' y='216' text-anchor='middle' fill='{NAVY}' font-size='11' font-weight='700'>温度 0 · 重试 2</text>
-        <text x='1002' y='236' text-anchor='middle' fill='{NAVY}' font-size='11' font-weight='700'>cn-beijing.maas.aliyuncs.com</text>
+        <rect x='898' y='112' width='208' height='56' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
+        <text x='1002' y='134' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>DeepSeek</text>
+        <text x='1002' y='152' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>对话记忆结构化抽取</text>
+        <rect x='898' y='188' width='208' height='56' rx='4' fill='{C['vly']}' stroke='{NAVY}' stroke-width='1'/>
+        <text x='1002' y='210' text-anchor='middle' fill='{NAVY}' font-size='10.5' font-weight='700'>Qwen text-embedding-v3</text>
+        <text x='1002' y='228' text-anchor='middle' fill='{C['mid']}' font-size='9.5'>语义向量化（召回用）</text>
       </svg>"""
     body = f"""
     <div style='padding:14px 30px 0 30px;'>
-      <div class='h2' style='font-size:19px;'>测试场景：两人研究同一投资对象，验证身份隔离与团队记忆收敛</div>
-      <div class='sub' style='margin-top:2px;'>真实模型抽取 + 真实数据库存储，不同 owner 各自建判断、各自修订撤销，最终收敛到团队共识</div>
+      <div class='h2' style='font-size:19px;'>部署形态：受控私网部署，静态 Token + 环境变量配置</div>
+      <div class='sub' style='margin-top:2px;'>两个测试用户同租户同团队，服务端从 AUTH_TOKENS 派生归属；服务一条命令启动，Agent Client 一条命令安装</div>
       <div style='margin-top:8px;'>{scenario}</div>
     </div>
     <div style='position:absolute;top:232px;left:30px;right:30px;'>
-      <div style='font-size:17px;font-weight:800;color:{NAVY};margin-bottom:6px;'>真实部署形态：测试机接入，记忆服务部署在阿里云开发机</div>
+      <div style='font-size:17px;font-weight:800;color:{NAVY};margin-bottom:6px;'>真实部署形态：测试机接入，记忆服务部署在阿里云 ECS</div>
       {deploy}
     </div>"""
     return _page(body)
 
 
-# ===== P18 演示 =====
+# ===== P17 演示（原P18）=====
 def _demo_contrast_page(title, left_tag, right_tag):
     """对照页：标题 → 左右对话截图占位撑满到底，只留左右标签区分。"""
     NAVY = C["navy"]
@@ -1171,7 +1185,7 @@ def _demo_contrast_page(title, left_tag, right_tag):
 
 
 def demo_contrast_continue():
-    """P19 延续性对照"""
+    """P18 延续性对照（原P19）"""
     return _demo_contrast_page(
         "延续性：新开会话能不能从上次判断继续",
         "无记忆",
@@ -1200,18 +1214,18 @@ def _demo_scene_page(title):
 
 
 def demo_scene_revise():
-    """P20 判断演进场景"""
+    """P19 判断演进场景（原P20）"""
     return _demo_scene_page("判断演进：改判断，记忆怎么跟着变")
 
 
 def demo_scene_converge():
-    """P21 跨人收敛场景"""
+    """P20 跨人收敛场景（原P21）"""
     return _demo_scene_page("跨人收敛：两人各建各的，能否收敛到团队共识")
 
 
-# ===== P23 总结 =====
+# ===== P22 总结（原P23）=====
 def summary_full():
-    """P23 总结：工作量(三大数字 + 表名/工具名标签云) + 优化点(3) + 项目地址页脚"""
+    """P22 总结：工作量(三大数字 + 表名/工具名标签云) + 优化点(3) + 项目地址页脚"""
     NAVY = C["navy"]
     # 三大数字横排（数字+单位，无清单，纯数字醒目）
     nums = [
@@ -1283,7 +1297,7 @@ def summary_full():
     return _page(body)
 
 
-# ===== P21 提问预判 =====
+# ===== 提问预判（备用页，未注册进 RENDERERS）=====
 def qa_full():
     qa = [("和 Mem0 区别到底在哪？", "Mem0 是 SDK 嵌入、换 Agent 要重接；Memory MCP 是 MCP 标准协议、零改动接入。而且 Memory MCP 存的是带立场的判断（能被推翻），不是扁平事实；团队记忆能力 Mem0 也没有"),
           ("和 TencentDB Agent Memory 比呢？它也是独立服务", "它是最接近的同行，承认。但它只有资产版本号、无判断间 provenance，团队靠手动共享、无自动共识提取，也无到期 TTL。三轴差异：判断演进审计链 / 团队自动共识 / 失效治理"),
@@ -1311,13 +1325,14 @@ RENDERERS = {
     "P06": competitor_table, "P07": three_diffs,
     # P08 第二章章封 —— 待做
     "P09": background_full, "P10": memory_model, "P11": lifecycle,
-    "P12": core_loop, "P13": admission_full, "P14": recall_three_path,
-    "P15": team_flow, "P16": isolation,
-    # P17 第三章章封 —— 待做
-    "P18": test_design_full,
-    # P19~ 演示页：用户用真实截图贴 PPT，不渲染占位 —— 待定页号
-    # P22 第四章章封 —— 待做
-    "P23": summary_full,
+    # P11 后连续重排（原 P12 已并入写入/召回两页，P11 之后页号无空缺）
+    "P12": admission_full, "P13": recall_three_path,
+    "P14": team_flow, "P15": isolation,
+    # P16 第三章章封 —— 待做（原 P17）
+    "P17": test_design_full,
+    # P18~P20 演示页：用户用真实截图贴 PPT，不渲染占位（原 P19~P21）
+    # P21 第四章章封 —— 待做（原 P22）
+    "P22": summary_full,
 }
 
 

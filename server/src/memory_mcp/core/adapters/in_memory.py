@@ -26,6 +26,7 @@ from memory_mcp.core.domain import (
     MemoryRelation,
     MemoryRelationSummary,
     MemoryRevision,
+    MemoryTokenizer,
     PrincipalContext,
     RelationDirection,
     RelationOrigin,
@@ -38,6 +39,8 @@ from memory_mcp.core.domain import (
     VerificationStatus,
     format_divergence_rationale,
     has_conflicting_business_progress,
+    hierarchical_cluster_complete,
+    merge_by_entity_overlap,
     normalize_memory_text,
     select_cluster_content,
     select_cluster_subject,
@@ -655,9 +658,14 @@ class InMemoryMemoryRepository:
         groups: dict[str, list[dict[str, Any]]] = {}
         for entry in eligible:
             groups.setdefault(entry["memory_type"], []).append(entry)
+        # 组内 embedding 聚类：全链接层次聚类（防传递漂移）+ subject 实体一致补聚
+        # （中间地带漏聚）。与 PostgreSQL 版本对齐，共用 domain 纯函数。
+        tokenizer = _team_extraction_tokenizer()
         embedding_clusters: list[list[dict[str, Any]]] = []
         for group in groups.values():
-            for cluster in _greedy_cluster(group, similarity_threshold):
+            clusters = hierarchical_cluster_complete(group, similarity_threshold)
+            clusters = merge_by_entity_overlap(clusters, tokenizer=tokenizer)
+            for cluster in clusters:
                 embedding_clusters.append(cluster)
         # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室。
         # 弱方向校验：簇内同时出现 resolved/invalidated 对立 business_progress 时丢弃，
@@ -686,13 +694,15 @@ class InMemoryMemoryRepository:
                 subject=subject,
                 content=content,
             )
-            # 幂等：同 subject+type 的 pending 或 confirmed 不重复创建。
-            # 扩到 confirmed 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。
-            # 但 confirmed review 指向的 memory 若已被 revoke，其唯一索引槽位已释放，
-            # 与个人记忆 find_current 只查 active 对齐：已 revoke 的团队记忆不应挡住
-            # 重建，否则一次撤销后相同判断永远无法再升级为团队共识。
-            # 注：生产 PostgreSQL 版本额外按 embedding 余弦距离做语义去重，
-            # in_memory 版本因 Candidate 无 embedding 字段只做精确 subject 匹配。
+            # 幂等：同 subject+type 的 pending 或 confirmed 不重复创建。扩到 confirmed
+            # 防止一条共识被确认后、成员继续写同样东西时又产出新 pending。但 confirmed
+            # review 指向的 memory 若已被 revoke，其唯一索引槽位已释放，与个人记忆
+            # find_current 只查 active 对齐：已 revoke 的团队记忆不应挡住重建，否则
+            # 一次撤销后相同判断永远无法再升级为团队共识。
+            # 注：生产 PostgreSQL 版本额外按 embedding 余弦距离做语义去重（重复候选
+            # 即使 subject 措辞不同、向量近也会被挡）。in_memory 版本的 Candidate 无
+            # embedding 字段，只做精确 subject 匹配——这是已知对齐缺口，语义去重由 PG
+            # 契约测试覆盖。
             already_exists = False
             for review in self._reviews.values():
                 if (
@@ -718,7 +728,6 @@ class InMemoryMemoryRepository:
                         break
             if already_exists:
                 continue
-            confidence = round(unique_owners / len(members), 6)
             confidence = round(unique_owners / len(members), 6)
             candidate = _team_candidate_from_cluster(
                 cluster,
@@ -1749,31 +1758,20 @@ def _stale_revoked_relations(
     }
 
 
-def _greedy_cluster(
-    memories: list[dict[str, Any]],
-    threshold: float,
-) -> list[list[dict[str, Any]]]:
-    """按 embedding 余弦相似度贪心归簇，语义与 PostgreSQL 版本一致。"""
+# 团队提取的 jieba 分词器单例：subject 实体一致补聚需要词级 token。懒加载，
+# 避免未启用团队提取时的 jieba 初始化开销。与 PostgreSQL 版本语义对齐。
+_TEAM_TOKENIZER: MemoryTokenizer | None = None
 
-    assigned = [False] * len(memories)
-    clusters: list[list[dict[str, Any]]] = []
-    for index, memory in enumerate(memories):
-        if assigned[index]:
-            continue
-        cluster = [memory]
-        assigned[index] = True
-        for other in range(index + 1, len(memories)):
-            if assigned[other]:
-                continue
-            similarity = _cosine_similarity(
-                memory["embedding"],
-                memories[other]["embedding"],
-            )
-            if similarity >= threshold:
-                cluster.append(memories[other])
-                assigned[other] = True
-        clusters.append(cluster)
-    return clusters
+
+def _team_extraction_tokenizer() -> MemoryTokenizer | None:
+    """团队提取的中文分词器，懒加载单例。"""
+
+    global _TEAM_TOKENIZER
+    if _TEAM_TOKENIZER is None:
+        from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
+
+        _TEAM_TOKENIZER = JiebaTokenizer()
+    return _TEAM_TOKENIZER
 
 
 def _cosine_similarity(

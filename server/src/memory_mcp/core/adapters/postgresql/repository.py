@@ -51,6 +51,7 @@ from memory_mcp.core.domain import (
     MemoryRelation,
     MemoryRelationSummary,
     MemoryRevision,
+    MemoryTokenizer,
     PrincipalContext,
     RelationDirection,
     RelationOrigin,
@@ -63,6 +64,8 @@ from memory_mcp.core.domain import (
     average_embedding,
     format_divergence_rationale,
     has_conflicting_business_progress,
+    hierarchical_cluster_complete,
+    merge_by_entity_overlap,
     normalize_memory_text,
     select_cluster_content,
     select_cluster_subject,
@@ -2302,10 +2305,14 @@ def _extract_team_common(
             }
         )
 
-    # 组内 embedding 聚类
+    # 组内 embedding 聚类：全链接层次聚类（防单链贪心的传递漂移），再用
+    # subject 实体一致补聚中间地带漏聚（向量 0.50~0.70 且同标的的措辞差异）。
+    tokenizer = _team_extraction_tokenizer()
     embedding_clusters: list[list[dict]] = []
     for group in groups.values():
-        for cluster in _greedy_cluster(group, similarity_threshold):
+        clusters = hierarchical_cluster_complete(group, similarity_threshold)
+        clusters = merge_by_entity_overlap(clusters, tokenizer=tokenizer)
+        for cluster in clusters:
             embedding_clusters.append(cluster)
 
     # 簇需同时满足最小尺寸和至少 2 个不同成员，避免单成员回声室产生虚假团队候选。
@@ -2482,56 +2489,22 @@ def _embedding_param(embedding: object) -> object:
     return embedding
 
 
-def _greedy_cluster(
-    memories: list[dict],
-    threshold: float,
-) -> list[list[dict]]:
-    """贪心聚类：按 embedding 余弦相似度归簇。"""
-
-    assigned = [False] * len(memories)
-    clusters: list[list[dict]] = []
-    for i, m in enumerate(memories):
-        if assigned[i]:
-            continue
-        cluster = [m]
-        assigned[i] = True
-        for j in range(i + 1, len(memories)):
-            if assigned[j]:
-                continue
-            sim = _cosine_similarity(m["embedding"], memories[j]["embedding"])
-            if sim >= threshold:
-                cluster.append(memories[j])
-                assigned[j] = True
-        clusters.append(cluster)
-    return clusters
+# 团队提取的 jieba 分词器单例：subject 实体一致补聚需要词级 token，比 SimpleTokenizer
+# 的 CJK 单字切分对短 subject 更稳（避免"泡泡玛特"被拆成单字稀释实体信号）。懒加载，
+# 因 jieba 初始化有首词建词典开销；未启用团队提取时不触发。Core 通过 MemoryTokenizer
+# 协议使用，这里在 adapter 层注入 JiebaTokenizer 实现（与召回 tokenizer 注入模式一致）。
+_TEAM_TOKENIZER: MemoryTokenizer | None = None
 
 
-def _cosine_similarity(a, b) -> float:
-    """计算两个 pgvector 返回值的余弦相似度。"""
+def _team_extraction_tokenizer() -> MemoryTokenizer | None:
+    """团队提取的中文分词器，懒加载单例。"""
 
-    vec_a = _parse_vector(a)
-    vec_b = _parse_vector(b)
-    if not vec_a or not vec_b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(vec_a, vec_b, strict=False))
-    norm_a = sum(x * x for x in vec_a) ** 0.5
-    norm_b = sum(x * x for x in vec_b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+    global _TEAM_TOKENIZER
+    if _TEAM_TOKENIZER is None:
+        from memory_mcp.core.adapters.tokenizer import JiebaTokenizer
 
-
-def _parse_vector(value) -> list[float]:
-    """将 pgvector 返回的字符串或列表转为 float 列表。"""
-
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parts = value.strip("[]").split(",")
-        return [float(p) for p in parts if p.strip()]
-    if isinstance(value, (list, tuple)):
-        return [float(v) for v in value]
-    return []
+        _TEAM_TOKENIZER = JiebaTokenizer()
+    return _TEAM_TOKENIZER
 
 
 def _update_extraction_run_counts(
