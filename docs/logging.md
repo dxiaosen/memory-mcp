@@ -24,7 +24,7 @@ MEMORY_MCP_LOG_BACKUP_COUNT=5
 
 | 配置说明 | 行为 |
 | --- | --- |
-| `MEMORY_MCP_LOG_FILE` 设为空值 | 只使用终端或 systemd journal |
+| `MEMORY_MCP_LOG_FILE` 设为空值 | 只使用终端（stderr） |
 | ECS 示例 | 写入 `/var/log/memory-mcp/memory-mcp.log` |
 | 修改配置后 | 必须重启进程 |
 | 开启内容模式 | 服务启动写入 `logging.content.enabled` 警告 |
@@ -301,7 +301,7 @@ grep "run_ref=<ref>" .memory-mcp/logs/agent-hook.log
 ```bash
 tail -n 50 .memory-mcp/logs/memory-mcp.log      # 或 tail -f 持续跟踪
 tail -f .memory-mcp/logs/agent-hook.log
-journalctl -u memory-mcp.service -f
+tail -f /var/log/memory-mcp/memory-mcp.log
 ```
 
 当前实现是单进程文本日志，不含集中式日志平台、trace/span、metrics、远程上传或

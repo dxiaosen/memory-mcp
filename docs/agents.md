@@ -42,7 +42,7 @@ cp agent/.env.example examples/agent.env && chmod 600 examples/agent.env
 set -a; source examples/agent.env; set +a
 ```
 
-从同一终端启动 Agent。IDE、桌面应用或 systemd 进程若不继承该终端环境，必须通过
+从同一终端启动 Agent。IDE、桌面应用或常驻守护进程若不继承该终端环境，必须通过
 自身 Secret/环境注入机制提供同名变量。
 
 Token 必须是 Server `MEMORY_MCP_AUTH_TOKENS` 中的一枚 key。owner 完全由服务端 Token

@@ -12,7 +12,7 @@
 - Server 与 Agent 是独立进程。Agent 不需要数据库、LangChain、模型 Provider 或 migration。
 - `MemoryServerSettings`/`ExtractionSettings` 默认读取项目根目录 `.env`，进程环境变量优先。
 - `MemoryHookSettings` 不隐式读取根目录 `.env`，凭据须来自进程环境或显式 env 文件。
-- 优先级：显式构造参数 > 进程环境变量 > env 文件 > 代码默认值。生产通过 Secret Manager 或 systemd `EnvironmentFile` 注入。
+- 优先级：显式构造参数 > 进程环境变量 > env 文件 > 代码默认值。生产通过 Secret Manager 或进程 `EnvironmentFile` 注入。
 - **禁止**提交或打印 PostgreSQL DSN、Bearer Token 和模型 API Key。
 - URI 保留字符须 percent-encode：`@`→`%40`、`:`→`%3A`、`/`→`%2F`、`?`→`%3F`、`#`→`%23`。
 
@@ -134,7 +134,7 @@
 
 - 候选和关系抽取共享一个 ChatModel，使用独立 prompt 和严格 schema。
 - 配置缺失时启动失败，不降级为测试替身。
-- 模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_trgm` + 可选向量候选及确定性应用层排序。
+- 模型只参与 AfterRun 候选/关系抽取；BeforeRun 召回使用 `pg_jieba` 全文检索 + 可选向量候选及确定性应用层排序。
 
 ### 3.5 向量召回（可选）
 
@@ -170,7 +170,7 @@
 | --- | --- | --- |
 | `MEMORY_MCP_LOG_LEVEL` | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
 | `MEMORY_MCP_LOG_CONTENT` | `false` | 是否记录清洗后的业务内容 |
-| `MEMORY_MCP_LOG_FILE` | `.memory-mcp/logs/memory-mcp.log` | 空字符串只写 stderr/journal |
+| `MEMORY_MCP_LOG_FILE` | `.memory-mcp/logs/memory-mcp.log` | 空字符串只写 stderr |
 | `MEMORY_MCP_LOG_MAX_BYTES` | `10485760` | 单文件轮转阈值 |
 | `MEMORY_MCP_LOG_BACKUP_COUNT` | `5` | 轮转文件数 |
 

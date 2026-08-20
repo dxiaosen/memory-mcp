@@ -11,9 +11,9 @@
 | 接入 Agent | [agents.md](agents.md) — Hook 合同、Codex/Claude Code |
 | 本地跑通 | [usage.md](usage.md) — 安装、启动、手工验证 |
 | 跑测试 | [testing.md](testing.md) — 分层、命令、DB 安全 |
-| 看评测 | [evaluation.md](evaluation.md) — 52 案例、指标、快照 |
+| 看评测 | [evaluation.md](evaluation.md) — 66 案例、指标、快照 |
 | 查日志 | [logging.md](logging.md) — 事件、字段、脱敏 |
-| 生产部署 | [deploy.md](deploy.md) — ECS/RDS、systemd |
+| 生产部署 | [deploy.md](deploy.md) — ECS/RDS 直接运行 |
 | 在本仓库工作 | [../CLAUDE.md](../CLAUDE.md) — 架构铁律、模块速查、改动检查清单 |
 
 ## 架构速览

@@ -138,5 +138,5 @@ uv build --package memory-mcp-agent --wheel
 | Agent 运行依赖 | 不含 PostgreSQL、LangChain、模型 Provider 或 Server 包 |
 | console script | Server 与 Agent 不相互泄漏 |
 
-公网 HTTPS、ECS/RDS 网络、安全组、systemd 权限、滚动升级和回滚属于部署验收，
+公网 HTTPS、ECS/RDS 网络、安全组、进程托管、滚动升级和回滚属于部署验收，
 见[部署指南](deploy.md)。

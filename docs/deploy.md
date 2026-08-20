@@ -9,19 +9,19 @@ VPC/VPN Agent ── HTTP + Authorization ───────┐
                                              │
 公网 Agent ── HTTPS ── 可选 ALB/CLB ── HTTP ─┤
                                              ▼
-                        Memory MCP <ECS_PRIVATE_IP>:8765  (systemd)
+                        Memory MCP <ECS_PRIVATE_IP>:8765
                                              │
                                       VPC 私网连接
                                              ▼
                                       RDS PostgreSQL
 ```
 
-- `deploy/` 目录只存放运维制品（两个 systemd unit），不是应用代码包或数据目录。
+- 应用部署到 `/opt/memory-mcp`，直接以 `memory-mcp` 进程运行。
 
 ## 2. 前置条件
 
 - ECS 与 PostgreSQL 位于同地域、同 VPC，或已建立可控私网路由。
-- PostgreSQL 创建独立数据库和最小权限应用账号；migration 账号需 `CREATE EXTENSION pg_trgm` 与 `CREATE EXTENSION vector`（pgvector）权限（`0001_memory_schema.sql` 要求）。
+- PostgreSQL 创建独立数据库和最小权限应用账号；migration 账号需 `CREATE EXTENSION pg_jieba` 与 `CREATE EXTENSION vector`（pgvector）权限（`0001_memory_schema.sql` 要求）。
 - 公网接入时，ALB/CLB 已配置域名和有效 TLS 证书。
 - Linux 已安装 `uv`；项目部署到 `/opt/memory-mcp`；时间同步正常。
 
@@ -93,22 +93,21 @@ MEMORY_MCP_LOG_FILE=/var/log/memory-mcp/memory-mcp.log
 
 | 步骤 | 命令 | 验证 |
 | --- | --- | --- |
-| 安装迁移 unit | `sudo cp deploy/systemd/memory-mcp-migrate.service /etc/systemd/system/`<br>`sudo systemctl daemon-reload` | `systemctl cat memory-mcp-migrate.service` |
-| 执行迁移 | `sudo systemctl start memory-mcp-migrate.service` | `sudo systemctl status memory-mcp-migrate.service` |
+| 执行迁移 | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp-db migrate'` | 输出 migration 完成 |
 | 验证 schema | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp-db health'` | `Memory PostgreSQL is healthy` |
 
 - 迁移记录 checksum，已执行的 migration 文件被修改后续迁移会拒绝执行。
-- 重复执行 migration unit 应报告 schema 已是最新状态。
+- 重复执行迁移应报告 schema 已是最新状态。
 
-## 7. 启动 systemd 服务
+## 7. 启动服务
 
 | 步骤 | 命令 | 验证 |
 | --- | --- | --- |
-| 安装 unit | `sudo cp deploy/systemd/memory-mcp.service /etc/systemd/system/`<br>`sudo systemctl daemon-reload` | `systemctl cat memory-mcp.service` |
-| 启动并启用 | `sudo systemctl enable --now memory-mcp.service` | `sudo systemctl status memory-mcp.service` |
+| 启动应用 | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp'` | 进程驻留，日志输出到 `/var/log/memory-mcp/memory-mcp.log` |
 | 健康检查 | `curl --fail http://127.0.0.1:8765/health` | `storage: postgresql`，`maintenance.state: ok` |
-| 查看日志 | `sudo journalctl -u memory-mcp.service -f` | 无 ERROR |
+| 查看日志 | `sudo tail -f /var/log/memory-mcp/memory-mcp.log` | 无 ERROR |
 
+- 进程前台运行；生产可用 `nohup ... &` 或进程管理器托管，重启即重新执行上述启动命令。
 - `maintenance.state` 应从 `starting` 进入 `ok`；`degraded` 表示维护循环失败，但数据库健康时 HTTP 仍为 200。
 - `MEMORY_MCP_MAINTENANCE_INTERVAL_SECONDS=0` 时状态为 `disabled`。
 
@@ -167,8 +166,8 @@ AfterRun  → no-op（Phase 1 后 capture 由模型自主调用 capture_complete
 | --- | --- | --- |
 | 1 上传代码 | 同步代码到 `/opt/memory-mcp` | `git rev-parse HEAD` |
 | 2 安装依赖 | `uv sync --frozen --no-dev --package memory-mcp` | `.venv/bin/memory-mcp --help` |
-| 3 迁移 | `sudo systemctl start memory-mcp-migrate.service` | `memory-mcp-db health` |
-| 4 重启服务 | `sudo systemctl restart memory-mcp.service` | `systemctl status memory-mcp.service` |
+| 3 迁移 | `sudo -u memory-mcp /bin/bash -c 'set -a; source /etc/memory-mcp/memory-mcp.env; set +a; exec /opt/memory-mcp/.venv/bin/memory-mcp-db migrate'` | `Memory PostgreSQL is healthy` |
+| 4 重启服务 | 重启 `memory-mcp` 进程（重新执行 §7 启动命令） | 进程驻留、日志无 ERROR |
 | 5 健康检查 | `curl --fail http://127.0.0.1:8765/health` | HTTP 200 |
 | 6 工具发现 | 从 Agent 网络用 MCP Client 执行 `tools/list` | 返回工具列表 |
 | 7 功能验证 | 执行跨 Agent 捕获、召回和跨用户负向测试 | 符合预期 |
@@ -196,9 +195,9 @@ AfterRun  → no-op（Phase 1 后 capture 由模型自主调用 capture_complete
 ## 12. 当前边界
 
 - Bearer Token 映射是静态认证适配器，不是 OAuth/OIDC。
-- Recall 使用 `pg_trgm` 词法 + 可选 pgvector 向量 + 近期三路候选；向量路未配置
+- Recall 使用 `pg_jieba` 词法 + 可选 pgvector 向量 + 近期三路候选；向量路未配置
   `MEMORY_MCP_EMBEDDING_API_KEY` 时降级为词法+近期两路。候选硬上限约束应用层载入，
   不能用无限调大配置替代容量评测。
-- 周期维护与团队提取在 Server lifespan 内运行，不增加额外 systemd unit、队列或 Agent 配置。
+- 周期维护与团队提取在 Server lifespan 内运行，不增加额外进程、队列或 Agent 配置。
 - PostgreSQL 是唯一运行时存储，不提供 SQLite 降级路径。
 - 部署到新 RDS 实例时仍需先在隔离测试库执行验收套件。

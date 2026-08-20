@@ -25,3 +25,6 @@ pytest-cache-files-*/
 .codex
 .claude
 .mcp.json
+
+evals/
+examples/

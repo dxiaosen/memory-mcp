@@ -50,18 +50,18 @@ flowchart LR
 | 审核 | pending 查看/确认/拒绝 |
 | 幂等 | event 级幂等、payload conflict、失败重处理 |
 | MCP Server | Bearer Token 认证与 scope |
-| 工具与 DTO | 十个 MCP 工具、严格 DTO、稳定错误码 |
+| 工具与 DTO | 十三个 MCP 工具、严格 DTO、稳定错误码 |
 | 记忆配置 | `GeneralWorkProfile`（v1）与 `InvestmentResearchProfile`（v1） |
 | Revision | confidence/verification/sensitivity/validity、结构化引用来源 |
 | 生命周期 | owner-scoped 幂等 revoke、读取时失效过滤、服务端周期到期物化 |
 | 关系 | owner-scoped 记忆关系、投研关系策略、AfterRun 自动建边、revision 失效与一跳关系感知召回 |
 | 版本管理 | duplicate Evidence、replacement revision、显式 history |
-| 召回 | owner-first trigram/vector/近期三路 recall、阈值、数量与 token budget |
+| 召回 | owner-first pg_jieba 全文检索/vector/近期三路 recall、阈值、数量与 token budget |
 | 向量召回 | `EmbeddingProvider` 端口、Qwen 实现、pgvector `embedding` 列与向量余弦候选路，未配置时降级为两路 |
 | 团队公共记忆 | 手动 `promote_to_team` 提升与服务端周期性 embedding 聚类自动提取候选 |
 | Agent Client | 独立轻量 BeforeRun/AfterRun Agent Client 发行包 |
 | 抽取 | 真实 OpenAI-compatible/DeepSeek 抽取与测试注入的确定性 extractor |
-| 部署 | systemd 与 ECS/RDS 部署骨架 |
+| 部署 | ECS 直接运行与 RDS 部署骨架 |
 
 **未完成**：公网 HTTPS、安全组、远端网络证据、完整现场脚本与录屏（属交付验收，不改变核心架构）。
 公网交付进度见 [核心 Tasks](../openspec/changes/add-general-memory-core/tasks.md)。
@@ -138,7 +138,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     P[可信 Principal] --> A[PostgreSQL owner-first current 集合]
-    A --> B[trigram 词法 ~70%]
+    A --> B[pg_jieba 词法 ~70%]
     A --> C[vector 余弦 ~30%]
     A --> D[近期补齐]
     B --> E[应用层打分+关系加权]
@@ -180,7 +180,7 @@ flowchart TD
 | `core/adapters/{sensitive,tokenizer,structured_model}` | 敏感守卫、jieba 分词、结构化模型解析 |
 | `extraction` | provider/schema/settings 分离：chat_models/embedding/backends/factory |
 | `profiles` | 正式 Profile 实现（general_work/investment_research），实现 `MemoryProfile` 协议 |
-| `tools` | 十个 MCP 工具 + 共享边界（auth/log/error 映射） |
+| `tools` | 十三个 MCP 工具 + 共享边界（auth/log/error 映射） |
 | `auth` | 静态 Bearer 认证、可信 Principal 派生、scope |
 | `app` | 组合根：组装 Server、注入适配器、注册工具、lifespan |
 | `db` | migration/health 运维入口 |
@@ -235,8 +235,7 @@ memory-mcp/
 ├── agent/src/memory_mcp_agent/  # bridge/client/hosts/state/settings/cli/context/logging
 ├── tests/                  # core/agent/server/support/evaluation
 ├── docs/                   # design/config/agents/usage/testing/logging/deploy/evaluation
-├── openspec/changes/       # 变更历史与规范
-└── deploy/systemd/         # memory-mcp.service / memory-mcp-migrate.service
+└── openspec/changes/       # 变更历史与规范
 ```
 
 ## 4. 领域模型

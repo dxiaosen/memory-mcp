@@ -37,7 +37,7 @@ flowchart TD
     end
     subgraph Server["Memory MCP Server (memory-mcp)"]
         AUTH["认证 / owner 派生 / scope"]
-        TOOLS["MCP Tools (10 个)"]
+        TOOLS["MCP Tools (13 个)"]
         CORE["Memory Core<br/>domain / application / ports"]
         ADAPT["适配层<br/>PostgreSQL · 敏感守卫 · 分词 · 抽取 · embedding"]
         MAINT["周期任务<br/>维护 · 团队提取"]
@@ -56,9 +56,10 @@ flowchart TD
 运行时设置；场景差异通过 `MemoryProfile` 协议注入，通用 Core 不含业务词义。详见
 [详细总设计](docs/design.md)。
 
-十个 MCP 工具：`capture_completed_turn`、`recall_memory`、`list_memories`、
-`get_memory`、`list_pending_reviews`、`confirm_pending_memory`、`reject_pending_memory`、
-`revoke_memory`、`link_memories`、`revoke_memory_relation`（见 [设计 §6.2](docs/design.md)）。
+十三个 MCP 工具：`capture_completed_turn`、`recall_memory`、`list_memories`、`get_memory`、
+`search_memories`、`list_pending_reviews`、`confirm_pending_memory`、`reject_pending_memory`、
+`batch_confirm_pending`、`revoke_memory`、`link_memories`、`revoke_memory_relation`、
+`get_memory_stats`（见 [设计 §6.2](docs/design.md)）。
 
 ## 文档导航
 
@@ -71,7 +72,7 @@ flowchart TD
 | 跑测试 | [testing.md](docs/testing.md) — 分层、命令、DB 安全 |
 | 看评测 | [evaluation.md](docs/evaluation.md) — 66 案例、三模式、指标、baseline |
 | 查日志 | [logging.md](docs/logging.md) — 事件、字段、脱敏 |
-| 生产部署 | [deploy.md](docs/deploy.md) — ECS/RDS、systemd |
+| 生产部署 | [deploy.md](docs/deploy.md) — ECS/RDS 直接运行 |
 | 在本仓库工作 | [CLAUDE.md](CLAUDE.md) — 架构铁律、模块速查、改动检查清单 |
 
 OpenSpec 管变更历史与规范，不作为使用手册：[OpenSpec 导航](openspec/README.md)。
