@@ -504,6 +504,79 @@ class PostgreSQLMemoryRepository:
                     top2 = (similarity, record)
             return top1, top2
 
+    def find_semantically_similar_top2_cross_type(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """跨 memory_type 返回相似度最高的两条活动记忆及其相似度。
+
+        复用 ``find_semantically_similar_top2`` 的 SQL，仅去掉 ``memory_type``
+        过滤，使同一判断被抽成不同 memory_type 的修正版仍能匹配到原记忆。
+        用于跨 type replacement fallback（由显式修订意图触发）。
+        """
+
+        vector = list(embedding)
+        vector_literal = str(vector).replace("'", "''")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.memory_id, i.owner_id, i.profile_id, i.subject,
+                       i.memory_type, i.created_at AS item_created_at,
+                       r.revision_id, r.revision_number, r.content,
+                       r.assertion_kind, r.lifecycle_status, r.business_progress,
+                       r.save_rationale,
+                       r.observed_at AS revision_observed_at,
+                       r.created_at AS revision_created_at, r.is_current,
+                       r.original_time_expression, r.normalized_time,
+                       r.extraction_confidence, r.verification_status,
+                       r.sensitivity_level, r.valid_from, r.valid_until,
+                       (r.embedding <=> %s::vector) AS embedding_distance
+                FROM memory_items AS i
+                JOIN memory_revisions AS r
+                  ON r.memory_id = i.memory_id
+                 AND r.owner_id = i.owner_id
+                 AND r.is_current
+                WHERE i.owner_id = ANY(%s)
+                  AND i.profile_id = %s
+                  AND r.lifecycle_status = 'active'
+                  AND r.valid_from <= %s
+                  AND (r.valid_until IS NULL OR r.valid_until > %s)
+                  AND r.embedding IS NOT NULL
+                ORDER BY r.embedding <=> %s::vector
+                LIMIT 5
+                """,
+                (
+                    vector_literal,
+                    list(principal.visible_owner_ids),
+                    profile_id,
+                    effective_at,
+                    effective_at,
+                    vector_literal,
+                ),
+            ).fetchall()
+            top1: tuple[float, MemoryRecord] | None = None
+            top2: tuple[float, MemoryRecord] | None = None
+            for row in rows:
+                distance = row["embedding_distance"]
+                similarity = 1.0 - float(distance)
+                if similarity < threshold:
+                    continue
+                record = to_record(connection, row, row["owner_id"])
+                if top1 is None or similarity > top1[0]:
+                    top2 = top1
+                    top1 = (similarity, record)
+                elif top2 is None or similarity > top2[0]:
+                    top2 = (similarity, record)
+            return top1, top2
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,
@@ -1109,6 +1182,30 @@ class PostgreSQLMemoryRepository:
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError("replacement target is no longer current")
+                # 跨 type replacement fallback：新候选与旧记忆 memory_type 不同时，
+                # 同步把 memory_items.memory_type 改成新值，使 item 级 type 与最新
+                # revision 内容一致（recall/唯一约束均以 item.memory_type 为权威）。
+                # 撞槽位冲突已在应用层用 cross_type_subject_scope_conflict 提前拦截，
+                # 此处仅同步 type；并发 TOCTOU 撞唯一约束仍抛 SubjectScopeConflictError。
+                if replacement.new_memory_type is not None:
+                    type_cursor = connection.execute(
+                        """
+                        UPDATE memory_items
+                        SET memory_type = %s
+                        WHERE owner_id = %s
+                          AND memory_id = %s
+                          AND lifecycle_status = 'active'
+                        """,
+                        (
+                            replacement.new_memory_type,
+                            principal.owner_id,
+                            replacement.memory_id,
+                        ),
+                    )
+                    if type_cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "cross-type replacement target memory_type update failed"
+                        )
                 self._insert_revision(
                     connection,
                     replacement.revision,

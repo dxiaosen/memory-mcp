@@ -89,12 +89,19 @@ class DuplicateEvidenceWrite:
 
 @dataclass(frozen=True, slots=True)
 class ReplacementWrite:
-    """在同一 MemoryItem 内原子替换 current revision。"""
+    """在同一 MemoryItem 内原子替换 current revision。
+
+    ``new_memory_type`` 用于跨 type replacement fallback：当替代目标与新候选
+    分属不同 memory_type（如旧 thesis 被修订成 risk）时，非 None 表示 commit
+    时需同步把 ``memory_items.memory_type`` 改成此值，使 item 级 type 与最新
+    revision 内容一致。None 表示同 type 替代，不改 item 的 memory_type。
+    """
 
     memory_id: UUID
     expected_revision_id: UUID
     revision: MemoryRevision
     evidence: tuple[Evidence, ...]
+    new_memory_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +235,31 @@ class MemoryRepository(Protocol):
 
         用于 replacement fallback margin 判定：top1 和 top2 相似度差距不足时
         视为歧义，避免语义 fallback 误伤独立 thesis（宁可 Pending 不替错）。
+        """
+
+        ...
+
+    def find_semantically_similar_top2_cross_type(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """跨 memory_type 返回相似度最高的两条活动记忆及其相似度。
+
+        用于跨 type replacement fallback：当同 type fallback 未命中、且用户
+        显式表达修订意图时，模型可能把同一判断的修正抽成不同 memory_type
+        （如旧 thesis 被修订成 risk）。此时不限 memory_type 查语义最近的两条，
+        复用 top2 + margin 歧义判定与强匹配阈值，避免误替独立判断。
+
+        与 ``find_assistant_echo`` 同样不限 memory_type，但返回 top2 并参与
+        replacement 决策（非 discard）。无嵌入或无命中返回 (None, None)。
         """
 
         ...

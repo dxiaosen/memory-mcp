@@ -1062,3 +1062,240 @@ def test_real_postgresql_team_member_can_revoke_team_memory(
         assert result.items == ()
     finally:
         repository.close()
+
+
+def test_real_postgresql_find_semantically_similar_top2_cross_type_ignores_memory_type(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """``find_semantically_similar_top2_cross_type`` 不限 memory_type 返回 top2。
+
+    跨 type replacement fallback 的 DB 落地：同 profile 下不同 memory_type 的
+    活动记忆都参与余弦相似度排序，返回最近两条。
+    """
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=3)
+    repository = PostgreSQLMemoryRepository(pool)
+    repository.register_profile(TestMemoryProfile())
+    owner = PrincipalContext("owner-a")
+    effective_at = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    # 1024 维：near 是 preference、far 是 ongoing_item，都参与跨 type 查询。
+    near_embedding = tuple([1.0] + [0.0] * 1023)
+    far_embedding = tuple([0.6, 0.8] + [0.0] * 1022)
+    query = tuple([1.0, 0.01] + [0.0] * 1022)
+
+    def _record(
+        subject: str, memory_type: str, embedding: tuple[float, ...]
+    ) -> uuid4:
+        from memory_mcp.core import (
+            AssertionKind,
+            Evidence,
+            EvidenceSourceType,
+            LifecycleStatus,
+            MemoryItem,
+            MemoryRecord,
+            MemoryRevision,
+            MessageRole,
+            SensitivityLevel,
+            VerificationStatus,
+        )
+
+        memory_id = uuid4()
+        revision_id = uuid4()
+        repository.add(
+            owner,
+            MemoryRecord(
+                item=MemoryItem(
+                    memory_id=memory_id,
+                    owner_id="owner-a",
+                    profile_id="project-work",
+                    subject=subject,
+                    memory_type=memory_type,
+                    created_at=effective_at,
+                ),
+                current_revision=MemoryRevision(
+                    revision_id=revision_id,
+                    memory_id=memory_id,
+                    owner_id="owner-a",
+                    revision_number=1,
+                    content=subject,
+                    assertion_kind=AssertionKind.USER_VIEW,
+                    lifecycle_status=LifecycleStatus.ACTIVE,
+                    business_progress=None,
+                    save_rationale="测试",
+                    observed_at=effective_at,
+                    created_at=effective_at,
+                    extraction_confidence=0.9,
+                    verification_status=VerificationStatus.USER_ASSERTED,
+                    sensitivity_level=SensitivityLevel.CONFIDENTIAL,
+                    valid_from=effective_at,
+                    valid_until=None,
+                    embedding=embedding,
+                ),
+                evidence=(
+                    Evidence(
+                        evidence_id=uuid4(),
+                        memory_id=memory_id,
+                        revision_id=revision_id,
+                        owner_id="owner-a",
+                        source_turn_id="turn-1",
+                        source_expression=subject,
+                        observed_at=effective_at,
+                        created_at=effective_at,
+                        source_role=MessageRole.USER,
+                        source_type=EvidenceSourceType.CONVERSATION,
+                    ),
+                ),
+            ),
+        )
+        return memory_id
+
+    near_id = _record("near-pref", "preference", near_embedding)
+    far_id = _record("far-ongoing", "ongoing_item", far_embedding)
+
+    top1, top2 = repository.find_semantically_similar_top2_cross_type(
+        owner,
+        profile_id="project-work",
+        embedding=query,
+        threshold=0.50,
+        effective_at=effective_at,
+    )
+    assert top1 is not None and top2 is not None
+    # near（余弦≈0.99995）应为 top1，far（≈0.60）为 top2，跨 type 均返回。
+    assert top1[1].item.memory_id == near_id
+    assert top2[1].item.memory_id == far_id
+    assert top1[0] > top2[0]
+    repository.close()
+
+
+def test_real_postgresql_cross_type_replacement_commit_syncs_memory_type(
+    postgresql_test_database: PostgreSQLTestDatabase,
+) -> None:
+    """跨 type replacement commit 同步更新 memory_items.memory_type。
+
+    ReplacementWrite.new_memory_type 非 None 时，commit 在 supersede 旧 revision
+    后把 memory_items.memory_type 改成新值，使 item 级 type 与新 revision 内容一致。
+    """
+
+    pool = create_pool(postgresql_test_database.url, min_size=1, max_size=3)
+    repository = PostgreSQLMemoryRepository(pool)
+    repository.register_profile(TestMemoryProfile())
+    owner = PrincipalContext("owner-a")
+    effective_at = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    near_embedding = tuple([1.0] + [0.0] * 1023)
+
+    from memory_mcp.core import (
+        AdmissionDecision,
+        AssertionKind,
+        CaptureOutcome,
+        CaptureResult,
+        CaptureStatus,
+        CaptureWrite,
+        LifecycleStatus,
+        MemoryItem,
+        MemoryRecord,
+        MemoryRevision,
+        ReplacementWrite,
+        SensitivityLevel,
+        VerificationStatus,
+    )
+
+    # 建一条 preference 活动记忆，将被跨 type 替换成 ongoing_item。
+    memory_id = uuid4()
+    old_revision_id = uuid4()
+    repository.add(
+        owner,
+        MemoryRecord(
+            item=MemoryItem(
+                memory_id=memory_id,
+                owner_id="owner-a",
+                profile_id="project-work",
+                subject="cross-type-subject",
+                memory_type="preference",
+                created_at=effective_at,
+            ),
+            current_revision=MemoryRevision(
+                revision_id=old_revision_id,
+                memory_id=memory_id,
+                owner_id="owner-a",
+                revision_number=1,
+                content="原偏好内容",
+                assertion_kind=AssertionKind.USER_VIEW,
+                lifecycle_status=LifecycleStatus.ACTIVE,
+                business_progress=None,
+                save_rationale="测试",
+                observed_at=effective_at,
+                created_at=effective_at,
+                extraction_confidence=0.9,
+                verification_status=VerificationStatus.USER_ASSERTED,
+                sensitivity_level=SensitivityLevel.CONFIDENTIAL,
+                valid_from=effective_at,
+                valid_until=None,
+                embedding=near_embedding,
+            ),
+            evidence=(),
+        ),
+    )
+
+    new_revision_id = uuid4()
+    new_revision = MemoryRevision(
+        revision_id=new_revision_id,
+        memory_id=memory_id,
+        owner_id="owner-a",
+        revision_number=2,
+        content="修订后内容（现属 ongoing_item）",
+        assertion_kind=AssertionKind.USER_VIEW,
+        lifecycle_status=LifecycleStatus.ACTIVE,
+        business_progress="open",
+        save_rationale="跨 type 替代",
+        observed_at=effective_at,
+        created_at=effective_at,
+        extraction_confidence=0.9,
+        verification_status=VerificationStatus.USER_ASSERTED,
+        sensitivity_level=SensitivityLevel.CONFIDENTIAL,
+        valid_from=effective_at,
+        valid_until=None,
+        embedding=near_embedding,
+    )
+    replacement = ReplacementWrite(
+        memory_id=memory_id,
+        expected_revision_id=old_revision_id,
+        revision=new_revision,
+        evidence=(),
+        new_memory_type="ongoing_item",
+    )
+    result = CaptureResult(
+        capture_id=uuid4(),
+        owner_id="owner-a",
+        event_id="evt-cross-type",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+        status=CaptureStatus.COMPLETED,
+        payload_fingerprint=None,
+        observed_at=effective_at,
+        completed_at=effective_at,
+    )
+    write = CaptureWrite(
+        result=result,
+        memories=(),
+        reviews=(),
+        duplicate_evidence=(),
+        replacements=(replacement,),
+        relations=(),
+        outcomes=(
+            CaptureOutcome(
+                candidate_id=uuid4(),
+                decision=AdmissionDecision.AUTO_SAVE,
+                reason_code="semantic_cross_type_explicit_replacement",
+                memory_id=memory_id,
+            ),
+        ),
+    )
+    repository.commit_capture(owner, write)
+
+    # 验证：memory_items.memory_type 已同步成 ongoing_item，旧 revision superseded。
+    record = repository.get(owner, memory_id)
+    assert record is not None
+    assert record.item.memory_type == "ongoing_item"
+    assert record.current_revision.lifecycle_status is LifecycleStatus.ACTIVE
+    assert record.current_revision.revision_id == new_revision_id
+    repository.close()

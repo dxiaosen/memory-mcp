@@ -45,32 +45,32 @@ def _page(body: str, extra: str = "") -> str:
 def pains_full():
     # 统一 navy 配色，靠编号和痛点名区分；白底干净
     items = [
-        ("忘", "记不住", "跨会话断档",
-         ["上一轮确认过的偏好和结论，下一轮即失效",
-          "项目背景需逐轮重新交代",
-          "未决问题、推进进度等上下文存不住"],
-         "上下文反复重建，算力浪费，响应变慢"),
-        ("串", "串味", "身份边界失守",
-         ["多人共用同一记忆，无归属区分",
-          "A 的私有判断出现在 B 的召回结果中",
-          "此类泄漏一旦发生无法收回"],
-         "私有数据泄漏，合规与信任双重受损"),
-        ("乱", "没法管", "只增不改不废",
-         ["旧结论与新结论并存，无法判别有效性",
-          "无法修订、作废，亦无法追溯出处",
-          "记忆一旦写入即固化，越积越脏"],
-         "记忆不可信，最终只能整体废弃重建"),
+        ("忘", "记不住", "跨会话失忆",
+         ["上一轮确认的偏好和结论，下一轮失效",
+          "项目背景要逐轮重新交代",
+          "未决问题和进度存不下来"],
+         "上下文反复重建，算力浪费、响应变慢"),
+        ("串", "越权", "归属不分",
+         ["多人共用一份记忆，没有归属区分",
+          "A 的私有判断会进到 B 的召回结果里",
+          "这种泄漏一旦发生收不回来"],
+         "私有数据泄漏，合规和信任都受损"),
+        ("乱", "难治理", "只增不退",
+         ["新结论来了，旧的还留着，分不清哪条有效",
+          "不能修订、不能作废，也查不到出处",
+          "写进去就固化了，越攒越脏"],
+         "记忆不可信，最后只能推倒重来"),
     ]
     cards = ""
     for g, h, slogan, pts, cost in items:
         pts_html = "".join(
-            f"<div style='display:flex;gap:12px;align-items:flex-start;font-size:18.5px;line-height:1.6;color:{C['ink']};'>"
+            f"<div style='display:flex;gap:12px;align-items:flex-start;font-size:19px;line-height:1.65;color:{C['ink']};'>"
             f"<span style='color:{C['navy']};font-weight:800;flex-shrink:0;font-size:20px;'>{i+1}.</span>"
             f"<span>{p}</span></div>" for i, p in enumerate(pts))
         cards += f"""
         <div class='card' style='flex:1;position:relative;padding:0;display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid {C['light']};'>
           <div style='height:12px;background:{C['navy']};'></div>
-          <div style='padding:28px 24px 0 24px;flex:1;display:flex;flex-direction:column;'>
+          <div style='padding:34px 26px 0 26px;flex:1;display:flex;flex-direction:column;'>
             <div style='display:flex;align-items:center;gap:16px;'>
               <div style='width:66px;height:66px;border-radius:50%;background:{C['navy']};color:#fff;font-size:36px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;'>{g}</div>
               <div>
@@ -78,18 +78,15 @@ def pains_full():
                 <div style='font-size:15px;color:{C['navy']};font-weight:700;margin-top:5px;'>{slogan}</div>
               </div>
             </div>
-            <div style='margin-top:26px;display:flex;flex-direction:column;gap:16px;flex:1;'>{pts_html}</div>
+            <div style='margin-top:30px;display:flex;flex-direction:column;gap:20px;flex:1;'>{pts_html}</div>
           </div>
-          <div style='margin:0 22px 22px 22px;padding:20px 22px;background:{C['vly']};border-left:5px solid {C['navy']};border-radius:6px;'>
-            <div style='font-size:21px;color:{C['mid']};margin-bottom:9px;font-weight:800;'>后果</div>
+          <div style='margin:0 24px 28px 24px;padding:22px 24px;background:{C['vly']};border-left:5px solid {C['navy']};border-radius:6px;'>
+            <div style='font-size:21px;color:{C['mid']};margin-bottom:10px;font-weight:800;'>后果</div>
             <div style='font-size:23px;font-weight:800;color:{C['navy']};line-height:1.4;'>{cost}</div>
           </div>
         </div>"""
     body = f"""
-    <div style='padding:20px 30px 0 30px;display:flex;gap:20px;height:498px;'>{cards}</div>
-    <div style='position:absolute;bottom:30px;left:0;right:0;text-align:center;font-size:20px;font-weight:700;color:{C['navy']};'>
-      痛点不在存储，而在边界、可改、可追溯 —— 这是立项出发点
-    </div>"""
+    <div style='padding:22px 30px 22px 30px;display:flex;gap:22px;height:585px;'>{cards}</div>"""
     return _page(body)
 
 
@@ -98,8 +95,8 @@ def why_service():
     """承接 P02 痛点 → 根因是记忆散落各自管 → 对策是独立成服务。左右对比拓扑。"""
     body = f"""
     <div style='padding:20px 30px 0 30px;'>
-      <div class='h2'>痛点的根因：记忆散落在各 Agent 内，无统一治理</div>
-      <div class='sub' style='margin-top:5px;'>忘、串、乱的根因不在存储能力，而在抽取、隔离、准入、生命周期无人统一负责——故应抽成独立服务</div>
+      <div class='h2'>痛点的根因：记忆散落在各 Agent 内，各自为政</div>
+      <div class='sub' style='margin-top:5px;'>忘、串、乱的根因不在存储，在抽取、隔离、准入、生命周期没有统一负责——所以要把记忆抽成独立服务</div>
     </div>
     <div style='position:absolute;top:96px;left:0;right:0;padding:0 30px;'>
       <svg viewBox='0 0 1154 440' width='1154' height='440'>
@@ -112,24 +109,24 @@ def why_service():
         <!-- 三个各自的记忆块 -->
         <rect x='65' y='130' width='130' height='130' rx='10' fill='{C['vly']}' stroke='{C['mid']}' stroke-width='1.2' stroke-dasharray='5,3'/>
         <text x='130' y='170' text-anchor='middle' fill='{C['mid']}' font-size='15' font-weight='800'>自带记忆</text>
-        <text x='130' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取各自实现</text>
-        <text x='130' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离各自实现</text>
-        <text x='130' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则各自定义</text>
+        <text x='130' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取自写</text>
+        <text x='130' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离自写</text>
+        <text x='130' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则自定</text>
         <rect x='215' y='130' width='130' height='130' rx='10' fill='{C['vly']}' stroke='{C['mid']}' stroke-width='1.2' stroke-dasharray='5,3'/>
         <text x='280' y='170' text-anchor='middle' fill='{C['mid']}' font-size='15' font-weight='800'>自带记忆</text>
-        <text x='280' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取各自实现</text>
-        <text x='280' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离各自实现</text>
-        <text x='280' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则各自定义</text>
+        <text x='280' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取自写</text>
+        <text x='280' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离自写</text>
+        <text x='280' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则自定</text>
         <rect x='365' y='130' width='130' height='130' rx='10' fill='{C['vly']}' stroke='{C['mid']}' stroke-width='1.2' stroke-dasharray='5,3'/>
         <text x='430' y='170' text-anchor='middle' fill='{C['mid']}' font-size='15' font-weight='800'>自带记忆</text>
-        <text x='430' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取各自实现</text>
-        <text x='430' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离各自实现</text>
-        <text x='430' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则各自定义</text>
+        <text x='430' y='200' text-anchor='middle' fill='{C['mid']}' font-size='12'>抽取自写</text>
+        <text x='430' y='220' text-anchor='middle' fill='{C['mid']}' font-size='12'>隔离自写</text>
+        <text x='430' y='240' text-anchor='middle' fill='{C['mid']}' font-size='12'>规则自定</text>
         <line x1='130' y1='95' x2='130' y2='130' stroke='{C['mid']}' stroke-width='1.5' stroke-dasharray='4,3'/>
         <line x1='280' y1='95' x2='280' y2='130' stroke='{C['mid']}' stroke-width='1.5' stroke-dasharray='4,3'/>
         <line x1='430' y1='95' x2='430' y2='130' stroke='{C['mid']}' stroke-width='1.5' stroke-dasharray='4,3'/>
         <!-- 三个后果 -->
-        <text x='280' y='295' text-anchor='middle' fill='{C['mid']}' font-size='13.5'>数据多份不一致 · 隔离规则散落 · 每接入一种 Agent 须重写一遍</text>
+        <text x='280' y='295' text-anchor='middle' fill='{C['mid']}' font-size='13.5'>数据多份不一致 · 隔离规则散落 · 每接入一种 Agent 要重写一遍</text>
         <!-- 中间箭头 -->
         <path d='M540 195 L 620 195' fill='none' stroke='{C['navy']}' stroke-width='3' marker-end='url(#wa)'/>
         <text x='580' y='178' text-anchor='middle' fill='{C['navy']}' font-size='14' font-weight='800'>对策</text>
@@ -144,17 +141,16 @@ def why_service():
         <rect x='680' y='130' width='400' height='130' rx='10' fill='{C['navy']}'/>
         <text x='880' y='168' text-anchor='middle' fill='#fff' font-size='18' font-weight='800'>Memory MCP Server</text>
         <text x='880' y='196' text-anchor='middle' fill='{C['pblue']}' font-size='13.5'>抽取 · 准入 · 召回 · 身份隔离 · 生命周期</text>
-        <text x='880' y='220' text-anchor='middle' fill='{C['pblue']}' font-size='13.5'>服务端统一治理，Agent 经 MCP 接入</text>
-        <text x='880' y='244' text-anchor='middle' fill='{C['pblue']}' font-size='11.5'>（标准协议 · 换 Agent 记忆不丢）</text>
+        <text x='880' y='220' text-anchor='middle' fill='{C['pblue']}' font-size='13.5'>治理全在服务端，Agent 只管接入</text>
+        <text x='880' y='244' text-anchor='middle' fill='{C['pblue']}' font-size='11.5'>走标准 MCP 协议，换 Agent 记忆不丢</text>
         <line x1='720' y1='95' x2='730' y2='130' stroke='{C['navy']}' stroke-width='1.8'/>
         <line x1='870' y1='95' x2='880' y2='130' stroke='{C['navy']}' stroke-width='1.8'/>
         <line x1='1040' y1='95' x2='1030' y2='130' stroke='{C['navy']}' stroke-width='1.8'/>
-        <text x='870' y='295' text-anchor='middle' fill='{C['navy']}' font-size='13.5' font-weight='700'>一份治理逻辑 · 数据一致 · 全程可审计</text>
-        <!-- 底部类比条 -->
+        <text x='870' y='295' text-anchor='middle' fill='{C['navy']}' font-size='13.5' font-weight='700'>治理只写一份，数据一致、全程可审计</text>
+        <!-- 底部承接条：引出 P06 同类方案对比 -->
         <rect x='40' y='330' width='1074' height='96' rx='10' fill='{C['pblue']}' stroke='{C['navy']}' stroke-width='1'/>
-        <text x='76' y='362' fill='{C['navy']}' font-size='16' font-weight='800'>类比：每个 App 自建数据库  →  用统一的 DB 服务</text>
-        <text x='76' y='390' fill='{C['ink']}' font-size='14' line-height='1.6'>App 不应自实现存储引擎、事务、权限——此属基础设施。同理，Agent 不应自实现记忆的抽取、准入、隔离、生命周期。</text>
-        <text x='76' y='414' fill='{C['ink']}' font-size='14'>记忆的复杂度在于治理而非存储——这是独立成服务的依据，亦为本系统立项出发点。</text>
+        <text x='76' y='368' fill='{C['navy']}' font-size='16' font-weight='800'>那市面上有没有这样的记忆服务？</text>
+        <text x='76' y='398' fill='{C['ink']}' font-size='14' line-height='1.6'>Mem0、TencentDB Agent Memory 都在做独立记忆层。下一页从六个维度做一个对比和参考。</text>
         <defs><marker id='wa' markerWidth='10' markerHeight='10' refX='8' refY='5' orient='auto'><path d='M0,0 L10,5 L0,10 z' fill='{C['navy']}'/></marker></defs>
       </svg>
     </div>"""
@@ -263,104 +259,66 @@ def background_full():
 
 # ===== P6 竞品对比表（撑满画布，行高加大）=====
 def competitor_table():
-    """4 列竞品对比表，撑满画布。各列据公开文档核实：Mem0=docs.mem0.ai；
-    TencentDB=github.com/TencentCloud/tencentdb-agent-memory README/ROADMAP v2.0.1-beta。"""
-    headers = ["维度", "ChatGPT\nMemory", "Mem0", "TencentDB\nAgent Memory", "Memory MCP"]
+    """竞品对比表（精简 2 竞品 + 自研）。各特性据公开文档核实：Mem0=docs.mem0.ai；
+    TencentDB=github.com/TencentCloud/tencentdb-agent-memory README v2.0.1-beta。
+    Memory MCP 列据本仓库 investment_research profile 实现。"""
+    headers = ["维度", "Mem0", "TencentDB Agent Memory", "Memory MCP（本系统）"]
+    # 三轴行 index=2/3/4（判断演进/团队记忆/失效治理）在行内高亮
+    axis_rows = {2, 3, 4}
     rows = [
-        ("接入形态", "平台内置", "SDK+托管平台", "Proxy+自有HTTP API（非MCP）", "MCP 标准协议"),
-        ("身份隔离", "无（单账号）", "有user_id（客户端传）", "private/team/restricted+ACL", "服务端强制（Token 派生）"),
-        ("记忆结构", "扁平文本条目", "四层 conv/session/user/org", "L0–L3 分层", "带立场的判断（4 类）"),
-        ("判断演进", "直接覆盖", "覆盖（无版本链）", "资产版本号（无provenance）", "改判断不改历史（版本链+provenance）"),
-        ("团队记忆", "无", "有（org 层）", "有（手动共享·Beta）", "自动提取共识"),
-        ("失效治理", "手动删除", "session靠run_id（无TTL）", "状态+可见性收回（无到期）", "准入+生命周期+到期+脱敏"),
+        ("接入形态", "SDK + 托管平台", "Proxy + 自有 HTTP API", "MCP 标准协议"),
+        ("身份隔离", "有 user_id（客户端传）", "四级可见性 + ACL 角色分权", "服务端强制（Token 派生）"),
+        ("记忆结构", "事实 + 实体图\n+ 类别", "按抽象分层\n原始对话→事实→场景→画像", "投研判断 8 类\n带立场、可论证"),
+        ("判断演进", "自动 supersede", "资产版本号", "改判断不改历史\n版本链留痕"),
+        ("团队记忆", "有（手动）", "有（成员主动共享）", "自动聚类→候选\n一人确认即共识"),
+        ("失效治理", "TTL+衰减\n无准入", "状态+撤销，无到期", "准入 + 生命周期\n+ 到期 + 脱敏"),
     ]
     hd = "".join(
-        f"<th style='background:{bg};color:#fff;font-size:16px;white-space:pre-line;padding:16px 8px;'>{h}</th>"
-        for h, bg in [("维度", C["navy"]), ("ChatGPT\nMemory", C["blue"]), ("Mem0", C["blue"]),
-                      ("TencentDB\nAgent Memory", C["deepnavy"]), ("Memory MCP", C["navy"])])
+        f"<th style='background:{bg};color:#fff;font-size:15px;white-space:pre-line;padding:14px 8px;'>{h}</th>"
+        for h, bg in [("维度", C["navy"]), ("Mem0", C["blue"]),
+                      ("TencentDB Agent Memory", C["deepnavy"]), ("Memory MCP（本系统）", C["navy"])])
     bd = ""
     for ri, row in enumerate(rows):
         cells = ""
         for ci, cell in enumerate(row):
             if ci == 0:
                 face, color, bold = C["vly"], C["navy"], "700"
-            elif ci == 4:
-                face, color, bold = C["pblue"], C["navy"], "800"
             elif ci == 3:
+                # Memory MCP 列：统一底色，突出本系统
+                face = C["pblue"]
+                color, bold = C["navy"], "800"
+            elif ci == 2:
                 face, color, bold = "#EAF1F4", C["deepnavy"], "600"
             else:
                 face, color, bold = ("#fff" if ri % 2 == 0 else C["vly"]), C["ink"], "400"
-            cells += f"<td style='background:{face};color:{color};font-weight:{bold};font-size:15.5px;padding:16px 8px;'>{cell}</td>"
+            cells += (f"<td style='background:{face};color:{color};font-weight:{bold};"
+                      f"font-size:14px;padding:22px 12px;vertical-align:middle;line-height:1.5;'>{cell}</td>")
         bd += f"<tr>{cells}</tr>"
-    body = f"""
-    <div style='padding:22px 30px 0 30px;'>
-      <table style='table-layout:fixed;width:100%;'>
-        <colgroup><col style='width:124px'/><col/><col/><col/><col/></colgroup>
-        <thead><tr>{hd}</tr></thead>
-        <tbody>{bd}</tbody>
-      </table>
-    </div>
-    <div style='position:absolute;bottom:18px;left:30px;right:30px;background:{C['pblue']};border-left:6px solid {C['navy']};border-radius:8px;padding:16px 22px;'>
-      <span style='font-size:17px;font-weight:800;color:{C['navy']};'>差异化</span>
-      <span style='font-size:16.5px;color:{C['ink']};margin-left:14px;'>即便最接近的 TencentDB，仍差在三轴：判断演进审计链 · 团队自动共识 · 失效治理——Memory MCP 均已覆盖</span>
-    </div>"""
-    return _page(body, "th,td{font-size:15.5px;} table th,table td{padding:16px 8px;}")
-
-
-# ===== P7 三个差异化（对照 TencentDB，gap 陈述，分点撑满等高）=====
-def three_diffs():
-    diffs = [
-        ("01", "判断演进留审计链",
-         "改判断不改历史，演进过程可追溯",
-         ["判断被新结论取代时触发 replacement",
-              "旧判断保留为版本链，记录推翻时间与依据",
-              "投研结论会变，但演进过程与出处须留存"],
-         "仅资产版本号字段，无法记录判断间因果关系",
-         "版本链 + provenance + 审计，判断间因果可追溯"),
-        ("02", "团队共识自动提取",
-         "主动发现，非手动共享",
-         ["周期性聚类多名成员的相似判断",
-              "生成「待确认候选」，任一成员确认即成共识",
-              "全员可见，无需成员主动发起共享"],
-         "团队记忆依赖成员主动共享、人工审核",
-         "自动聚类 → 主动提议候选 → 一人确认即共识"),
-        ("03", "失效治理",
-         "判断会到期、可作废、可追溯",
-         ["判断带失效条件与有效期，到期自动 expired",
-              "可主动 revoke 作废，槽位释放后可重建",
-              "准入四类：auto_save / pending / discard / replacement"],
-         "有状态与撤销共享，但无到期 TTL",
-         "准入 + 生命周期 + 到期 + 脱敏，只存该存、只留该留"),
+    # 底部：痛点 → 表中哪两个维度解决它（六维度两两分配，回归痛点闭环）
+    solves = [
+        ("忘", "接入形态", "记忆结构"),
+        ("串", "身份隔离", "团队记忆"),
+        ("乱", "判断演进", "失效治理"),
     ]
-    cards = ""
-    for n, h, sub, pts, gap_t, gap_m in diffs:
-        pts_html = "".join(
-              f"<div style='display:flex;gap:11px;align-items:flex-start;font-size:17px;line-height:1.55;color:{C['ink']};'>"
-              f"<span style='color:{C['navy']};font-weight:800;flex-shrink:0;font-size:19px;'>{i+1}.</span>"
-              f"<span>{p}</span></div>" for i, p in enumerate(pts))
-        cards += f"""
-        <div class='card' style='flex:1;position:relative;padding:0;display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid {C['light']};'>
-          <div style='height:10px;background:{C['navy']};'></div>
-          <div style='padding:22px 22px 0 22px;flex:1;display:flex;flex-direction:column;'>
-            <div style='display:flex;align-items:center;gap:13px;'>
-              <div style='font-size:40px;font-weight:800;color:{C['navy']};line-height:1;'>{n}</div>
-              <div>
-                <div style='font-size:21px;font-weight:800;color:{C['navy']};line-height:1.15;'>{h}</div>
-                <div style='font-size:15px;color:{C['mid']};margin-top:4px;font-weight:700;line-height:1.55;min-height:46px;'>{sub}</div>
-              </div>
-            </div>
-            <div style='margin-top:20px;display:flex;flex-direction:column;gap:15px;flex:1;'>{pts_html}</div>
-          </div>
-          <div style='margin:0 20px 20px 20px;background:{C['vly']};border-left:5px solid {C['navy']};border-radius:8px;padding:16px 18px;'>
-            <div style='font-size:14.5px;line-height:1.55;color:{C['mid']};'>
-              <span style='font-weight:800;color:{C['deepnavy']};'>TencentDB 缺：</span>{gap_t}
-            </div>
-            <div style='font-size:14.5px;line-height:1.55;color:{C['navy']};margin-top:7px;'>
-              <span style='font-weight:800;'>Memory MCP 补：</span>{gap_m}
-            </div>
-          </div>
-        </div>"""
-    return _page(f"<div style='display:flex;gap:20px;padding:20px 28px;height:545px;'>{cards}</div>")
+    solve_cards = "".join(
+        f"<div style='flex:1;min-width:0;background:{C['vly']};border:1px solid {C['light']};border-radius:8px;padding:20px 18px;display:flex;align-items:center;gap:16px;'>"
+        f"<div style='width:56px;height:56px;border-radius:50%;background:{C['navy']};color:#fff;font-size:30px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;'>{s[0]}</div>"
+        f"<div style='min-width:0;font-size:18px;font-weight:800;color:{C['navy']};line-height:1.4;letter-spacing:0.5px;'>{s[1]}<span style='color:{C['mid']};font-weight:400;margin:0 10px;'>/</span>{s[2]}</div></div>"
+        for s in solves)
+    body = f"""
+    <div style='display:flex;flex-direction:column;height:585px;padding:18px 30px 6px 30px;'>
+      <div>
+        <table style='table-layout:fixed;width:100%;border-collapse:collapse;'>
+          <colgroup><col style='width:110px'/><col/><col/><col/></colgroup>
+          <thead><tr>{hd}</tr></thead>
+          <tbody>{bd}</tbody>
+        </table>
+      </div>
+      <div style='margin-top:auto;'>
+        <div style='display:flex;gap:12px;'>{solve_cards}</div>
+      </div>
+    </div>"""
+    return _page(body, "th,td{font-size:15px;} table th,table td{padding:22px 12px;vertical-align:middle;line-height:1.5;} table{border-collapse:collapse;}")
 
 
 # ===== P10 记忆数据模型（详细解释治理字段）=====
@@ -502,9 +460,9 @@ def memory_model():
     return _page(body)
 
 
-# ===== P12 写入链路全流程（异步治理→来源校验→准入判定→去重→事务落库）=====
+# ===== P12 准入全流程（异步治理→来源校验→准入判定→去重→事务落库）=====
 def admission_full():
-    """写入链路全流程：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库。
+    """准入全流程：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库。
     前两步为异步治理（Stop Hook 入队、Worker 异步抽取各独立一块），后四步为候选四道防线。
     横向六步流程：对话 →→ 六步顺序处理 →→ 落库。每步块内上为处理点（关键词+解释，垂直
     均匀分布对齐），下为产出分流条（候选去向：弃/待/→/✓）。"""
@@ -555,8 +513,7 @@ def admission_full():
          [("advisory lock 幂等", "pg_advisory_xact_lock 防重复提交"),
           ("单一事务一致写", "items+revisions+evidence 一事务"),
           ("待确认写 reviews", "pending 人确认才转 active")],
-         [("不入库留痕", "弃", "只留审计记录，不写记忆"),
-          ("待确认", "待", "写 reviews 表，确认后转 active"),
+         [("待确认", "待", "写 reviews 表，确认后转 active"),
           ("全过", "✓", "写 items+revisions，落库 active")],
          C["teal"]),
     ]
@@ -618,7 +575,7 @@ def admission_full():
     cols = col_12 + rest
     body = f"""
     <div style='padding:10px 28px 0 28px;'>
-      <div class='h2'>写入链路全流程：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库</div>
+      <div class='h2'>准入：Stop Hook 触发 → 异步抽取 → 来源校验 → 准入判定 → 生命周期去重 → 事务化落库</div>
       <div class='sub' style='margin-top:3px;'>前两步异步治理不阻塞用户，后四步为候选防线，每步产出按去向分流（✓落库 / 待确认写 reviews / 弃丢弃）</div>
     </div>
     <div style='padding:16px 28px 0 28px;display:flex;align-items:stretch;gap:0;height:470px;'>{cols}</div>
@@ -1322,7 +1279,7 @@ def qa_full():
 RENDERERS = {
     # P01 标题页 / P02 目录 / P03 第一章章封 —— 待做
     "P04": pains_full, "P05": why_service,
-    "P06": competitor_table, "P07": three_diffs,
+    "P06": competitor_table,
     # P08 第二章章封 —— 待做
     "P09": background_full, "P10": memory_model, "P11": lifecycle,
     # P11 后连续重排（原 P12 已并入写入/召回两页，P11 之后页号无空缺）

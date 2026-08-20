@@ -246,6 +246,7 @@ class CandidateMaterializer:
         candidate: Candidate,
         *,
         verification_status: VerificationStatus | None = None,
+        new_memory_type: str | None = None,
     ) -> ReplacementWrite:
         old_revision = target.current_revision
         revision_id = self._id_factory()
@@ -283,6 +284,7 @@ class CandidateMaterializer:
                     created_at=created_at,
                 ),
             ),
+            new_memory_type=new_memory_type,
         )
 
     def _compute_embedding(self, content: str) -> tuple[float, ...] | None:
@@ -948,7 +950,47 @@ class CandidateProcessor:
             effective_at=self._clock(),
         )
         if top1 is None:
-            return admission
+            # 同 type fallback 未命中。若用户显式表达修订意图，尝试跨 type
+            # fallback：模型可能把同一判断的修正抽成不同 memory_type（如旧
+            # thesis 被修订成 risk）。不限 memory_type 查语义最近的两条，
+            # 复用 top2 + margin 歧义判定与强匹配阈值，避免误替独立判断。
+            # 仅在显式替换意图时触发，非替换场景不跨 type（保留独立判断）。
+            if not is_explicit_replacement:
+                return admission
+            cross_top1, cross_top2 = (
+                self._repository.find_semantically_similar_top2_cross_type(
+                    principal,
+                    profile_id=candidate.profile_id,
+                    embedding=embedding,
+                    threshold=_REPLACEMENT_FALLBACK_THRESHOLD,
+                    effective_at=self._clock(),
+                )
+            )
+            if cross_top1 is None:
+                return admission
+            # 跨 type 替代比同 type 更激进，必须达强匹配阈值才敢替：跨 type
+            # 候选与旧记忆本就不同 type，仅"同主题但相关"不足以判定为同一
+            # 判断的演进，需强匹配确认语义等价。
+            if cross_top1[0] < _REPLACEMENT_STRONG_MATCH_THRESHOLD:
+                return admission
+            # 撞槽位说明：跨 type fallback 仅在字面 find_current（同候选 subject+
+            # 候选 type）无命中时触发，故候选的 (subject, type) 槽位此时必为空，
+            # 不会与另一条同 subject+新 type 的活动记忆冲突。并发 TOCTOU 撞
+            # 唯一约束由 SubjectScopeConflictError 兜底，无需在此预判。
+            if cross_top2 is not None and (
+                cross_top1[0] - cross_top2[0] < _REPLACEMENT_FALLBACK_MARGIN
+            ):
+                # 跨 type top1 与 top2 太接近，无法确定替谁 -> Pending。
+                return AdmissionOutcome(
+                    AdmissionDecision.PENDING,
+                    "ambiguous_cross_type_replacement_target",
+                )
+            # 命中跨 type 替代目标，赋值后 fall through 到统一 lifecycle 处理。
+            top1 = cross_top1
+            top2 = cross_top2
+            is_cross_type_replacement = True
+        else:
+            is_cross_type_replacement = False
         if is_explicit_replacement and top2 is not None:
             if top1[0] - top2[0] < _REPLACEMENT_FALLBACK_MARGIN:
                 # top1 相似度足够高（强匹配）时，即使 margin 不足也允许替换：
@@ -997,8 +1039,20 @@ class CandidateProcessor:
             )
             return None
         if _is_explicit_replacement(candidate):
+            # 跨 type fallback 命中时，旧记忆 memory_type 与候选不同，
+            # 传 new_memory_type 让 commit 同步 item 级 type，使 recall/
+            # 去重不再按旧 type 错配。同 type 时为 None，不改 item type。
+            cross_type_new_type = (
+                candidate.memory_type
+                if is_cross_type_replacement
+                else None
+            )
             replacements.append(
-                self._materializer.replacement(target, candidate)
+                self._materializer.replacement(
+                    target,
+                    candidate,
+                    new_memory_type=cross_type_new_type,
+                )
             )
             lifecycle_target_ids.add(target.item.memory_id)
             replacement_types.add(candidate.memory_type)
@@ -1006,7 +1060,11 @@ class CandidateProcessor:
                 CaptureOutcome(
                     candidate_id=candidate.candidate_id,
                     decision=AdmissionDecision.AUTO_SAVE,
-                    reason_code="semantic_explicit_replacement",
+                    reason_code=(
+                        "semantic_cross_type_explicit_replacement"
+                        if is_cross_type_replacement
+                        else "semantic_explicit_replacement"
+                    ),
                     memory_id=target.item.memory_id,
                 )
             )

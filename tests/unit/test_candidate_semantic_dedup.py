@@ -918,3 +918,484 @@ def test_ambiguous_margin_below_strong_match_still_pending() -> None:
         and o.reason_code == "semantic_explicit_replacement"
     ]
     assert len(replacement_outcomes) == 0
+
+
+def test_cross_type_replacement_fallback_supersedes_old_type() -> None:
+    """跨 type replacement fallback：旧 thesis 被修订成 risk，语义近似 -> 替代。
+
+    覆盖生产漏洞：用户修订已有判断，但抽取模型把修正版抽成不同 memory_type
+    （如旧 thesis「利润大增」被修订成 risk「利润有下行风险」）。同 type fallback
+    查不到（type 不同）-> 跨 type fallback 命中语义近似的旧记忆 -> 生成跨 type
+    replacement，旧记忆 superseded 且 memory_type 同步成 risk，不新增第二条 active。
+    """
+
+    original_content = "示例公司明年净利润大概率大幅增长"
+    revised_content = "用户调整了对示例公司明年利润的判断，改为关注利润下行风险"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 original 余弦相似度 1.0，超跨 type 强匹配阈值 0.75。
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 1) 用户原始判断 -> thesis auto_save。
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="example-company-profit-thesis",
+            memory_type="thesis",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    original_memories = service.list_memories(_PRINCIPAL)
+    assert len(original_memories) == 1
+    original_id = original_memories[0].item.memory_id
+    assert original_memories[0].item.memory_type == "thesis"
+
+    # 2) 用户修订，model 抽成 risk（跨 type），content 含"调整" -> 跨 type replacement。
+    revised_user_msg = (
+        "我调整下对示例公司明年利润的判断，改为关注利润下行风险"
+    )
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject="example-company-profit-risk",
+            memory_type="risk",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    revised_turn = TurnEnvelope(
+        profile_id="investment-research",
+        conversation_id="conversation-1",
+        source_turn_id="t2",
+        content=f"[user]\n{revised_user_msg}",
+        observed_at=_NOW,
+        subject_hint="example-company",
+        messages=(
+            TurnMessage(
+                role=MessageRole.USER,
+                content=revised_user_msg,
+                message_id="message-t2",
+            ),
+        ),
+    )
+    result = service.capture_turn(_PRINCIPAL, revised_turn)
+    # 跨 type 命中 -> semantic_cross_type_explicit_replacement，指向原记忆。
+    replacement_outcomes = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.AUTO_SAVE
+        and o.reason_code == "semantic_cross_type_explicit_replacement"
+        and o.memory_id == original_id
+    ]
+    assert len(replacement_outcomes) == 1
+    # 不新增第二条 active（原记忆被 superseded 且 type 同步成 risk）。
+    active = service.list_memories(_PRINCIPAL)
+    assert len(active) == 1
+    assert active[0].item.memory_id == original_id
+    # memory_type 已同步成新 type（risk），recall/去重不再按旧 thesis 错配。
+    assert active[0].item.memory_type == "risk"
+
+
+def test_cross_type_replacement_below_strong_match_does_not_replace() -> None:
+    """跨 type top1 未达强匹配阈值（<0.75）-> 不跨 type 替，走 auto_save 新增。
+
+    跨 type 替代比同 type 更激进，必须强匹配才敢替：跨 type 候选与旧记忆本就
+    不同 type，仅"同主题但相关"（0.60~0.75）不足以判定为同一判断演进，保守
+    保留独立判断，走 auto_save 新增。
+    """
+
+    original_content = "示例公司明年净利润大概率大幅增长"
+    revised_content = "用户调整了对示例公司利润的看法"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 original 相似度 ~0.70：>=0.60 fallback 但 <0.75 强匹配 -> 不跨 type 替。
+        revised_content: (0.7, 0.714, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="example-company-profit-thesis",
+            memory_type="thesis",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    original_id = service.list_memories(_PRINCIPAL)[0].item.memory_id
+
+    revised_user_msg = "我调整下对示例公司利润的看法"
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject="example-company-profit-risk",
+            memory_type="risk",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # 不应触发跨 type 替代。
+    cross_replacement = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_cross_type_explicit_replacement"
+    ]
+    assert len(cross_replacement) == 0
+    # 旧 thesis 仍是 thesis（未被替代、type 未变）。
+    active = service.list_memories(_PRINCIPAL)
+    thesis = [m for m in active if m.item.memory_type == "thesis"]
+    assert len(thesis) == 1
+    assert thesis[0].item.memory_id == original_id
+
+
+def test_cross_type_replacement_ambiguous_margin_pending() -> None:
+    """跨 type top1 与 top2 margin 不足 -> 降 pending，不替错。
+
+    跨 type top1 达强匹配但 top2 与 top1 太接近，无法确定替谁 ->
+    ambiguous_cross_type_replacement_target 降 pending。
+    """
+
+    target_content = "示例公司明年利润判断：看好增长"
+    sibling_content = "示例公司明年利润判断：关注下行风险"
+    revised_content = "用户调整了对示例公司明年利润的判断"
+    vectors = {
+        # target / sibling 与 candidate 相似度都 ~1.0（>=0.75 强匹配），
+        # 但 margin ~0 < 0.08 -> 无法确定替谁。
+        target_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        sibling_content: (1.0, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 两条不同 type 的旧记忆，subject 不同，都与 candidate 语义近似。
+    extractor.proposals = (
+        candidate_proposal(
+            target_content,
+            subject="example-company-profit-thesis",
+            memory_type="thesis",
+            content=target_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+        candidate_proposal(
+            sibling_content,
+            subject="example-company-profit-risk-sibling",
+            memory_type="risk",
+            content=sibling_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t1",
+            content=f"[user]\n{target_content}。{sibling_content}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=f"{target_content}。{sibling_content}",
+                    message_id="message-t1",
+                ),
+            ),
+        ),
+    )
+    assert len(service.list_memories(_PRINCIPAL)) == 2
+
+    # 候选抽成 research_question（跨 type），与两条旧记忆都近似且 margin 不足。
+    revised_user_msg = "我调整下对示例公司明年利润的判断"
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject="example-company-profit-question",
+            memory_type="research_question",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    pending = [
+        o
+        for o in result.outcomes
+        if o.decision is AdmissionDecision.PENDING
+        and o.reason_code == "ambiguous_cross_type_replacement_target"
+    ]
+    assert len(pending) == 1
+    cross_replacement = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_cross_type_explicit_replacement"
+    ]
+    assert len(cross_replacement) == 0
+
+
+def test_cross_type_scope_collision_handled_by_literal_path() -> None:
+    """候选 subject 在新 type 下已有活动记忆 -> 字面路径先命中，不进跨 type fallback。
+
+    跨 type fallback 仅在字面 find_current（同候选 subject+候选 type）无命中时
+    触发。若候选的 (subject, type) 槽位已被占用，字面路径直接命中走同 type
+    replacement，不会进跨 type 分支。本测试固化该边界，防止误把跨 type
+    fallback 当成撞槽位的处理点。
+    """
+
+    original_content = "示例公司明年利润判断：看好增长"
+    revised_content = "用户调整了对示例公司明年利润的判断"
+    same_subject = "example-company-profit"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    # 建一条 risk（候选 subject），字面路径会命中它。
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject=same_subject,
+            memory_type="risk",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    risk_id = service.list_memories(_PRINCIPAL)[0].item.memory_id
+
+    # 候选 subject 与旧 risk 相同、type 也同为 risk -> 字面路径命中，走同 type 替代。
+    revised_user_msg = "我调整下对示例公司明年利润的判断"
+    extractor.proposals = (
+        candidate_proposal(
+            revised_user_msg,
+            subject=same_subject,
+            memory_type="risk",
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # 字面路径命中 -> explicit_replacement（同 type），不进跨 type fallback。
+    literal_replacement = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "explicit_replacement" and o.memory_id == risk_id
+    ]
+    assert len(literal_replacement) == 1
+    cross_type = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_cross_type_explicit_replacement"
+    ]
+    assert len(cross_type) == 0
+
+
+def test_cross_type_replacement_not_triggered_without_explicit_replacement() -> None:
+    """非显式修订意图的跨 type 候选 -> 不触发跨 type fallback，走原新增路径。
+
+    跨 type fallback 仅在 _is_explicit_replacement=True 时触发。普通跨 type
+    候选（用户随口提及相关但不同 type 的判断，无"改成/调整"意图词）应保留
+    独立判断，不跨 type 误替。
+    """
+
+    original_content = "示例公司明年净利润大概率大幅增长"
+    related_content = "示例公司明年利润可能面临下行压力"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        # 与 original 相似度 1.0（远超强匹配），但无显式修订意图词。
+        related_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="example-company-profit-thesis",
+            memory_type="thesis",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+
+    # 无"改成/调整/修正"等显式修订词，仅陈述一条相关 risk。
+    related_user_msg = "示例公司明年利润可能面临下行压力"
+    extractor.proposals = (
+        candidate_proposal(
+            related_user_msg,
+            subject="example-company-profit-risk",
+            memory_type="risk",
+            content=related_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{related_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=related_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # 不应触发跨 type 替代，risk 应作为独立判断 auto_save 新增。
+    cross_replacement = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_cross_type_explicit_replacement"
+    ]
+    assert len(cross_replacement) == 0
+    active = service.list_memories(_PRINCIPAL)
+    # 旧 thesis + 新 risk 两条共存（保留独立判断）。
+    assert len(active) == 2
+    types = {m.item.memory_type for m in active}
+    assert types == {"thesis", "risk"}
+
+
+def test_same_type_replacement_does_not_trigger_cross_type_branch() -> None:
+    """同 type fallback 命中时不走跨 type 分支（回归保护）。
+
+    确认跨 type fallback 是第二级：同 type fallback 命中时直接走同 type
+    replacement，reason_code 仍为 semantic_explicit_replacement（非跨 type 版）。
+    """
+
+    original_content = "示例公司出海是结构性的，海外占比持续提升"
+    revised_content = "用户修订了示例公司出海判断标准：不能只看海外增速"
+    vectors = {
+        original_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        revised_content: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    service, extractor = _service(vectors)
+    extractor.proposals = (
+        candidate_proposal(
+            original_content,
+            subject="example-company-oversea-thesis",
+            memory_type="thesis",
+            content=original_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            business_progress="monitoring",
+        ),
+    )
+    service.capture_turn(_PRINCIPAL, _turn(original_content, turn_id="t1"))
+    original_id = service.list_memories(_PRINCIPAL)[0].item.memory_id
+
+    revised_user_msg = "我改一下最开始那个判断。以后判断示例公司出海不能只看海外增速"
+    extractor.proposals = (
+        candidate_proposal(
+            "以后判断示例公司出海不能只看海外增速",
+            subject="example-company-oversea-thesis-revised",
+            memory_type="thesis",  # 同 type
+            content=revised_content,
+            assertion_kind=AssertionKind.USER_VIEW,
+            expression_basis=ExpressionBasis.EXPLICIT,
+            business_progress="monitoring",
+        ),
+    )
+    result = service.capture_turn(
+        _PRINCIPAL,
+        TurnEnvelope(
+            profile_id="investment-research",
+            conversation_id="conversation-1",
+            source_turn_id="t2",
+            content=f"[user]\n{revised_user_msg}",
+            observed_at=_NOW,
+            subject_hint="example-company",
+            messages=(
+                TurnMessage(
+                    role=MessageRole.USER,
+                    content=revised_user_msg,
+                    message_id="message-t2",
+                ),
+            ),
+        ),
+    )
+    # 同 type -> semantic_explicit_replacement（非跨 type 版），memory_type 不变。
+    same_type = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_explicit_replacement"
+        and o.memory_id == original_id
+    ]
+    assert len(same_type) == 1
+    cross_type = [
+        o
+        for o in result.outcomes
+        if o.reason_code == "semantic_cross_type_explicit_replacement"
+    ]
+    assert len(cross_type) == 0
+    active = service.list_memories(_PRINCIPAL)
+    assert len(active) == 1
+    assert active[0].item.memory_type == "thesis"

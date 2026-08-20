@@ -702,10 +702,29 @@ source_expression 原文摘录：
 
 语义去重对 `AUTO_SAVE` 与 `PENDING`（含 `non_user_source` 降级的非用户源候选）均触发，
 避免 assistant/tool 复述换了 subject 措辞后绕过去重直接进 Pending、用户 confirm 后
-变成第二条语义重复的 active。未声明 threshold（如 general-work）、嵌入不可用、
+变成第二条语义重复的 active。未声明 threshold（如 general-work）、嵌入可用、
 无命中时回退到原有新增路径。阈值由 Profile 按 memory_type 声明（投研 thesis/risk=0.92，
 evidence_claim/research_preference/research_question/ongoing_research/research_decision=0.90），
 不硬编码于 Core。
+
+显式替换（`_is_explicit_replacement`）且同 type 语义 fallback 未命中时，追加一层
+**跨 type replacement fallback**（`find_semantically_similar_top2_cross_type`）：模型
+可能把同一判断的修正版抽成不同 memory_type（如旧 `thesis`「利润大增」被修订成 `risk`
+「利润下行风险」），同 type 查询查不到。此时不限 memory_type 查语义最近的两条，
+复用 top2 + margin 歧义判定与强匹配阈值。跨 type 替代比同 type 更激进，必须达强匹配
+阈值（`_REPLACEMENT_STRONG_MATCH_THRESHOLD`，0.75）才敢替——跨 type 候选与旧记忆本就
+不同 type，仅"同主题但相关"（0.60~0.75）不足以判定为同一判断演进，保守保留独立判断。
+命中后生成跨 type replacement，commit 时同步把 `memory_items.memory_type` 改成新
+候选的 type（`ReplacementWrite.new_memory_type`），使 item 级 type 与最新 revision 内容
+一致、recall/去重不再按旧 type 错配。撞槽位说明：跨 type fallback 仅在字面
+`find_current`（同候选 subject+候选 type）无命中时触发，故候选 (subject, type) 槽位
+此时必为空，不会与另一条同 subject+新 type 的活动记忆冲突；并发 TOCTOU 撞唯一约束
+由 `SubjectScopeConflictError` 兜底。新增 reason code：
+
+| 跨 type 语义分支 | 条件 | 行为 |
+| --- | --- | --- |
+| semantic_cross_type_explicit_replacement | 跨 type 强匹配 + 用户明确替换 | 生成 replacement（同步 memory_type） |
+| ambiguous_cross_type_replacement_target | 跨 type top1 与 top2 margin 不足 | 降级 pending |
 
 assistant 源候选在 `target is None`（字面 subject 无命中）时还走一层**跨类型回声检测**
 （`_is_cross_type_echo` -> `find_assistant_echo`）：不限 memory_type 查余弦相似度

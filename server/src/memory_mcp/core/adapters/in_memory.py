@@ -302,6 +302,50 @@ class InMemoryMemoryRepository:
                 top2 = (similarity, record)
         return top1, top2
 
+    def find_semantically_similar_top2_cross_type(
+        self,
+        principal: PrincipalContext,
+        *,
+        profile_id: str,
+        embedding: Sequence[float],
+        threshold: float,
+        effective_at: datetime,
+    ) -> tuple[
+        tuple[float, MemoryRecord] | None,
+        tuple[float, MemoryRecord] | None,
+    ]:
+        """跨 memory_type 返回相似度最高的两条活动记忆及其相似度。
+
+        与 ``find_semantically_similar_top2`` 同构，仅去掉 memory_type 过滤，
+        用于跨 type replacement fallback。
+        """
+
+        query = tuple(embedding)
+        owner_ids = principal.visible_owner_ids
+        top1: tuple[float, MemoryRecord] | None = None
+        top2: tuple[float, MemoryRecord] | None = None
+        for record in self._records.values():
+            if (
+                record.item.owner_id not in owner_ids
+                or record.item.profile_id != profile_id
+                or record.current_revision.lifecycle_status
+                is not LifecycleStatus.ACTIVE
+                or not _is_effective(record.current_revision, effective_at)
+            ):
+                continue
+            similarity = _cosine_similarity(
+                record.current_revision.embedding,
+                query,
+            )
+            if similarity < threshold:
+                continue
+            if top1 is None or similarity > top1[0]:
+                top2 = top1
+                top1 = (similarity, record)
+            elif top2 is None or similarity > top2[0]:
+                top2 = (similarity, record)
+        return top1, top2
+
     def find_recall_candidates(
         self,
         principal: PrincipalContext,
@@ -1101,8 +1145,16 @@ class InMemoryMemoryRepository:
                 lifecycle_status=LifecycleStatus.SUPERSEDED,
                 is_current=False,
             )
+            # 跨 type replacement fallback：同步 item.memory_type 与新 revision
+            # 内容一致（item 级 type 为 recall/唯一约束权威）。同 type 时
+            # new_memory_type 为 None，沿用原 item。
+            new_item = (
+                replace(current.item, memory_type=replacement.new_memory_type)
+                if replacement.new_memory_type is not None
+                else current.item
+            )
             new_record = MemoryRecord(
-                item=current.item,
+                item=new_item,
                 current_revision=replacement.revision,
                 evidence=replacement.evidence,
             )
@@ -1363,8 +1415,14 @@ class InMemoryMemoryRepository:
                 lifecycle_status=LifecycleStatus.SUPERSEDED,
                 is_current=False,
             )
+            # 与 capture replacement 对齐：跨 type 时同步 item.memory_type。
+            new_item = (
+                replace(current.item, memory_type=replacement.new_memory_type)
+                if replacement.new_memory_type is not None
+                else current.item
+            )
             records[replacement.memory_id] = MemoryRecord(
-                item=current.item,
+                item=new_item,
                 current_revision=replacement.revision,
                 evidence=replacement.evidence,
             )
