@@ -38,8 +38,8 @@ Phase 1 后 Hook 只做 BeforeRun 召回注入；AfterRun 对 capture 完全 no-
 export MEMORY_MCP_URL=https://memory.example.com/mcp
 export MEMORY_MCP_TOKEN=<该 Agent Host 自己的 Bearer Token>
 # 或从模板加载
-cp agent/.env.example examples/agent.env && chmod 600 examples/agent.env
-set -a; source examples/agent.env; set +a
+cp agent/.env.example agent.env && chmod 600 agent.env
+set -a; source agent.env; set +a
 ```
 
 从同一终端启动 Agent。IDE、桌面应用或常驻守护进程若不继承该终端环境，必须通过
@@ -211,8 +211,7 @@ async with MemoryMcpClient(settings) as client:
     # recalled.memory_context 注入 Agent；Agent 自主决定是否调用 capture_completed_turn
 ```
 
-`memory_context` 应被当作不可信历史上下文。可运行示例见
-[`examples/hook_runner.py`](../examples/hook_runner.py)。
+`memory_context` 应被当作不可信历史上下文。
 
 ### 4.3 新宿主兼容性检查
 
@@ -246,19 +245,49 @@ Hook，跨机接入仍需本地 `memory-mcp-agent` 命令向远端 MCP URL 发�
 
 ### Codex
 
-复制 [Codex Hook 示例](../examples/agents/codex-hooks.json) 或合并其中的 `hooks`
-对象。若命令不在 `PATH`，把两个 `command` 替换为绝对路径。Codex 会审核非托管
-command Hook：启动后 `/hooks` → 检查来源和命令 → 信任两个 Hook → `/mcp` 确认
-Memory MCP 为 connected。不要在同一配置层同时维护 `hooks.json` 和 `config.toml`
-内联 `[hooks]` 的同一 Hook。
+在 Codex 配置中合并以下 `hooks` 对象。若命令不在 `PATH`，把两个 `command`
+替换为绝对路径。Codex 会审核非托管 command Hook：启动后 `/hooks` → 检查来源和
+命令 → 信任两个 Hook → `/mcp` 确认 Memory MCP 为 connected。不要在同一配置层
+同时维护 `hooks.json` 和 `config.toml` 内联 `[hooks]` 的同一 Hook。
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "memory-mcp-hook",
+        "timeout": 20, "statusMessage": "正在召回长期记忆",
+        "additionalContextLimit": 1200}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "memory-mcp-hook",
+        "timeout": 60, "statusMessage": "正在捕获本轮记忆"}]}
+    ]
+  }
+}
+```
 
 ### Claude Code
 
-首次测试推荐 `.claude/settings.local.json`。复制
-[Claude Code 示例](../examples/agents/claude-code-settings.json) 或只合并其中的
-`hooks` 对象。进入后：`/status` 确认 settings 已加载 → `/hooks` 确认两个顶层 Hook
-指向 `memory-mcp-hook` → 确认 Memory MCP 连接正常。官方文档见
+首次测试推荐 `.claude/settings.local.json`，合并以下 `hooks` 对象。进入后：
+`/status` 确认 settings 已加载 → `/hooks` 确认两个顶层 Hook 指向
+`memory-mcp-hook` → 确认 Memory MCP 连接正常。官方文档见
 [Claude Code Hooks](https://code.claude.com/docs/en/hooks)。
+
+```json
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "memory-mcp-hook",
+        "args": [], "timeout": 20, "statusMessage": "正在召回长期记忆"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "memory-mcp-hook",
+        "args": [], "timeout": 60, "statusMessage": "正在捕获本轮记忆"}]}
+    ]
+  }
+}
+```
 
 ## 6. 验证、本地状态与故障排查
 

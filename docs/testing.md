@@ -1,6 +1,6 @@
 # Memory MCP 测试与验收
 
-质量基准案例与结果见[投研记忆评测](evaluation.md)，运行配置见[配置参考](config.md)。
+运行配置见[配置参考](config.md)。
 
 ## 1. 测试分层与目录
 
@@ -19,7 +19,6 @@
 
 | 项 | 说明 |
 | --- | --- |
-| `evals/cases.json` | 52 个中文投研质量案例（非 pytest 用例） |
 | 测试替身 | 只放在 `tests/support/`（fakes/builders），通过端口注入，不属于 Server 生产包 |
 | `tests/support/builders.py` | 高频领域对象构造器（turn/service/capture/record），无副作用、不复制算法 |
 | `tests/support/fakes.py` | Fake/Mock 实现（FakeCandidateExtractor、SequentialCandidateExtractor、FakeEmbeddingProvider 等） |
@@ -44,15 +43,12 @@ uv run pytest -m unit -q           # 仅 unit 层
 uv run pytest -m contract -q       # 仅 contract 层
 uv run pytest -m integration -q     # 仅 integration 层
 uv run pytest -m evaluation -q      # 仅 evaluation 层
-uv run python -m evals.runner
 openspec-cn validate <change-name> --strict
 ```
 
 | 项 | 说明 |
 | --- | --- |
 | 分层执行 | `-m unit` 跑纯函数（秒级）；`-m contract` 跑 Port 契约；`-m integration` 跑全链路 |
-| 默认评测 | 只计算确定性 Recall@K 和安全通过率，不调用模型或 PostgreSQL |
-| Recall 执行 | 通过公开生产 Application Service 和 InMemory Repository，不复制私有排序 |
 | PostgreSQL 外部用例 | 未显式获得专用数据库时应安全 skip |
 | 测试数量 | 以命令输出为准 |
 
@@ -85,23 +81,7 @@ MEMORY_MCP_TEST_DATABASE_URL='<专用测试库 DSN>' uv run pytest \
 | `health` 检查 | migration checksum、扩展和七个必需索引（含 `memory_revisions_embedding_idx`、`memory_items_one_active_scope_idx`、`memory_captures_pending_idx`） |
 | 改 schema | 直接修改该文件并用 `migrate --rebuild` 重建 |
 
-## 4. 投研评测
-
-```bash
-uv run python -m evals.runner
-uv run python -m evals.runner --live-model --output evals/results/<safe-result-name>.json
-```
-
-| 项 | 说明 |
-| --- | --- |
-| deterministic（离线） | 只计算确定性 Recall@K 和安全通过率，不调用模型或 PostgreSQL |
-| live（真实模型） | 有效的 `MEMORY_MCP_MODEL_*` 配置，只使用进程内 Repository，不写 PostgreSQL |
-| 结果文件 | 只包含模型/数据集版本、聚合指标、分类指标和失败 case ID |
-| 不保存 | 输入正文、Token 或 API Key |
-| 模型结果与分析 | 只在[投研记忆评测](evaluation.md)维护 |
-| 当前 v4 离线 Recall | 15/15 |
-
-## 5. 新增测试应放在哪个目录
+## 4. 新增测试应放在哪个目录
 
 | 测试类型 | 目录 | 说明 |
 | --- | --- | --- |
@@ -109,9 +89,9 @@ uv run python -m evals.runner --live-model --output evals/results/<safe-result-n
 | Port 契约（新 Repository/Extractor/Profile） | `tests/contract/` | 验证协议实现一致性 |
 | 跨层集成（新 MCP 工具/新 Hook 路径） | `tests/integration/` | 验证多模块协作 |
 | 端到端主链路 | `tests/end_to_end/` | Agent→Server 关键路径 |
-| 质量评测 case | `tests/evaluation/` 或 `evals/cases.json` | 不与功能测试混合 |
+| 质量评测 case | `tests/evaluation/` | 不与功能测试混合 |
 
-## 6. 禁止的测试反模式
+## 5. 禁止的测试反模式
 
 - Mock 领域对象自身（用真实 dataclass）；
 - Mock 被测类内部私有方法；
@@ -124,7 +104,7 @@ uv run python -m evals.runner --live-model --output evals/results/<safe-result-n
 - 用降低断言强度让测试通过；
 - 删除测试掩盖生产 Bug（发现 Bug 时保留复现测试并报告）。
 
-## 7. 发布检查
+## 6. 发布检查
 
 ```bash
 uv build --package memory-mcp --wheel
@@ -133,7 +113,7 @@ uv build --package memory-mcp-agent --wheel
 
 | 确认项 | 说明 |
 | --- | --- |
-| Server wheel | 不含 `tests/`、`evals/` 或测试提取实现 |
+| Server wheel | 不含 `tests/` 或测试提取实现 |
 | Agent wheel | 只含 `memory_mcp_agent` 和 `memory-mcp-hook` |
 | Agent 运行依赖 | 不含 PostgreSQL、LangChain、模型 Provider 或 Server 包 |
 | console script | Server 与 Agent 不相互泄漏 |

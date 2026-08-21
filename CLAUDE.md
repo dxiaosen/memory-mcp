@@ -31,11 +31,6 @@ MEMORY_MCP_TEST_DATABASE_URL=postgres://... uv run pytest tests/contract/test_po
 # OpenSpec 规范校验
 openspec-cn validate <change-name> --strict
 
-# 质量评测
-uv run python -m evals.runner --mode deterministic    # CI 门禁，确定性
-uv run python -m evals.runner --mode live-extraction  # 真实模型抽取
-uv run python -m evals.runner --mode live-embedding   # 真实向量召回
-
 # 本地启动 Server
 cp server/.env.example .env && chmod 600 .env   # 编辑 DSN/Token/模型
 .venv/bin/memory-mcp-db migrate
@@ -83,7 +78,7 @@ Pyright 已安装（`uv run pyright`）；类型检查依赖 ruff（E/F/UP/B/RUF
 - 改了 Core 层导入 → `uv run pytest tests/contract/test_dependency_boundaries.py`（必须过）。
 - 改了 schema → 编辑 `0001_memory_schema.sql` 并 `migrate --rebuild`；更新 `schema.py`
   的 `_REQUIRED_INDEXES`/`_REQUIRED_EXTENSIONS` 与 `testing.md` 索引数。
-- 改了召回打分常量 → 同步 `design.md` §9.3 常量表与 evals 阈值。
+- 改了召回打分常量 → 同步 `design.md` §9.3 常量表。
 - 加了 MCP 工具 → 更新 `design.md` §6.2、README 工具表、`enforce_strict_tool_arguments`。
 - 加了环境变量 → 同步 `settings.py`、`.env.example`、`docs/config.md`。
 - 改了记忆领域字段 → 同步 `0001_memory_schema.sql` CHECK 约束、`mapping.py`、`schemas.py` DTO。

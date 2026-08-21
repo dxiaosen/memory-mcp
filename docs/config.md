@@ -197,7 +197,7 @@
 
 ```bash
 cp server/.env.example .env && chmod 600 .env
-cp agent/.env.example examples/agent.env && chmod 600 examples/agent.env
+cp agent/.env.example agent.env && chmod 600 agent.env
 ```
 
 - `server/.env.example` 只含生产 Server 配置，`agent/.env.example` 只含 URL 和 Token。

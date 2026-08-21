@@ -895,7 +895,7 @@ flowchart LR
 | time-decay half-life | `90` 天（默认；优先取该类型 `metadata_policies.validity_days`） |
 | time-decay weight | `0.15`（半衰期外记忆最多衰减 15%） |
 
-> 改这些常量后必须同步本表与 evals 阈值。
+> 改这些常量后必须同步本表。
 
 只有基础文本分数达到 relevance threshold 的记录才进入结果；数据库 lexical score
 与 vector retrieval_score 只负责候选生成与加成，不替代应用分数。关系不能独自把

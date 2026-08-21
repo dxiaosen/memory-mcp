@@ -22,7 +22,7 @@ cp server/.env.example .env && chmod 600 .env   # 编辑 DSN/Token/模型
 
 编辑 `.env` 至少替换：PostgreSQL DSN、`MEMORY_MCP_AUTH_TOKENS`（≥32 字符）、
 `MEMORY_MCP_MODEL_*`（模型名/API Key/Base URL）。为 Agent Host 建独立配置：
-`cp agent/.env.example examples/agent.env`，只填 `MEMORY_MCP_URL` 与 `MEMORY_MCP_TOKEN`
+`cp agent/.env.example agent.env`，只填 `MEMORY_MCP_URL` 与 `MEMORY_MCP_TOKEN`
 （Token 必须是服务端 Token 映射中的一枚 key）。
 
 详细步骤见 [使用文档](docs/usage.md)；Agent 接入见 [Agent 主动记忆](docs/agents.md)。
@@ -70,7 +70,6 @@ flowchart TD
 | 接入 Agent | [agents.md](docs/agents.md) — Hook 合同、Codex/Claude Code |
 | 本地跑通 | [usage.md](docs/usage.md) — 安装、启动、手工验证 |
 | 跑测试 | [testing.md](docs/testing.md) — 分层、命令、DB 安全 |
-| 看评测 | [evaluation.md](docs/evaluation.md) — 66 案例、三模式、指标、baseline |
 | 查日志 | [logging.md](docs/logging.md) — 事件、字段、脱敏 |
 | 生产部署 | [deploy.md](docs/deploy.md) — ECS/RDS 直接运行 |
 | 在本仓库工作 | [CLAUDE.md](CLAUDE.md) — 架构铁律、模块速查、改动检查清单 |
@@ -82,7 +81,6 @@ OpenSpec 管变更历史与规范，不作为使用手册：[OpenSpec 导航](op
 ```bash
 uv run ruff check .
 uv run pytest -q
-uv run python -m evals.runner --mode deterministic
 openspec-cn validate <change-name> --strict
 ```
 
